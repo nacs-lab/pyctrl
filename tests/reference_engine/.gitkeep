@@ -1,0 +1,3 @@
+# Engine-accepts references (.bin) whose channel names match config.yml.
+# Consumed by tests/test_engine_loads.py (pytest -m needs_engine). Empty until
+# real-config sequences are captured.

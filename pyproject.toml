@@ -1,0 +1,24 @@
+[project]
+name = "ybctrl"
+version = "0.0.0"
+description = "Python front-end for the Yb experiment control system (parallel to matlab_new/)"
+requires-python = ">=3.8"
+# numpy is needed from Phase 1 (the serializer); Phase 0 uses the stdlib only.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "numpy>=1.20"]
+
+[tool.pytest.ini_options]
+# Flat-on-path imports mirror the codebase convention (`from exp_seq import ExpSeq`).
+pythonpath = ["lib", "tools", "."]
+testpaths = ["tests"]
+# Default run is fully safe on the shared lab PC: no engine load, no hardware.
+# Run engine checks explicitly with:  pytest -m needs_engine   (compile-only)
+# Run hardware checks (downtime only): pytest -m needs_hardware
+addopts = "-m 'not needs_hardware and not needs_engine'"
+markers = [
+    "no_hardware: pure byte/structure math; never loads the engine or touches devices (default)",
+    "needs_engine: loads the libnacs engine library; compile-only, no init_run/start (run in a safe window)",
+    "needs_hardware: drives NI DAQ / Siglent AWG / QICK FPGA / Orca camera (downtime only)",
+]

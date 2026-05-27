@@ -1,0 +1,2 @@
+# Byte round-trip references (.bin) captured by tools/capture_matlab_reference.m.
+# Phase 0 also reuses the committed references in matlab_new/lib/test/seq*.json.

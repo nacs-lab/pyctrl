@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Captured params sidecars are regenerable; the .bin references are committed.
+tests/reference/*.params.json
+tests/reference_engine/*.params.json
