@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pyctrl Phase 0 — Code Walkthrough</title>
+<style>
+  :root{
+    --bg:#fbfbfd; --panel:#ffffff; --ink:#1c2230; --muted:#5b6577;
+    --line:#e4e7ee; --accent:#3b4cc0; --accent2:#0b7a75;
+    --code-bg:#f6f7fb; --code-ink:#27324a;
+    /* byte-group colors */
+    --c-ver:#fff0c2; --c-cnt:#d8e6ff; --c-op:#d7f3df; --c-arg:#ecdcff;
+    --c-pay:#eceff4; --c-str:#cdeef0; --c-rec:#ffe1ec;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{display:grid; grid-template-columns:260px minmax(0,1fr); gap:0; max-width:1240px; margin:0 auto;}
+  /* sidebar */
+  nav.toc{
+    position:sticky; top:0; align-self:start; height:100vh; overflow:auto;
+    padding:28px 18px 40px; border-right:1px solid var(--line); background:var(--panel);
+  }
+  nav.toc h2{font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin:18px 0 8px}
+  nav.toc a{display:block; color:var(--ink); text-decoration:none; padding:4px 8px; border-radius:7px; font-size:14px}
+  nav.toc a:hover{background:var(--code-bg); color:var(--accent)}
+  nav.toc .brand{font-weight:700; font-size:16px; letter-spacing:.01em}
+  nav.toc .brand span{color:var(--accent)}
+  main{padding:42px 52px 120px; min-width:0}
+  header.hero{border-bottom:1px solid var(--line); padding-bottom:22px; margin-bottom:8px}
+  header.hero h1{font-size:30px; margin:0 0 6px; letter-spacing:-.01em}
+  header.hero .sub{color:var(--muted); font-size:15px}
+  header.hero .meta{margin-top:14px; font-size:13px; color:var(--muted)}
+  header.hero .meta code{background:var(--code-bg); padding:2px 6px; border-radius:5px}
+  section{margin-top:46px; scroll-margin-top:20px}
+  h2.sec{font-size:23px; margin:0 0 4px; padding-top:6px; border-top:3px solid var(--accent); display:inline-block; padding-right:10px}
+  h3{font-size:18px; margin:30px 0 8px; color:var(--ink)}
+  h4{font-size:15px; margin:22px 0 6px; color:var(--accent2); letter-spacing:.01em}
+  p{margin:10px 0}
+  code{font-family:"SF Mono",SFMono-Regular,ui-monospace,"Cascadia Code",Consolas,Menlo,monospace; font-size:.9em}
+  p code,li code,td code{background:var(--code-bg); color:var(--code-ink); padding:1px 6px; border-radius:5px}
+  pre{
+    background:var(--code-bg); border:1px solid var(--line); border-radius:10px;
+    padding:16px 18px; overflow:auto; font-size:13.5px; line-height:1.55;
+    font-family:"SF Mono",SFMono-Regular,ui-monospace,"Cascadia Code",Consolas,Menlo,monospace;
+    color:var(--code-ink); margin:14px 0;
+  }
+  pre .cmt{color:#8a93a6}
+  pre .kw{color:#9333ea} pre .str{color:#0b7a75} pre .num{color:#c2410c} pre .fn{color:#3b4cc0}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:14px}
+  th,td{border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top}
+  th{background:var(--code-bg); font-weight:600}
+  tbody tr:nth-child(even){background:#fafbfe}
+  .callout{border-left:4px solid var(--accent2); background:#f0fbfa; padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0}
+  .callout.warn{border-color:#d97706; background:#fff8ed}
+  .callout .t{font-weight:700; display:block; margin-bottom:3px}
+  .pill{display:inline-block; font-size:11px; font-weight:700; letter-spacing:.04em; padding:2px 9px; border-radius:999px; vertical-align:middle}
+  .pill.ok{background:#d7f3df; color:#136c34} .pill.def{background:#d8e6ff; color:#27408b}
+  /* byte annotation */
+  .bytes{font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:13px; line-height:2.1; word-spacing:2px}
+  .bytes b{font-weight:400; padding:2px 5px; border-radius:5px; border:1px solid rgba(0,0,0,.06); margin:0 1px; display:inline-block}
+  .by-ver{background:var(--c-ver)} .by-cnt{background:var(--c-cnt)} .by-op{background:var(--c-op)}
+  .by-arg{background:var(--c-arg)} .by-pay{background:var(--c-pay)} .by-str{background:var(--c-str)} .by-rec{background:var(--c-rec)}
+  .legend{display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 16px; font-size:12.5px}
+  .legend span{padding:3px 9px; border-radius:6px; border:1px solid rgba(0,0,0,.06)}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:18px}
+  .grid2 > div{min-width:0}
+  .note{color:var(--muted); font-size:13.5px}
+  .arrow{color:var(--accent); font-weight:700}
+  hr{border:0; border-top:1px solid var(--line); margin:30px 0}
+  @media (max-width:900px){
+    .wrap{grid-template-columns:1fr}
+    nav.toc{position:static; height:auto; border-right:0; border-bottom:1px solid var(--line)}
+    main{padding:28px 20px 80px}
+    .grid2{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc">
+  <div class="brand"><span>pyctrl</span> / Phase 0</div>
+  <div class="note" style="margin-top:6px">Code walkthrough</div>
+  <h2>Contents</h2>
+  <a href="#overview">1. Overview &amp; data flow</a>
+  <a href="#format">2. The byte format</a>
+  <a href="#example">3. Worked example: full decode</a>
+  <a href="#graph">4. The value / expression graph</a>
+  <a href="#compare">5. compare_bytes.py</a>
+  <a href="#outputs">6. Pulses: bytes &rarr; meaning</a>
+  <a href="#manager">7. seq_manager.py</a>
+  <a href="#capture">8. MATLAB capture (engine-free)</a>
+  <a href="#tests">9. Tests &amp; config</a>
+  <a href="#proof">10. Why this proves correctness</a>
+  <a href="#appendix">Appendix: tables</a>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>pyctrl Phase&nbsp;0 — Code Walkthrough</h1>
+  <div class="sub">The byte-format reader that pins the MATLAB&nbsp;&harr;&nbsp;Python contract, explained with real, byte-verified examples.</div>
+  <div class="meta">
+    Files under <code>pyctrl/</code> &nbsp;·&nbsp; engine: <code>libnacs</code> &nbsp;·&nbsp;
+    references: <code>matlab_new/lib/test/seq*.json</code> &nbsp;·&nbsp;
+    status: <span class="pill ok">6/6 round-trip exact</span> <span class="pill def">16 tests pass</span>
+  </div>
+</header>
+
+<!-- ============================================================= -->
+<section id="overview">
+  <h2 class="sec">1. Overview &amp; data flow</h2>
+  <p>The whole point of Phase 0 is to nail down the <strong>one interface</strong> between the MATLAB
+  front-end and the C++ engine: the byte array that <code>ExpSeq.serialize()</code> produces and
+  <code>Manager.create_sequence()</code> consumes. If a Python program can read those bytes back into a
+  faithful structure and re-emit them <em>byte-for-byte</em>, it understands the format completely.</p>
+
+<pre>MATLAB <span class="fn">ExpSeq.serialize()</span>  ──►  bytes  (<span class="str">.bin</span> or <span class="str">seqN.json</span>)
+                                  │
+                  <span class="fn">compare_bytes.decode()</span>      <span class="cmt"># the reader</span>
+                                  ▼
+                  nested Python structure (dicts / lists)
+                                  │
+                  <span class="fn">compare_bytes.encode()</span>      <span class="cmt"># the exact inverse</span>
+                                  ▼
+                                bytes        ── must equal the original ──┐
+                                  ▲                                       │
+                                  └───────────────────────────────────────┘</pre>
+
+  <div class="callout">
+    <span class="t">Why this is safe to run anytime</span>
+    The references already exist on disk (committed by the MATLAB test suite, captured engine-free).
+    The reader is pure standard-library byte math in a separate Python process — it never imports
+    <code>libnacs</code> and never opens a device. <strong>Zero MATLAB execution, zero hardware, zero
+    interference</strong> with a running experiment.
+  </div>
+</section>
+
+<!-- ============================================================= -->
+<section id="format">
+  <h2 class="sec">2. The byte format</h2>
+  <p>Two layouts, both documented in <code>matlab_new/lib/SeqContext.m</code>. All multi-byte values are
+  <strong>little-endian</strong> (MATLAB <code>typecast(...,'int8')</code> on x86).</p>
+
+  <h4>Top level</h4>
+<pre>[version=0 : 1B]
+[nnodes : 4B][ node record × nnodes ]              <span class="cmt"># the value / expression graph</span>
+[nchns : 4B][ NUL-terminated channel name × nchns ]
+[ndefvals : 4B][ chnid:4B, type:1B, value:1–8B × ndefvals ]
+[nslots : 4B][ type:1B × nslots ]                  <span class="cmt"># global variable slot types</span>
+[nnoramp : 4B][ chnid:4B × nnoramp ]               <span class="cmt"># usually 0</span>
+[nbasicseqs : 4B][ basic sequence × nbasicseqs ]
+[ndatas : 4B][ ndouble:4B, data:8B×ndouble × ndatas ]   <span class="cmt"># interpolation tables</span>
+[nbackenddatas : 4B][ devname\0, size:4B, data:size × … ]  <span class="cmt"># "ZYNQZYNQ" device blocks</span></pre>
+
+  <h4>Each basic sequence</h4>
+<pre>[ntimes : 4B][ sign:1B, id:4B, delta_node:4B, prev_id:4B × ntimes ]
+[nendtimes : 4B][ time_id:4B × … ]
+[ntimeorders : 4B][ sign:1B, id:4B, before_id:4B, after_id:4B × … ]
+[noutputs : 4B][ id:4B, time_id:4B, len:4B, val:4B, cond:4B, chn:4B × … ]   <span class="cmt"># pulses</span>
+[nmeasures : 4B][ id:4B, time_id:4B, chn:4B × … ]
+[nassigns : 4B][ assign_id:4B, global_id:4B, val:4B × … ]
+[nbranches : 4B][ branch_id:4B, target_id:4B, cond:4B × … ][ default_target:4B ]</pre>
+
+  <h4>A node record</h4>
+  <p>Uniformly <code>[opcode:1B][ arg × arity(opcode) ]</code>, and each argument is self-describing:
+  <code>[argtype:1B][payload]</code>. The "standalone" constant / global / measure / arg nodes are
+  <em>not</em> special — they are simply <code>OPIdentity</code> (50) nodes with one argument. The only
+  exception is <code>OPInterp</code> (48): three args plus a trailing <code>data_id:4B</code>.</p>
+  <p class="note">Arg payload sizes: bool=1B, int32=4B, float64=8B; node / measure / global / arg are 4-byte uint32 ids.
+  Full opcode and arg-type tables are in the <a href="#appendix">appendix</a>.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="example">
+  <h2 class="sec">3. Worked example: decoding a whole sequence</h2>
+  <p>The smallest reference, <code>seq3_waitfor.json</code> (174 bytes, 3 nodes). The MATLAB file even
+  ships with <code>//</code> comments, so we can check the decoder against the original author's own
+  annotations. Below: the raw bytes, color-coded, then the structure the reader produces.</p>
+
+  <div class="legend">
+    <span class="by-ver">version</span>
+    <span class="by-cnt">count (uint32)</span>
+    <span class="by-op">opcode</span>
+    <span class="by-arg">arg type</span>
+    <span class="by-pay">payload</span>
+    <span class="by-str">channel string</span>
+    <span class="by-rec">table record</span>
+  </div>
+
+  <h4>Header + the three value nodes</h4>
+  <div class="bytes">
+    <b class="by-ver">0</b> <span class="note">version</span><br>
+    <b class="by-cnt">3 0 0 0</b> <span class="note">nnodes = 3</span><br>
+    <b class="by-op">50</b> <b class="by-arg">2</b> <b class="by-pay">0 0 0 0 0 0 0 0</b>
+      <span class="note">node[0] = identity(float64 <b>0.0</b>)</span><br>
+    <b class="by-op">3</b> <b class="by-arg">5</b> <b class="by-pay">0 0 0 0</b>
+      <b class="by-arg">2</b> <b class="by-pay">0 0 0 0 0 0 0 64</b>
+      <span class="note">node[1] = mul( global #0 , float64 <b>2.0</b> )</span><br>
+    <b class="by-op">3</b> <b class="by-arg">3</b> <b class="by-pay">2 0 0 0</b>
+      <b class="by-arg">2</b> <b class="by-pay">0 0 0 0 0 64 -113 64</b>
+      <span class="note">node[2] = mul( node #2 , float64 <b>1000.0</b> )</span>
+  </div>
+
+  <h4>How the two non-trivial bytes decode</h4>
+  <p><strong>The float <code>1000.0</code>:</strong> the 8 payload bytes are
+  <code>00 00 00 00 00 40 8F 40</code> (note <code>-113</code> is the signed-int8 spelling of
+  <code>0x8F = 143</code>). Read little-endian that is the IEEE-754 double
+  <code>0x408F400000000000 = 1000.0</code>. Likewise <code>2.0</code> is
+  <code>0x4000000000000000</code> and <code>0.0</code> is eight zero bytes.</p>
+  <p><strong>The channel name:</strong> later in the file the bytes
+  <code>68 101 118 105 99 101 48 47 67 72 57 0</code> are ASCII
+  <code>D e v i c e 0 / C H 9</code> + NUL <span class="arrow">&rarr;</span> <code>"Device0/CH9"</code>.</p>
+
+  <h4>Header + channels + globals (continued)</h4>
+  <div class="bytes">
+    <b class="by-cnt">1 0 0 0</b> <span class="note">nchns = 1</span>
+      <b class="by-str">68 101 118 105 99 101 48 47 67 72 57 0</b> <span class="note">"Device0/CH9"</span><br>
+    <b class="by-cnt">0 0 0 0</b> <span class="note">ndefvals = 0</span><br>
+    <b class="by-cnt">1 0 0 0</b> <b class="by-pay">3</b> <span class="note">nslots = 1, type 3 (float64) — one global</span><br>
+    <b class="by-cnt">0 0 0 0</b> <span class="note">nnoramp = 0</span><br>
+    <b class="by-cnt">1 0 0 0</b> <span class="note">nbasicseqs = 1</span>
+  </div>
+
+  <h4>The basic sequence's tables</h4>
+  <div class="bytes">
+    <b class="by-cnt">2 0 0 0</b> <span class="note">ntimes = 2</span>
+      <b class="by-rec">0 · 0 0 0 0 · 1 0 0 0 · 0 0 0 0</b>
+      <b class="by-rec">0 · 0 0 0 0 · 1 0 0 0 · 0 0 0 0</b>
+      <span class="note">each: sign 0, id 0, delta_node 1, prev_id 0</span><br>
+    <b class="by-cnt">1 0 0 0</b> <b class="by-rec">1 0 0 0</b> <span class="note">nendtimes = 1, time_id 1</span><br>
+    <b class="by-cnt">2 0 0 0</b>
+      <b class="by-rec">1 · 0 0 0 0 · 2 0 0 0 · 1 0 0 0</b>
+      <b class="by-rec">1 · 1 0 0 0 · 2 0 0 0 · 1 0 0 0</b>
+      <span class="note">ntimeorders = 2 (the wait-for constraints)</span><br>
+    <b class="by-cnt">0 0 0 0</b> <b class="by-cnt">0 0 0 0</b> <b class="by-cnt">0 0 0 0</b>
+      <b class="by-cnt">0 0 0 0</b> <b class="by-pay">0 0 0 0</b>
+      <span class="note">noutputs, nmeasures, nassigns, nbranches = 0; default_target 0</span><br>
+    <b class="by-cnt">0 0 0 0</b> <b class="by-cnt">0 0 0 0</b> <span class="note">ndatas = 0; nbackenddatas = 0</span>
+  </div>
+
+  <h4>...which the reader turns into this (abridged)</h4>
+<pre>{
+  <span class="str">"version"</span>: <span class="num">0</span>,
+  <span class="str">"nodes"</span>: [
+    { <span class="str">"op"</span>: <span class="num">50</span>, <span class="str">"args"</span>: [ {<span class="str">"argtype"</span>:<span class="str">"float64"</span>, <span class="str">"val"</span>: <span class="num">0.0</span>} ] },
+    { <span class="str">"op"</span>: <span class="num">3</span>,  <span class="str">"args"</span>: [ {<span class="str">"argtype"</span>:<span class="str">"global"</span>, <span class="str">"val"</span>: <span class="num">0</span>},
+                       {<span class="str">"argtype"</span>:<span class="str">"float64"</span>, <span class="str">"val"</span>: <span class="num">2.0</span>} ] },
+    { <span class="str">"op"</span>: <span class="num">3</span>,  <span class="str">"args"</span>: [ {<span class="str">"argtype"</span>:<span class="str">"node"</span>, <span class="str">"val"</span>: <span class="num">2</span>},
+                       {<span class="str">"argtype"</span>:<span class="str">"float64"</span>, <span class="str">"val"</span>: <span class="num">1000.0</span>} ] }
+  ],
+  <span class="str">"channels"</span>: [ <span class="str">"Device0/CH9"</span> ],
+  <span class="str">"slots"</span>: [ <span class="num">3</span> ],                  <span class="cmt"># one float64 global</span>
+  <span class="str">"basicseqs"</span>: [ { <span class="str">"times"</span>: […2…], <span class="str">"timeorders"</span>: […2…], <span class="str">"outputs"</span>: [], … } ],
+  <span class="str">"datas"</span>: [], <span class="str">"backenddatas"</span>: []
+}</pre>
+  <p>Reading the nodes back as an expression: <code>node[1] = g(0) * 2</code> and
+  <code>node[2] = node[1] * 1000 = (g(0) * 2) * 1000</code> — the wait-for duration, recovered exactly
+  from the bytes.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="graph">
+  <h2 class="sec">4. The value / expression graph</h2>
+  <p>The <code>nodes</code> section is the most important idea in the format: a flat, numbered table that
+  encodes a <strong>directed acyclic graph of expressions</strong> — essentially SSA form. Parameters in
+  this system are not plain numbers; they are <em>lazy expressions</em> that may depend on runtime
+  quantities. A pulse amplitude might be <code>g(0) * 1000</code>; a wait might be
+  <code>round(g(0) * 2 * 1000)</code>; a branch might fire on <code>m(3) &lt; 0</code>. Each is a small
+  tree, and all of a sequence's trees are flattened into one shared, numbered node table.</p>
+  <p>Every row is one of two things — <strong>a leaf</strong> (an input to the computation) or
+  <strong>an operation</strong> (combining other nodes, its arguments).</p>
+
+  <h3>The four kinds of leaf</h3>
+  <table>
+    <thead><tr><th>Leaf</th><th>Meaning at runtime</th><th>In the bytes</th></tr></thead>
+    <tbody>
+      <tr><td><b>constant</b> (bool/int32/float64)</td><td>a literal value</td><td><code>ArgConstFloat64</code> + 8B, etc.</td></tr>
+      <tr><td><b>global</b> <code>g(i)</code></td><td>a runtime-settable variable (slot <code>i</code>); <code>set_global(i,v)</code> changes it between shots</td><td><code>ArgGlobal</code> + slot id; the slot's type is also listed in the top-level <code>slots</code> table</td></tr>
+      <tr><td><b>measure</b> <code>m(id)</code></td><td>a value <em>measured during the sequence</em> (e.g. atom detection) that later expressions / branches can use</td><td><code>ArgMeasure</code> + measure id</td></tr>
+      <tr><td><b>arg</b> <code>arg(i)</code></td><td>a parameter passed into a sub-sequence — like a function argument</td><td><code>ArgArg</code> + index</td></tr>
+    </tbody>
+  </table>
+  <p>Globals, measures, and args are the whole point of having a graph: they are unknown when the sequence
+  is <em>built</em>, so the value must be carried symbolically and evaluated later.</p>
+
+  <h3>How it is built (MATLAB side)</h3>
+  <p><code>SeqVal</code> overloads the arithmetic operators, so writing <code>g + 2</code> or
+  <code>round(g*1000)</code> constructs <code>SeqVal(opcode, {args})</code> nodes — an expression tree grown
+  straight from ordinary MATLAB syntax. <code>SeqContext</code> is the interning table that flattens those
+  trees into the numbered, de-duplicated node list at serialize time.</p>
+
+  <h3>The key encoding rule: inline leaves, reference sub-expressions</h3>
+  <p>Not every sub-value gets its own row. From <code>serializeArg</code>:</p>
+  <ul>
+    <li><strong>Leaves are inlined</strong> directly into the parent operation's argument list.</li>
+    <li><strong>Composite sub-expressions are referenced by id</strong> — emitted as <code>ArgNode</code> +
+      the id of another node in the table. This is what creates the shared DAG.</li>
+  </ul>
+  <p>Both appear in the verified <code>seq3</code> graph for <code>(g(0)*2)*1000</code>. Compare
+  <code>node&nbsp;2</code> (two inline leaves) with <code>node&nbsp;3</code> (a reference + an inline leaf):</p>
+
+  <div class="bytes">
+    <span class="note">node 2 = mul( g(0) , 2.0 ):</span><br>
+    <b class="by-op">03</b> <span class="note">mul</span>
+    <b class="by-arg">05</b> <b class="by-pay">00 00 00 00</b> <span class="note">arg = global, slot 0 (inline leaf)</span>
+    <b class="by-arg">02</b> <b class="by-pay">00 00 00 00 00 00 00 40</b> <span class="note">arg = float64 2.0 (inline leaf)</span>
+  </div>
+  <div class="bytes">
+    <span class="note">node 3 = mul( node#2 , 1000.0 ):</span><br>
+    <b class="by-op">03</b> <span class="note">mul</span>
+    <b class="by-arg">03</b> <b class="by-pay">02 00 00 00</b> <span class="note">arg = NODE, id 2 → references node 2</span>
+    <b class="by-arg">02</b> <b class="by-pay">00 00 00 00 00 40 8F 40</b> <span class="note">arg = float64 1000.0 (inline leaf)</span>
+  </div>
+  <p>The only structural difference is the first argument: an inline <code>global</code> leaf in
+  <code>node&nbsp;2</code> versus an <code>ArgNode → 2</code> reference in <code>node&nbsp;3</code>. That
+  reference is what links <code>(g(0)*2)</code> into <code>(g(0)*2)*1000</code>.</p>
+
+  <div class="callout">
+    <span class="t">Why there are no special "leaf records"</span>
+    When a <em>bare</em> leaf needs its own id — because something references it by id (e.g. a pulse length
+    that is just a constant, or the <code>0.0</code> time base in <code>node 1</code>) — it is stored as an
+    <code>OPIdentity</code> (opcode 50) node wrapping the single leaf. So every row is uniformly
+    <code>[opcode][args]</code>; a referenced constant is simply <code>identity(0.0)</code>.
+    <code>getValID</code> / <code>ensureSerialize</code> mint these ids and intern constants, so each distinct
+    literal appears once — that interning is what gives the graph its DAG sharing.
+  </div>
+
+  <h3>The rest of the sequence points into the graph</h3>
+  <p>Almost every other table refers to the value graph by <strong>1-based node id</strong>
+  (<code>0</code> = none / absent):</p>
+  <table>
+    <thead><tr><th>Table</th><th>Field(s)</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td>times</td><td><code>delta_node</code></td><td>the time offset is itself an expression</td></tr>
+      <tr><td>outputs (pulses)</td><td><code>val</code>, <code>len</code>, <code>cond</code></td><td>amplitude/ramp, duration, gating condition (<code>cond=0</code> = unconditional)</td></tr>
+      <tr><td>assigns</td><td><code>val</code></td><td>node id written into a global</td></tr>
+      <tr><td>branches</td><td><code>cond</code></td><td>node id deciding control flow</td></tr>
+    </tbody>
+  </table>
+  <p>The graph is the shared "value layer" that the timing and control layers compute against.</p>
+
+  <div class="callout">
+    <span class="t">Why serialize a graph instead of numbers</span>
+    The engine JIT-compiles this DAG with LLVM. Because globals and measures are symbolic, the engine
+    <strong>recomputes the graph every shot</strong> — <code>pre_run</code> re-evaluates it for the current
+    global values, and a measurement taken mid-sequence flows into a later <code>cond</code> to drive a
+    branch — without rebuilding or recompiling the sequence. The numbers frequently do not exist yet at
+    build time, so they must be carried as expressions.
+  </div>
+
+  <h3>Worked example: seq1's expression</h3>
+  <p><code>seq1</code>'s 15-node graph encodes the value <code>TestExpSeq</code> builds, whose human form is:</p>
+<pre>(4600 + ifelse(m(3) &lt; 0, 3400, 0) + round(g(0) * 1000)) / 1000</pre>
+  <p>The first nodes read straight out of the table:</p>
+<pre>node 1 : mul( global #0 , float64 1000.0 )   <span class="cmt"># g(0) * 1000</span>
+node 2 : rint( node #1 )                      <span class="cmt"># round(g(0) * 1000)</span>
+node 3 : cmpLT( ... )                          <span class="cmt"># m(3) &lt; 0   (opcode 5)</span>
+  ...                                          <span class="cmt"># select/ifelse, adds, div → the full tree</span></pre>
+  <p>A measurement (<code>m(3)</code>) and a global (<code>g(0)</code>) feed arithmetic and a comparison;
+  the comparison feeds an <code>ifelse</code> (<code>OPSelect</code>); the results are summed and divided —
+  exactly the tree the <code>round</code>, <code>ifelse</code>, and <code>/ 1000</code> in the MATLAB
+  produced. <strong>Phase 1 ports this first:</strong> <code>SeqVal</code> + <code>SeqContext</code> must
+  emit a byte-identical node table, checked with <code>compare_bytes.decode</code> against these references.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="compare">
+  <h2 class="sec">5. compare_bytes.py — the reader, part by part</h2>
+
+  <h3>The constant tables = the format spec</h3>
+  <p>Three lookup tables, transcribed from <code>matlab_new/lib/SeqVal.m</code>, encode everything needed
+  to walk the bytes:</p>
+  <ul>
+    <li><code>_ARITY</code> — opcode <span class="arrow">&rarr;</span> number of arguments. <strong>Essential</strong>,
+      because node records are variable length: to find where one node ends you must know its arg count.</li>
+    <li><code>_OP_INTERP = 48</code> — the lone special case (3 args + a 4-byte <code>data_id</code>).</li>
+    <li><code>_ARG_NAME</code> / <code>_ARG_CODE</code> — arg-type tag &harr; name (decode &amp; encode).</li>
+  </ul>
+
+  <h3>The cursor</h3>
+  <p>A small class holding <code>(bytes, position)</code>. Every read advances the cursor and bounds-checks;
+  endianness lives in exactly one place.</p>
+<pre><span class="kw">class</span> <span class="fn">_Cur</span>:
+    <span class="kw">def</span> <span class="fn">take</span>(self, n):
+        <span class="kw">if</span> self.i + n &gt; len(self.d):
+            <span class="kw">raise</span> ValueError(<span class="str">"overrun at byte %d"</span> % self.i)
+        b = self.d[self.i:self.i+n]; self.i += n; <span class="kw">return</span> b
+    <span class="kw">def</span> <span class="fn">u32</span>(self): <span class="kw">return</span> struct.unpack(<span class="str">"&lt;I"</span>, self.take(4))[0]   <span class="cmt"># little-endian</span>
+    <span class="kw">def</span> <span class="fn">f64</span>(self): <span class="kw">return</span> struct.unpack(<span class="str">"&lt;d"</span>, self.take(8))[0]
+    <span class="kw">def</span> <span class="fn">cstr</span>(self): <span class="cmt"># read up to the NUL, then skip it</span> ...</pre>
+
+  <h3>Decoding one node</h3>
+  <p>This is the crux. Read the opcode, look up its arity, read that many self-describing args, and
+  (only for <code>OPInterp</code>) one more 4-byte field:</p>
+<pre><span class="kw">def</span> <span class="fn">_decode_node</span>(c):
+    op = c.u8()
+    node = {<span class="str">"op"</span>: op, <span class="str">"args"</span>: [_decode_arg(c) <span class="kw">for</span> _ <span class="kw">in</span> range(_ARITY[op])]}
+    <span class="kw">if</span> op == _OP_INTERP:
+        node[<span class="str">"data_id"</span>] = c.u32()
+    <span class="kw">return</span> node
+
+<span class="kw">def</span> <span class="fn">_decode_arg</span>(c):
+    t = c.u8()
+    <span class="kw">if</span> t == <span class="num">2</span>: <span class="kw">return</span> {<span class="str">"argtype"</span>:<span class="str">"float64"</span>, <span class="str">"val"</span>: c.f64()}   <span class="cmt"># 8B</span>
+    <span class="kw">if</span> t == <span class="num">1</span>: <span class="kw">return</span> {<span class="str">"argtype"</span>:<span class="str">"int32"</span>,   <span class="str">"val"</span>: c.i32()}   <span class="cmt"># 4B signed</span>
+    ...                                                  <span class="cmt"># node/measure/global/arg = u32</span></pre>
+  <p>Walking the earlier example: byte <code>3</code> is <code>OPMul</code>, <code>_ARITY[3]=2</code>, so
+  two args follow — a <code>global</code> and a <code>float64</code>. Byte <code>50</code> is
+  <code>OPIdentity</code>, arity 1, one arg. No special cases.</p>
+
+  <h3>Top-level decode &amp; the strict consume check</h3>
+  <p><code>decode()</code> reads the sections in order and ends with:</p>
+<pre><span class="kw">if</span> c.i != len(c.d):
+    <span class="kw">raise</span> ValueError(<span class="str">"trailing %d bytes after decode"</span> % (len(c.d) - c.i))</pre>
+  <p>This is what makes round-trip a <em>strong</em> test: if any section size is off by even one byte,
+  decode either overruns or leaves trailing bytes — and the test fails loudly rather than silently
+  mis-parsing. (One subtlety: the <code>int8([0,0,0,0])</code> you see in <code>ExpSeq.serialize</code> is
+  the <code>noramp</code> count of 0, not padding.)</p>
+
+  <h3>load() — getting bytes in</h3>
+<pre><span class="kw">def</span> <span class="fn">load</span>(path):
+    <span class="kw">if</span> path.endswith(<span class="str">".json"</span>):
+        text = re.sub(<span class="str">r"//[^\n]*"</span>, <span class="str">""</span>, open(path).read())  <span class="cmt"># strip // comments</span>
+        text = re.sub(<span class="str">r",\s*]"</span>, <span class="str">"]"</span>, text)               <span class="cmt"># tolerate trailing comma</span>
+        <span class="kw">return</span> bytes((x+<span class="num">256</span>)&amp;<span class="num">0xFF</span> <span class="kw">if</span> x&lt;<span class="num">0</span> <span class="kw">else</span> x <span class="kw">for</span> x <span class="kw">in</span> json.loads(text))  <span class="cmt"># int8→ubyte</span>
+    <span class="kw">return</span> open(path, <span class="str">"rb"</span>).read()</pre>
+  <p>The comment-stripping mirrors MATLAB's own <code>read_json</code>; the <code>int8 → unsigned</code>
+  mapping is why <code>-113</code> in the file becomes byte <code>143</code>.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="outputs">
+  <h2 class="sec">6. Pulses: from MATLAB code to bytes and back</h2>
+  <p>The most satisfying check is to follow a real pulse round-trip. <code>seq1</code> is built by this
+  MATLAB (from <code>TestExpSeq.m</code>):</p>
+<pre>s.addStep(1).add(<span class="str">'Device1/CH1'</span>, 4);                     <span class="cmt"># a value pulse</span>
+s.conditional(true).addStep(...).add(<span class="str">'Device2/CH3'</span>, -1);
+m1 = s.addMeasure(<span class="str">'Device2/CH5'</span>);                       <span class="cmt"># a measurement</span>
+s.addStep(1.2).add(<span class="str">'Device1/CH5'</span>, @(t) t - 2.3);        <span class="cmt"># a ramp</span></pre>
+
+  <p>The reader extracts these channel names and output records from <code>seq1.json</code>:</p>
+<pre>channels: [<span class="str">"Device1/CH1"</span>, <span class="str">"Device1/CH5"</span>, <span class="str">"Device2/CH3"</span>, <span class="str">"Device2/CH5"</span>]   <span class="cmt"># ids 1..4</span>
+outputs:
+  { id:0, time_id:4, len:7,  val:8,  cond:0, chn:1 }    <span class="cmt"># → Device1/CH1, value node #8</span>
+  { id:1, time_id:5, len:10, val:11, cond:0, chn:3 }    <span class="cmt"># → Device2/CH3</span>
+  { id:5, time_id:6, len:13, val:15, cond:0, chn:2 }    <span class="cmt"># → Device1/CH5 (the ramp)</span>
+measures:
+  { id:3, time_id:7, chn:4 }                            <span class="cmt"># → Device2/CH5</span></pre>
+
+  <table>
+    <thead><tr><th>Field</th><th>Meaning</th><th>Example (output 0)</th></tr></thead>
+    <tbody>
+      <tr><td><code>chn</code></td><td>1-based index into <code>channels</code></td><td>1 <span class="arrow">&rarr;</span> <code>Device1/CH1</code></td></tr>
+      <tr><td><code>val</code></td><td>node id of the value/ramp expression</td><td>8</td></tr>
+      <tr><td><code>len</code></td><td>node id of the pulse length</td><td>7</td></tr>
+      <tr><td><code>time_id</code></td><td>1-based index into the times table</td><td>4</td></tr>
+      <tr><td><code>cond</code></td><td>node id of a gating condition; <strong>0 = unconditional</strong></td><td>0</td></tr>
+    </tbody>
+  </table>
+  <p>Every field lines up with the source: three <code>add(...)</code> calls became three output records on
+  channels 1/3/2, and the <code>addMeasure</code> became the one measure on channel 4. The reader recovers
+  the experiment's structure from raw bytes.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="manager">
+  <h2 class="sec">7. lib/seq_manager.py — the engine wrapper</h2>
+  <p>A thin mirror of <code>matlab_new/lib/SeqManager.m</code> with two deliberate safety properties:</p>
+  <ul>
+    <li><strong>Lazy load.</strong> <code>import seq_manager</code> does <em>not</em> load <code>libnacs</code>.
+      The DLL is imported only on the first <code>get()</code>, so the entire test suite can import freely
+      without ever touching the engine.</li>
+    <li><strong>Mutable buffer.</strong> <code>create_sequence</code> coerces to <code>bytearray</code>, because
+      the ctypes binding uses <code>ctypes.c_uint8.from_buffer</code>, which requires a writable buffer —
+      immutable <code>bytes</code> would raise.</li>
+  </ul>
+<pre><span class="kw">def</span> <span class="fn">get</span>():
+    <span class="kw">global</span> _MANAGER
+    <span class="kw">if</span> _MANAGER <span class="kw">is</span> None:
+        <span class="kw">from</span> libnacs.expseq_manager <span class="kw">import</span> Manager   <span class="cmt"># imported lazily on purpose</span>
+        _MANAGER = Manager()
+    <span class="kw">return</span> _MANAGER
+
+<span class="kw">def</span> <span class="fn">create_sequence</span>(data):
+    <span class="kw">if</span> <span class="kw">not</span> isinstance(data, bytearray):
+        data = bytearray(data)        <span class="cmt"># ctypes.from_buffer needs writable memory</span>
+    <span class="kw">return</span> get().create_sequence(data)</pre>
+  <div class="callout">
+    <span class="t">Compile-only</span>
+    <code>create_sequence</code> only compiles the bytes; it never calls <code>init_run</code>/<code>start</code>,
+    so it does not drive hardware. Even so, because it loads the engine on the shared PC, the test that uses
+    it is opt-in (see next section).
+  </div>
+</section>
+
+<!-- ============================================================= -->
+<section id="capture">
+  <h2 class="sec">8. MATLAB capture — engine-free by construction</h2>
+  <p><code>tools/capture_matlab_reference.m</code> generates new references without ever loading the engine
+  or touching hardware. The trick is the codebase's own test hook:</p>
+<pre>SeqManager.override_tick_per_sec(1000);            <span class="cmt"># makes tick_per_sec() return WITHOUT loading libnacs</span>
+cleanup = onCleanup(@() SeqManager.override_tick_per_sec(0));
+...
+bytes = serialize(s);                              <span class="cmt"># serialize() ONLY — never generate()/run()</span>
+fwrite(fopen([name <span class="str">'.bin'</span>],<span class="str">'w'</span>), bytes, <span class="str">'int8'</span>);</pre>
+  <p><code>tools/reference_list.m</code> supplies the sequences as <code>{name, params, build}</code> entries
+  whose <code>build</code> handles mirror the proven <code>TestExpSeq.m</code> patterns
+  (<code>addStep(len).add('Device/CH', value)</code>, function-handle ramps, a global).</p>
+  <div class="callout warn">
+    <span class="t">Run in a separate MATLAB session</span>
+    Because <code>SeqManager</code> is a singleton, run this in a <em>different</em> MATLAB than the one driving
+    the experiment. With the override set, no engine loads and no device is touched — but never share the
+    session that is mid-run.
+  </div>
+</section>
+
+<!-- ============================================================= -->
+<section id="tests">
+  <h2 class="sec">9. Tests &amp; configuration</h2>
+  <table>
+    <thead><tr><th>File</th><th>Marker</th><th>What it checks</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_env.py</code></td><td><span class="pill ok">no_hardware</span></td><td>imports resolve; references present</td></tr>
+      <tr><td><code>test_reader_roundtrip.py</code></td><td><span class="pill ok">no_hardware</span></td><td><code>encode(decode(x))==x</code> for every reference; well-formedness; <code>diff</code> reports a planted change</td></tr>
+      <tr><td><code>test_engine_loads.py</code></td><td><span class="pill def">needs_engine</span></td><td>engine accepts our bytes (compile-only); <em>deselected by default</em></td></tr>
+    </tbody>
+  </table>
+  <p>The default run is safe on the lab PC — <code>pyproject.toml</code> sets:</p>
+<pre>addopts = <span class="str">"-m 'not needs_hardware and not needs_engine'"</span></pre>
+  <p>so a bare <code>pytest</code> never loads the engine or opens a device. The current result:</p>
+<pre><span class="cmt"># pytest pyctrl</span>
+16 passed, 2 deselected
+
+<span class="cmt"># python pyctrl/tools/compare_bytes.py --selftest matlab_new/lib/test</span>
+ok    seq1.json   473 bytes | version=0 nodes=15 channels=4 ... outputs=3 measures=1
+ok    seq2_waitbg.json 702 bytes | ... nodes=16 outputs=9 measures=2
+ok    seq3_waitfor.json 174 bytes | ... nodes=3 times=2
+ok    seq4.json … ok seq5.json … ok seq6.json …
+6/6 reference files decoded and round-tripped exactly</pre>
+
+  <h3>The diff tool in action</h3>
+  <p>When two sequences differ, <code>diff</code> reports the <strong>first field path</strong>, not a raw byte
+  offset — the payoff for Phase 1 debugging:</p>
+<pre><span class="cmt"># python compare_bytes.py seq5.json seq6.json</span>
+first difference: seq.nodes: length 6 != 5
+
+<span class="cmt"># a one-field change reads like:</span>
+first difference: seq.basicseqs[0].outputs[2].chn: 12 != 11</pre>
+</section>
+
+<!-- ============================================================= -->
+<section id="proof">
+  <h2 class="sec">10. Why this proves correctness (and what's next)</h2>
+  <p>Round-tripping all six real <code>serialize()</code> outputs <em>byte-for-byte</em> proves two things at
+  once: the byte-format spec in the appendix is correct, and the reader implements it faithfully — verified
+  against genuine MATLAB output with no MATLAB run and no hardware.</p>
+  <p>That makes the reader the executable contract for <strong>Phase 1</strong>: when the Python
+  <code>SeqContext</code> / <code>serialize()</code> starts producing bytes, we assert they
+  <code>decode()</code> to the same structure (or match byte-for-byte) against these very references, and
+  <code>diff</code> pinpoints any divergence down to the field.</p>
+  <div class="callout">
+    <span class="t">Phase 0 status</span>
+    <span class="pill ok">6/6 round-trip exact</span> &nbsp; <span class="pill ok">16 tests pass</span> &nbsp;
+    <span class="pill def">engine check deferred to a maintenance window</span>
+  </div>
+</section>
+
+<!-- ============================================================= -->
+<section id="appendix">
+  <h2 class="sec">Appendix: lookup tables</h2>
+
+  <h4>Argument types (<code>[argtype:1B][payload]</code>)</h4>
+  <table>
+    <thead><tr><th>Tag</th><th>Name</th><th>Payload</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>bool</td><td>1B</td></tr>
+      <tr><td>1</td><td>int32</td><td>4B signed</td></tr>
+      <tr><td>2</td><td>float64</td><td>8B IEEE-754</td></tr>
+      <tr><td>3</td><td>node</td><td>4B uint32 (1-based node id)</td></tr>
+      <tr><td>4</td><td>measure</td><td>4B uint32 (measure id)</td></tr>
+      <tr><td>5</td><td>global</td><td>4B uint32 (0-based slot id)</td></tr>
+      <tr><td>6</td><td>arg</td><td>4B uint32 (0-based arg index)</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Opcodes &amp; arity (from <code>SeqVal.m</code>)</h4>
+  <table>
+    <thead><tr><th>Arity</th><th>Opcodes</th></tr></thead>
+    <tbody>
+      <tr><td>1 (unary)</td><td>14 not · 15 abs · 16 ceil · 17 exp · 18 expm1 · 19 floor · 20 log · 21 log1p · 22 log2 · 23 log10 · 25 sqrt · 26 asin · 27 acos · 28 atan · 30–38 asinh…tanh · 40 erf · 41 erfc · 42 gamma · 43 lgamma · 44 rint · 50 identity</td></tr>
+      <tr><td>2 (binary)</td><td>1 add · 2 sub · 3 mul · 4 div · 5–10 cmp(LT,GT,LE,GE,NE,EQ) · 11 and · 12 or · 13 xor · 24 pow · 29 atan2 · 39 hypot · 45 max · 46 min · 47 mod</td></tr>
+      <tr><td>3 (ternary)</td><td>49 select (ifelse)</td></tr>
+      <tr><td>3 + data_id:4B</td><td>48 interp</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Default-value / slot type tags</h4>
+  <table>
+    <thead><tr><th>Tag</th><th>Type</th><th>Size</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>bool</td><td>1B</td></tr>
+      <tr><td>2</td><td>int32</td><td>4B</td></tr>
+      <tr><td>3</td><td>float64</td><td>8B</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note" style="margin-top:26px">Generated for pyctrl Phase 0. Source of truth:
+  <code>matlab_new/lib/SeqContext.m</code>, <code>matlab_new/lib/SeqVal.m</code>,
+  <code>matlab_new/lib/RootSeq.m</code>. The runnable form of this document is
+  <code>pyctrl/tools/compare_bytes.py</code>.</p>
+</section>
+
+</main>
+</div>
+</body>
+</html>
