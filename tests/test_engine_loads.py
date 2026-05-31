@@ -36,6 +36,9 @@ def manager():
     if os.path.exists(config_path):
         with open(config_path, "r") as f:
             mgr.load_config_string(f.read())
+    # The builder/seq dumps are only populated when dump is enabled; without
+    # this get_builder_dump() returns None even for a valid sequence.
+    mgr.enable_dump(True)
     return mgr
 
 
@@ -44,16 +47,26 @@ def manager():
 @pytest.mark.parametrize("path", _REFS, ids=[os.path.basename(p) for p in _REFS])
 def test_engine_accepts_bytes(manager, path):
     data = bytearray(compare_bytes.load(path))
+    # The accept proof: create_sequence returns a non-null compiled handle and
+    # does not raise (the binding's `guarded` wrapper raises on a SeqError). A
+    # non-empty builder dump (dump enabled in the fixture) further confirms the
+    # engine actually parsed and built our externally-produced bytes.
     eseq = manager.create_sequence(data)
-    assert eseq is not None
-    dump = eseq.get_builder_dump()
-    assert dump  # non-empty -> the engine parsed and built our bytes
+    assert eseq is not None, "engine returned a null handle for %s" % path
+    assert eseq.get_builder_dump()
 
 
 def test_corrupt_bytes_raise(manager):
-    """A deliberately truncated byte array must be rejected by the engine."""
+    """A deliberately corrupted byte array must be rejected by the engine.
+
+    Flip the leading version byte (valid == 0) to an unknown value: the engine
+    rejects it immediately ("Unknown sequence serialization version"). NB: do
+    NOT truncate with an oversized count field -- the engine would try to read
+    billions of records and hang rather than raise.
+    """
     if not _REFS:
         pytest.skip("no real-config references captured yet")
-    data = bytearray(compare_bytes.load(_REFS[0]))[: max(1, len(_REFS[0]) // 2)]
+    data = bytearray(compare_bytes.load(_REFS[0]))
+    data[0] = 99  # bogus serialization version
     with pytest.raises(Exception):
-        manager.create_sequence(bytearray(data) + bytearray([255, 255, 255, 255]))
+        manager.create_sequence(data)
