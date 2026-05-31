@@ -27,6 +27,58 @@ harness used by the default ``pytest`` run.
 
 import compare_bytes
 
+# SeqVal.OP_IDENTITY -- a constant top-level node is serialized as an identity op
+# wrapping one const arg (see compare_bytes._ARITY: 50 -> identity).
+_OP_IDENTITY = 50
+
+
+def _const_value(nodes, node_id):
+    """Read a constant node's numeric value, or 0.0 if it is a computed expression.
+
+    ``node_id`` is the 1-based id used in the serialized output records. Constant
+    nodes are ``identity(const)``; anything else (an add/mul/interp/arg/...) is not
+    statically knowable without a real evaluator, so the dummy reports 0.0.
+    """
+    if node_id < 1 or node_id > len(nodes):
+        return 0.0
+    n = nodes[node_id - 1]
+    if n["op"] == _OP_IDENTITY and n["args"]:
+        a = n["args"][0]
+        if a["argtype"] in ("bool", "int32", "float64"):
+            return float(a["val"])
+    return 0.0
+
+
+def _synth_nominal_output(seq, pts):
+    """Deterministic SYNTHETIC per-channel output for the board-free dummy.
+
+    This is NOT a real evaluation -- the dummy has no engine and never samples
+    ramps. It derives one point per output record from the decoded structure so
+    the ``.seq`` writer's end-to-end path (lib/dump_output.py) is exercisable
+    without hardware: constant output values are read straight from their node,
+    while times and pulse_ids are deterministic ordinals (NOT physical times).
+    Returns ``[(name, times, values, pulse_ids), ...]`` for channels that carry
+    output, matching the shape of the real ``get_nominal_output``
+    (matlab_new/lib/ExpSeq.m:683). The real engine is still required for
+    physically meaningful output (--real-engine, downtime).
+    """
+    channels = seq["channels"]            # 1-based channel ids
+    nodes = seq["nodes"]
+    by_chn = {}
+    for b in seq["basicseqs"]:
+        for out in b["outputs"]:
+            by_chn.setdefault(out["chn"], []).append(out)
+    res = []
+    for cid in sorted(by_chn):
+        if cid < 1 or cid > len(channels):
+            continue
+        outs = by_chn[cid]
+        times = [i * 1000 for i in range(len(outs))]          # synthetic ordinals
+        values = [_const_value(nodes, o["val"]) for o in outs]
+        pulse_ids = list(range(len(outs)))                    # 0-indexed, per format
+        res.append((channels[cid - 1], times, values, pulse_ids))
+    return res
+
 
 class _Recorder:
     """Mixin that appends (name, args) tuples to a shared transcript list."""
@@ -77,7 +129,7 @@ class DummyExpSeq(_Recorder):
 
     def get_nominal_output(self, pts):
         self._record("get_nominal_output", pts)
-        return []
+        return _synth_nominal_output(self.seq, pts)
 
     # --- run path: never available on the dummy ---------------------------- #
     def _no_hardware(self, *_args, **_kw):
