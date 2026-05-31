@@ -338,6 +338,63 @@ def diff(a, b, path="seq"):
     return None
 
 
+# --------------------------------------------------------------------------- #
+# Comparison-node canonicalization.
+#
+# Comparison operators are mathematically swappable, but Python's operator
+# protocol has no ``__rlt__``: ``const < seqval`` reflects to
+# ``seqval.__gt__(const)``, so the Python front-end serializes it as
+# ``GT{seqval, const}`` where MATLAB's ``const < seqval`` is ``LT{const, seqval}``.
+# These are logically identical (including under IEEE-754 NaN: ``a < b`` and
+# ``b > a`` are both false when either is NaN; ``==`` / ``!=`` likewise). Since
+# reflection only fires with a *constant* on the left, at most one operand is a
+# compound sub-node, so the sub-node ids line up and canonicalizing the
+# comparison node alone is enough to make the two forms compare equal.
+#
+# Orientation rule: express every ordering as LT/LE (flip GT->LT, GE->LE and swap
+# args); EQ/NE are commutative, so sort their two args by a deterministic key.
+# All other node kinds are returned unchanged, so any *non*-swap opcode mistake
+# (e.g. a stray GT where LT was meant, with the same arg order) still diffs.
+# --------------------------------------------------------------------------- #
+_CMP_FLIP = {5: 6, 6: 5, 7: 8, 8: 7}    # LT<->GT, LE<->GE   (opcodes from SeqVal.m)
+_CMP_SYMMETRIC = (9, 10)                # NE, EQ are commutative
+
+
+def _arg_sort_key(arg):
+    return (_ARG_CODE[arg["argtype"]], arg["val"])
+
+
+def canonical_node(node):
+    """Return a canonical form of a node so swappable comparisons compare equal."""
+    op = node["op"]
+    if op in (6, 8):                    # GT, GE -> flip to LT, LE and swap args
+        return {"op": _CMP_FLIP[op], "args": [node["args"][1], node["args"][0]]}
+    if op in _CMP_SYMMETRIC:            # EQ, NE -> sort the two args
+        return {"op": op, "args": sorted(node["args"], key=_arg_sort_key)}
+    return node
+
+
+def normalize(seq):
+    """Copy of ``seq`` with swappable comparison nodes canonicalized.
+
+    Use ``diff(normalize(a), normalize(b))`` for semantic byte-equality: every
+    field must match exactly *except* a comparison node's operator orientation /
+    arg order, which the Python front-end may legitimately reflect vs MATLAB.
+    """
+    out = dict(seq)
+    out["nodes"] = [canonical_node(n) for n in seq["nodes"]]
+    return out
+
+
+def decode_nodes(data):
+    """Decode a ``SeqContext.node_serialized()`` blob: ``[nnodes:4B][nodes...]``."""
+    c = _Cur(data)
+    nodes = [_decode_node(c) for _ in range(c.u32())]
+    if c.i != len(c.d):
+        raise ValueError("trailing %d bytes after nodes" % (len(c.d) - c.i))
+    return nodes
+
+
 def summary(seq):
     n = seq["basicseqs"]
     return ("version=%d  nodes=%d  channels=%d  defvals=%d  slots=%d  "
@@ -382,6 +439,8 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0
+    strict = "--strict" in argv
+    argv = [a for a in argv if a != "--strict"]
     if argv[0] == "--selftest":
         return _selftest(argv[1] if len(argv) > 1 else ".")
     if len(argv) == 1 or (len(argv) == 2 and argv[1] == "--tree"):
@@ -391,12 +450,15 @@ def main(argv):
         else:
             print(summary(seq))
         return 0
-    # two files: compare
+    # two files: compare. By default swappable comparison nodes are canonicalized
+    # so a reflected `const < seqval` matches MATLAB's form; --strict disables it.
     a = decode(load(argv[0]))
     b = decode(load(argv[1]))
+    if not strict:
+        a, b = normalize(a), normalize(b)
     d = diff(a, b)
     if d is None:
-        print("identical")
+        print("identical" if strict else "equivalent")
         return 0
     print("first difference: %s" % d)
     return 1

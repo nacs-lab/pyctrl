@@ -6,9 +6,15 @@ engine. It runs **in parallel** with `matlab_new/` (no changes to MATLAB code)
 and is intended to be added to the `experiment-control` superproject as a git
 submodule. See `../PYTHON_FRONTEND_PLAN.md` for the full phased plan.
 
-## Status: Phase 0 (bootstrap & format pinning)
+## Status: Phase 1 (value math & serializer) — complete
 
-What exists so far:
+Phase 0 (bootstrap & format pinning) and Phase 1 (the value/node serializer) are
+done. The value algebra and node table now serialize **byte-identically** to
+MATLAB: verified both against the `TestSeqContext.m` reference bytes and by a
+direct hex diff of live MATLAB `SeqContext` output vs the Python port (NODES /
+DATA / GLOBAL tables, all identical).
+
+Phase 0 files:
 
 | File | Role |
 |------|------|
@@ -18,7 +24,37 @@ What exists so far:
 | `tools/reference_list.m` | Registry of ~12 sequences to capture (placeholder names, byte round-trip) |
 | `tools/reference_list_engine.m` | Registry of sequences with **real `config.yml` channel names** (engine-accepts check) |
 | `tools/dummy_libnacs.py` | Board-free stand-in for the engine; lets byte-equality CI run with no Zynq board |
-| `tests/` | pytest suite (byte round-trip + dummy-engine + real engine-accepts) |
+
+Phase 1 files (port of `matlab_new/lib/`; class names kept, methods snake_case):
+
+| File | MATLAB source | Role |
+|------|---------------|------|
+| `lib/seq_val.py` | `SeqVal.m` | Build-time value AST: opcodes, operator overloading, math fns, construction-time constant folding, `to_string`, `seqval_isequal` |
+| `lib/seq_context.py` | `SeqContext.m` | Node/value table + the node serializer (`serialize_arg`, `ensure_serialize`, `node_serialized`/`data_serialized`/`global_serialized`, constant interning) |
+| `lib/num_to_str.py` | `num_to_str.m` | Shortest round-tripping decimal string (used by `to_string`) |
+| `lib/interpolate.py` | `interpolate.m` | `OP_INTERP` node builder + numeric interpolation |
+| `lib/ifelse.py` | `ifelse.m` + `SeqVal.ifelse` | `OP_SELECT` node builder + numeric select |
+| `lib/fld.py` `lib/cld.py` `lib/rabi_line.py` | `fld.m` `cld.m` `rabiLine.m` | Numeric helpers |
+| `tests/test_seq_context.py` | `TestSeqContext.m` | AST + folding + **byte-equality** of the serialized tables |
+| `tests/test_num_to_str.py` `tests/test_math.py` | `TestNumToStr.m` `TestMath.m` | Numeric helper specs |
+| `tests/test_serialize.py` | (new) | Byte-order (little-endian) + constant-reuse guards |
+| `tests/test_compare_canonical.py` | (new) | Swappable-comparison canonicalization in `compare_bytes` |
+
+**Comparison operators reflect — and that's OK.** Python has no `__rlt__`, so a
+constant on the *left* of a comparison reflects: `3 < g` dispatches to
+`g.__gt__(3)`, so the front-end serializes `GT{g, 3}` where MATLAB's `3 < g` is
+`LT{3, g}` (and `==`/`!=` swap arg order similarly). These are the *same*
+comparison (true even under IEEE-754 NaN), so **write the operators naturally** —
+`3 < g` is fine. The byte comparator handles the equivalence: `compare_bytes.py`
+has `normalize()` / `canonical_node()` that canonicalize swappable comparison
+nodes (GT→LT, GE→LE with args swapped; EQ/NE args sorted), so a reflected form
+verifies as **equivalent** to MATLAB's. Reflection only fires with a *constant* on
+the left, so at most one operand is a compound sub-node and the node-graph ids stay
+aligned — canonicalizing the comparison node alone is sufficient. It is *not* a
+blanket relaxation: a genuine opcode mistake (e.g. `GT` where `LT` was meant, same
+arg order) still diffs. Arithmetic (`+ - * / **`) and `& | xor` are byte-identical
+either way — their reflected dunders preserve operand order. Use
+`compare_bytes.py a.bin b.bin --strict` to require literal byte-identity.
 
 ## Running the tests
 
