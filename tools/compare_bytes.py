@@ -220,6 +220,11 @@ def decode(data):
     """
     c = _Cur(data)
     seq = {"version": c.u8()}
+    # The engine rejects any version != 0 ("Unknown sequence serialization
+    # version"); the reader is the byte-gate's validator, so it must too --
+    # otherwise a bogus-version blob would silently round-trip as "well-formed".
+    if seq["version"] != 0:
+        raise ValueError("unknown serialization version %d (expected 0)" % seq["version"])
     seq["nodes"] = [_decode_node(c) for _ in range(c.u32())]
     seq["channels"] = [c.cstr() for _ in range(c.u32())]
 

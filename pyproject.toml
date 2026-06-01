@@ -15,10 +15,12 @@ pythonpath = ["lib", "tools", "."]
 testpaths = ["tests"]
 # Default run is fully safe on the shared lab PC: no engine load, no hardware.
 # Run engine checks explicitly with:  pytest -m needs_engine   (compile-only)
+# Run the live MATLAB differential with:  pytest -m needs_matlab  (spawns matlab -batch)
 # Run hardware checks (downtime only): pytest -m needs_hardware
-addopts = "-m 'not needs_hardware and not needs_engine'"
+addopts = "-m 'not needs_hardware and not needs_engine and not needs_matlab'"
 markers = [
     "no_hardware: pure byte/structure math; never loads the engine or touches devices (default)",
     "needs_engine: loads the libnacs engine library; compile-only, no init_run/start (run in a safe window)",
+    "needs_matlab: spawns a headless 'matlab -batch' to capture live ground truth (engine-free; needs MATLAB on PATH or $MATLAB_EXE)",
     "needs_hardware: drives NI DAQ / Siglent AWG / QICK FPGA / Orca camera (downtime only)",
 ]
