@@ -12,9 +12,15 @@ NO-HARDWARE: real config (SeqConfig.load_real) + tick_per_sec = 1e12 (us-scale s
 to 0 ticks at the default 1000 and the build would raise). Engine never loaded.
 
 Covers 15 of the 16 ok-corpus sequences -- the full linear family plus both Rearrange
-branch seqs (2- and 3-basic-seq). EOM616Ramp is intentionally excluded: it reads a live
-MemoryMap value at BUILD time, so byte-equality needs a MemoryMap stub seeded with the
-captured value (a W5 tail, not step-cone work).
+branch seqs (2- and 3-basic-seq). EOM616Ramp is deliberately excluded: alone in the corpus
+it reads a live MemoryMap value at BUILD time, so its bytes depend on lab state, not on the
+sequence definition. pyctrl intentionally does NOT model MemoryMap -- the byte-reproducible
+pattern (used by the Pushout seqs) declares a sequence global and lets the runtime inject
+the persisted value via set_global, keeping the build pure. Revisit EOM616Ramp if/when
+pyctrl grows a real runtime (Phase 5); it uses no step-cone steps, so coverage is complete.
+
+A second, capture-independent test asserts the int->float64 mapping: a faithful build of
+these (all-double) sequences must emit ZERO int32 constants.
 """
 
 import json
@@ -96,3 +102,24 @@ def test_seq_builds_byte_identical(real_config, name, nargin):
             "%s: %d bytes vs reference %d; first diff at %s" % (name, len(got), len(want), d))
     # Repeatable: a fresh build of the same seq serializes identically.
     assert _build(name, nargin).serialize() == got, "%s: build not repeatable" % name
+
+
+# Raw defval Type tag for int32 (SeqVal.m TypeInt32); 3 == float64, 1 == bool.
+_DEFVAL_INT32 = 2
+
+
+@pytest.mark.parametrize("name,nargin", _SEQS, ids=[s[0] for s in _SEQS])
+def test_seq_has_no_int32_constants(real_config, name, nargin):
+    """int->float64 reality check (capture-independent): MATLAB consts/defaults are all
+    `double`, so a faithful build must emit ZERO int32 constants -- a bare-int pulse value
+    like .add('AmpAOM308', 0) has to serialize ARG_CONST_FLOAT64, and every default_vals
+    leaf ARG_CONST_FLOAT64. Guards the int/float mapping even if the reference is absent
+    or regenerated (byte-equality also covers it, but this names the invariant)."""
+    seq = compare_bytes.decode(_build(name, nargin).serialize())
+    for i, node in enumerate(seq["nodes"]):
+        for arg in node["args"]:
+            assert arg["argtype"] != "int32", \
+                "%s: int32 const in value node %d (%r)" % (name, i, node)
+    for dv in seq["defvals"]:
+        assert dv["type"] != _DEFVAL_INT32, \
+            "%s: int32 default value on channel %d" % (name, dv["chnid"])
