@@ -12,6 +12,10 @@ prefer to exercise it in a maintenance window (see PYTHON_FRONTEND_PLAN.md).
 """
 
 _MANAGER = None
+# Mirror of SeqManager.m's override (a MutableRef static): a nonzero value forces
+# tick_per_sec() to return it WITHOUT loading the engine. The MATLAB test suite
+# sets this to 1000 (TestExpSeq.m:31) so byte-equality runs are engine-free.
+_TICK_OVERRIDE = 0
 
 
 def get():
@@ -46,7 +50,19 @@ def load_config_file(fname):
     get().load_config_file(fname)
 
 
+def override_tick_per_sec(val):
+    """Force a fixed tick rate (engine-free). Mirrors SeqManager.override_tick_per_sec.
+
+    Pass 0 to clear the override and fall back to the engine's value.
+    """
+    global _TICK_OVERRIDE
+    _TICK_OVERRIDE = int(val)
+
+
 def tick_per_sec():
+    # Mirror SeqManager.tick_per_sec: return the override if set, else ask the engine.
+    if _TICK_OVERRIDE != 0:
+        return _TICK_OVERRIDE
     return int(get().tick_per_sec())
 
 

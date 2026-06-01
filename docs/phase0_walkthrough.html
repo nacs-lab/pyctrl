@@ -106,8 +106,8 @@
   <div class="sub">The byte-format reader that pins the MATLAB&nbsp;&harr;&nbsp;Python contract, explained with real, byte-verified examples.</div>
   <div class="meta">
     Files under <code>pyctrl/</code> &nbsp;·&nbsp; engine: <code>libnacs</code> &nbsp;·&nbsp;
-    references: <code>matlab_new/lib/test/seq*.json</code> &nbsp;·&nbsp;
-    status: <span class="pill ok">6/6 round-trip exact</span> <span class="pill def">16 tests pass</span>
+    references: <code>matlab_new/lib/test/seq*.json</code> + <code>tests/reference{,_engine}/*.bin</code> &nbsp;·&nbsp;
+    status: <span class="pill ok">Phase 0 complete</span> <span class="pill ok">18/18 round-trip exact</span> <span class="pill ok">engine accepts 6/6</span> <span class="pill def">60 tests pass</span>
   </div>
 </header>
 
@@ -496,6 +496,37 @@ measures:
     so it does not drive hardware. Even so, because it loads the engine on the shared PC, the test that uses
     it is opt-in (see next section).
   </div>
+
+  <h3>The interpreter reality</h3>
+  <p>Only the <strong>Python&nbsp;3.8</strong> install at
+  <code>…\Programs\Python\Python38</code> can <code>import libnacs</code> (the build MATLAB's
+  <code>pyenv</code> uses; anaconda&nbsp;3.12 and mingw&nbsp;3.11 cannot). The engine run therefore uses an
+  isolated venv that inherits <code>libnacs</code> but keeps <code>pytest</code> out of MATLAB's base:</p>
+<pre><span class="cmt"># one-time setup</span>
+Python38\python.exe -m venv <span class="str">--system-site-packages</span> .venv-engine
+.venv-engine\Scripts\python -m pip install pytest</pre>
+  <div class="callout warn">
+    <span class="t">Windows teardown wart (and the fix)</span>
+    <code>libnacs</code> bundles its own <code>libzmq</code> for device comms. When the engine is loaded but
+    never started (our compile-only checks never call <code>new_run</code>/<code>init_run</code>), libzmq's
+    network layer is never initialised, so its static destructor asserts at process exit
+    (<em>"Successful WSASTARTUP not yet performed"</em>) and the <code>abort()</code> hangs the pytest process
+    <em>after</em> results print. <code>os._exit</code> doesn't help — <code>ExitProcess</code> still runs the
+    engine DLL's detach, which is where it wedges. <code>conftest.py</code>'s <code>pytest_sessionfinish</code>
+    (trylast, <code>--real-engine</code> + Windows only) <code>TerminateProcess</code>-es our own handle with
+    pytest's real status, skipping DLL detach so the run exits cleanly.
+  </div>
+
+  <h3>The board-free stand-in: <code>tools/dummy_libnacs.py</code></h3>
+  <p>So that byte-equality CI runs on <em>any</em> machine — no Zynq board, no NI-DAQ DLLs, no engine — a
+  recorder mirrors the slice of the <code>Manager</code> surface the checks touch (design inspired by
+  brassboard-seq's <code>tests/dummy_artiq.py</code>). <code>create_sequence</code> decodes the bytes with
+  <code>compare_bytes</code> (so a malformed blob raises, exactly like the real engine rejecting it) and
+  returns a handle whose <code>get_builder_dump()</code> renders the decoded structure; every call is logged
+  to a transcript. The run path (<code>init_run</code>/<code>start</code>) raises
+  <code>NotImplementedError</code> so a mis-marked test fails loudly instead of faking hardware.
+  <code>conftest.py</code>'s <code>engine</code> fixture returns the dummy by default and the real engine only
+  under <code>--real-engine</code>.</p>
 </section>
 
 <!-- ============================================================= -->
@@ -508,14 +539,29 @@ cleanup = onCleanup(@() SeqManager.override_tick_per_sec(0));
 ...
 bytes = serialize(s);                              <span class="cmt"># serialize() ONLY — never generate()/run()</span>
 fwrite(fopen([name <span class="str">'.bin'</span>],<span class="str">'w'</span>), bytes, <span class="str">'int8'</span>);</pre>
-  <p><code>tools/reference_list.m</code> supplies the sequences as <code>{name, params, build}</code> entries
-  whose <code>build</code> handles mirror the proven <code>TestExpSeq.m</code> patterns
-  (<code>addStep(len).add('Device/CH', value)</code>, function-handle ramps, a global).</p>
+  <p><code>capture_matlab_reference(out_dir, list_fn)</code> takes an optional reference-list function, so the
+  <em>same</em> capture path produces two sets:</p>
+  <table>
+    <thead><tr><th>List</th><th>Channel names</th><th>Out dir</th><th>Used by</th></tr></thead>
+    <tbody>
+      <tr><td><code>reference_list.m</code> (12 seqs)</td><td><code>Device/CH</code> placeholders</td><td><code>tests/reference/</code></td><td>byte round-trip</td></tr>
+      <tr><td><code>reference_list_engine.m</code> (6 seqs)</td><td>real <code>config.yml</code> names</td><td><code>tests/reference_engine/</code></td><td>engine-accepts</td></tr>
+    </tbody>
+  </table>
+  <p>The 12 round-trip sequences span the representative shapes from the plan — empty, single TTL, DDS
+  freq/amp set, analog ramp, two-/multi-channel, nested subsequences, conditional/branch, globals,
+  measurement, floating/align, and a long pulse train — all mirroring proven <code>TestExpSeq.m</code>
+  patterns. The 6 engine sequences use backend names the engine config knows:
+  <code>FPGA1/TTL1</code>, <code>FPGA1/DDS0/FREQ|AMP</code>, and <code>NiDAQ/Dev1/0</code> (the NI-DAQ name
+  <em>requires</em> the trailing channel id — <code>NiDAQ/Dev1</code> alone is rejected).</p>
   <div class="callout warn">
     <span class="t">Run in a separate MATLAB session</span>
     Because <code>SeqManager</code> is a singleton, run this in a <em>different</em> MATLAB than the one driving
-    the experiment. With the override set, no engine loads and no device is touched — but never share the
-    session that is mid-run.
+    the experiment. The simplest safe way is a fresh headless batch — it cannot collide with the experiment's
+    session:
+<pre>matlab -batch "cd pyctrl/tools; capture_matlab_reference; <span class="cmt">%% round-trip set</span>
+  capture_matlab_reference(fullfile('..','tests','reference_engine'), @reference_list_engine)"</pre>
+    With the tick override set, no engine loads and no device is touched.
   </div>
 </section>
 
@@ -526,15 +572,19 @@ fwrite(fopen([name <span class="str">'.bin'</span>],<span class="str">'w'</span>
     <thead><tr><th>File</th><th>Marker</th><th>What it checks</th></tr></thead>
     <tbody>
       <tr><td><code>test_env.py</code></td><td><span class="pill ok">no_hardware</span></td><td>imports resolve; references present</td></tr>
-      <tr><td><code>test_reader_roundtrip.py</code></td><td><span class="pill ok">no_hardware</span></td><td><code>encode(decode(x))==x</code> for every reference; well-formedness; <code>diff</code> reports a planted change</td></tr>
-      <tr><td><code>test_engine_loads.py</code></td><td><span class="pill def">needs_engine</span></td><td>engine accepts our bytes (compile-only); <em>deselected by default</em></td></tr>
+      <tr><td><code>test_reader_roundtrip.py</code></td><td><span class="pill ok">no_hardware</span></td><td><code>encode(decode(x))==x</code> for all 18 references; well-formedness; <code>diff</code> reports a planted change</td></tr>
+      <tr><td><code>test_dummy_engine.py</code></td><td><span class="pill ok">no_hardware</span></td><td>the board-free <code>dummy_libnacs</code> accepts every reference, rejects a corrupt blob, and refuses the run path — runs anywhere, no engine</td></tr>
+      <tr><td><code>test_engine_loads.py</code></td><td><span class="pill def">needs_engine</span></td><td>the <strong>real</strong> engine accepts our bytes (non-null handle + non-empty dump, <code>enable_dump(True)</code>) and rejects a version-flipped blob; compile-only; <em>deselected by default</em></td></tr>
     </tbody>
   </table>
   <p>The default run is safe on the lab PC — <code>pyproject.toml</code> sets:</p>
 <pre>addopts = <span class="str">"-m 'not needs_hardware and not needs_engine'"</span></pre>
-  <p>so a bare <code>pytest</code> never loads the engine or opens a device. The current result:</p>
-<pre><span class="cmt"># pytest pyctrl</span>
-16 passed, 2 deselected
+  <p>so a bare <code>pytest</code> never loads the engine or opens a device. The current results:</p>
+<pre><span class="cmt"># pytest pyctrl                       (default — no engine, no hardware)</span>
+60 passed, 7 deselected
+
+<span class="cmt"># .venv-engine\Scripts\python -m pytest pyctrl -m needs_engine --real-engine</span>
+7 passed                              <span class="cmt"># engine compiles all 6 captured byte arrays + rejects a corrupt one</span>
 
 <span class="cmt"># python pyctrl/tools/compare_bytes.py --selftest matlab_new/lib/test</span>
 ok    seq1.json   473 bytes | version=0 nodes=15 channels=4 ... outputs=3 measures=1
@@ -542,6 +592,9 @@ ok    seq2_waitbg.json 702 bytes | ... nodes=16 outputs=9 measures=2
 ok    seq3_waitfor.json 174 bytes | ... nodes=3 times=2
 ok    seq4.json … ok seq5.json … ok seq6.json …
 6/6 reference files decoded and round-tripped exactly</pre>
+  <p class="note">The reader round-trip covers all 18 references (6 committed <code>seq*.json</code> + 12
+  freshly captured <code>tests/reference/*.bin</code>); <code>--selftest</code> scans the <code>seq*.json</code>
+  in one directory.</p>
 
   <h3>The diff tool in action</h3>
   <p>When two sequences differ, <code>diff</code> reports the <strong>first field path</strong>, not a raw byte
@@ -563,11 +616,22 @@ first difference: seq.basicseqs[0].outputs[2].chn: 12 != 11</pre>
   <code>SeqContext</code> / <code>serialize()</code> starts producing bytes, we assert they
   <code>decode()</code> to the same structure (or match byte-for-byte) against these very references, and
   <code>diff</code> pinpoints any divergence down to the field.</p>
+  <p>The headline Phase 0 milestone is now also met: a Python process on this machine handed each
+  MATLAB-produced byte array to the real <code>libnacs</code> engine via <code>create_sequence</code> and got
+  a valid compiled handle back — the <em>"engine accepts external bytes"</em> proof — with no
+  <code>init_run</code>/<code>start</code> and no hardware. The <code>dummy_libnacs</code> stand-in keeps that
+  same assertion runnable on any machine without the board.</p>
   <div class="callout">
-    <span class="t">Phase 0 status</span>
-    <span class="pill ok">6/6 round-trip exact</span> &nbsp; <span class="pill ok">16 tests pass</span> &nbsp;
-    <span class="pill def">engine check deferred to a maintenance window</span>
+    <span class="t">Phase 0 status — complete</span>
+    <span class="pill ok">18/18 round-trip exact</span> &nbsp; <span class="pill ok">engine accepts 6/6</span> &nbsp;
+    <span class="pill ok">60 tests pass</span> &nbsp; <span class="pill ok">needs_engine 7 pass</span>
   </div>
+  <p class="note" style="margin-top:10px">Aside: re-running the MATLAB <code>lib/test</code> suite on this Windows
+  box shows 8 failures that are pre-existing environment artifacts, not regressions — 7 are a git
+  <code>autocrlf</code> CRLF/LF mismatch in the <code>seq*.txt</code> text comparisons (the
+  <code>serialize()</code> <em>bytes</em> match the references exactly), and one is a teardown
+  <code>rmdir</code> on unclosed file handles in <code>TestFile</code>. The byte contract this document
+  rests on is intact.</p>
 </section>
 
 <!-- ============================================================= -->

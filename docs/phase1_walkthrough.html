@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pyctrl Phase 1 — Code Walkthrough</title>
+<style>
+  :root{
+    --bg:#fbfbfd; --panel:#ffffff; --ink:#1c2230; --muted:#5b6577;
+    --line:#e4e7ee; --accent:#3b4cc0; --accent2:#0b7a75;
+    --code-bg:#f6f7fb; --code-ink:#27324a;
+    --c-ver:#fff0c2; --c-cnt:#d8e6ff; --c-op:#d7f3df; --c-arg:#ecdcff;
+    --c-pay:#eceff4; --c-str:#cdeef0; --c-rec:#ffe1ec;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{display:grid; grid-template-columns:260px minmax(0,1fr); gap:0; max-width:1240px; margin:0 auto;}
+  nav.toc{
+    position:sticky; top:0; align-self:start; height:100vh; overflow:auto;
+    padding:28px 18px 40px; border-right:1px solid var(--line); background:var(--panel);
+  }
+  nav.toc h2{font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin:18px 0 8px}
+  nav.toc a{display:block; color:var(--ink); text-decoration:none; padding:4px 8px; border-radius:7px; font-size:14px}
+  nav.toc a:hover{background:var(--code-bg); color:var(--accent)}
+  nav.toc .brand{font-weight:700; font-size:16px; letter-spacing:.01em}
+  nav.toc .brand span{color:var(--accent)}
+  main{padding:42px 52px 120px; min-width:0}
+  header.hero{border-bottom:1px solid var(--line); padding-bottom:22px; margin-bottom:8px}
+  header.hero h1{font-size:30px; margin:0 0 6px; letter-spacing:-.01em}
+  header.hero .sub{color:var(--muted); font-size:15px}
+  header.hero .meta{margin-top:14px; font-size:13px; color:var(--muted)}
+  header.hero .meta code{background:var(--code-bg); padding:2px 6px; border-radius:5px}
+  section{margin-top:46px; scroll-margin-top:20px}
+  h2.sec{font-size:23px; margin:0 0 4px; padding-top:6px; border-top:3px solid var(--accent); display:inline-block; padding-right:10px}
+  h3{font-size:18px; margin:30px 0 8px; color:var(--ink)}
+  h4{font-size:15px; margin:22px 0 6px; color:var(--accent2); letter-spacing:.01em}
+  p{margin:10px 0}
+  code{font-family:"SF Mono",SFMono-Regular,ui-monospace,"Cascadia Code",Consolas,Menlo,monospace; font-size:.9em}
+  p code,li code,td code{background:var(--code-bg); color:var(--code-ink); padding:1px 6px; border-radius:5px}
+  pre{
+    background:var(--code-bg); border:1px solid var(--line); border-radius:10px;
+    padding:16px 18px; overflow:auto; font-size:13.5px; line-height:1.55;
+    font-family:"SF Mono",SFMono-Regular,ui-monospace,"Cascadia Code",Consolas,Menlo,monospace;
+    color:var(--code-ink); margin:14px 0;
+  }
+  pre .cmt{color:#8a93a6}
+  pre .kw{color:#9333ea} pre .str{color:#0b7a75} pre .num{color:#c2410c} pre .fn{color:#3b4cc0}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:14px}
+  th,td{border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top}
+  th{background:var(--code-bg); font-weight:600}
+  tbody tr:nth-child(even){background:#fafbfe}
+  .callout{border-left:4px solid var(--accent2); background:#f0fbfa; padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0}
+  .callout.warn{border-color:#d97706; background:#fff8ed}
+  .callout .t{font-weight:700; display:block; margin-bottom:3px}
+  .pill{display:inline-block; font-size:11px; font-weight:700; letter-spacing:.04em; padding:2px 9px; border-radius:999px; vertical-align:middle}
+  .pill.ok{background:#d7f3df; color:#136c34} .pill.def{background:#d8e6ff; color:#27408b}
+  .bytes{font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:13px; line-height:2.1; word-spacing:2px}
+  .bytes b{font-weight:400; padding:2px 5px; border-radius:5px; border:1px solid rgba(0,0,0,.06); margin:0 1px; display:inline-block}
+  .by-ver{background:var(--c-ver)} .by-cnt{background:var(--c-cnt)} .by-op{background:var(--c-op)}
+  .by-arg{background:var(--c-arg)} .by-pay{background:var(--c-pay)} .by-str{background:var(--c-str)} .by-rec{background:var(--c-rec)}
+  .legend{display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 16px; font-size:12.5px}
+  .legend span{padding:3px 9px; border-radius:6px; border:1px solid rgba(0,0,0,.06)}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:18px}
+  .grid2 > div{min-width:0}
+  .note{color:var(--muted); font-size:13.5px}
+  .arrow{color:var(--accent); font-weight:700}
+  hr{border:0; border-top:1px solid var(--line); margin:30px 0}
+  @media (max-width:900px){
+    .wrap{grid-template-columns:1fr}
+    nav.toc{position:static; height:auto; border-right:0; border-bottom:1px solid var(--line)}
+    main{padding:28px 20px 80px}
+    .grid2{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc">
+  <div class="brand"><span>pyctrl</span> / Phase 1</div>
+  <div class="note" style="margin-top:6px">Code walkthrough</div>
+  <h2>Contents</h2>
+  <a href="#overview">1. What Phase 1 builds</a>
+  <a href="#seqval">2. SeqVal — the value AST</a>
+  <a href="#types">3. The type mapping</a>
+  <a href="#seqcontext">4. SeqContext — interning &amp; the serializer</a>
+  <a href="#example">5. Worked example: build &rarr; bytes</a>
+  <a href="#compare">6. Comparison operators &amp; canonicalization</a>
+  <a href="#proof">7. Proving byte-equality</a>
+  <a href="#seqplotter">8. The SeqPlotter <code>.seq</code> addition</a>
+  <a href="#tests">9. Tests &amp; status</a>
+  <a href="#appendix">Appendix</a>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>pyctrl Phase&nbsp;1 — Code Walkthrough</h1>
+  <div class="sub">The Python value algebra and node serializer that re-creates MATLAB's <code>serialize()</code> bytes — plus the <code>.seq</code> output writer for SeqPlotter.</div>
+  <div class="meta">
+    Files under <code>pyctrl/lib/</code>, <code>pyctrl/tools/</code> &nbsp;·&nbsp; ports
+    <code>matlab_new/lib/{SeqVal,SeqContext}.m</code> &nbsp;·&nbsp;
+    status: <span class="pill ok">Phase 1 complete</span>
+    <span class="pill ok">MATLAB↔Python byte-identical</span>
+    <span class="pill def">104 tests pass</span>
+  </div>
+</header>
+
+<!-- ============================================================= -->
+<section id="overview">
+  <h2 class="sec">1. What Phase 1 builds</h2>
+  <p>Phase 0 proved we can <em>read</em> the byte blob MATLAB hands the engine. Phase 1 builds the half that
+  <em>produces</em> it: the value algebra (<code>SeqVal</code>) and the node table + serializer
+  (<code>SeqContext</code>). When you write an expression like <code>g(0) * 1000</code> in Python, these two
+  classes turn it into the exact same numbered node graph and bytes the MATLAB stack emits.</p>
+
+<pre>Python expression  <span class="cmt"># e.g. g0 * m1, or round(g0 * 1000)</span>
+        │  <span class="fn">SeqVal</span> operator overloading        <span class="cmt"># lib/seq_val.py</span>
+        ▼
+build-time expression tree (head + args)
+        │  <span class="fn">SeqContext.get_val_id / ensure_serialize</span>   <span class="cmt"># lib/seq_context.py</span>
+        ▼
+numbered node table  ──►  <span class="fn">node_serialized()</span> bytes  ── must equal MATLAB ──┐
+        ▲                                                                   │
+        └────────────── compare_bytes.decode() (Phase 0 reader) ───────────┘</pre>
+
+  <div class="callout">
+    <span class="t">THE ONE RULE, restated for Phase 1</span>
+    For any value graph pyctrl builds, the serialized node / data / global tables must be
+    <strong>byte-identical</strong> to MATLAB's. A SeqVal is a pure <em>build-time</em> AST — it is never
+    evaluated in Python; the libnacs engine evaluates it after deserialization. So Phase 1 is entirely
+    NO-HARDWARE: it is byte math, checked against MATLAB output, safe to run during a live experiment.
+  </div>
+
+  <h4>What was ported</h4>
+  <table>
+    <thead><tr><th>pyctrl file</th><th>MATLAB source</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>lib/seq_val.py</code></td><td><code>SeqVal.m</code></td><td>value AST: 50 opcodes, operator overloading, ~40 math fns, construction-time constant folding, <code>to_string</code>, <code>seqval_isequal</code></td></tr>
+      <tr><td><code>lib/seq_context.py</code></td><td><code>SeqContext.m</code></td><td>node/value table + node serializer (<code>serialize_arg</code>, <code>ensure_serialize</code>, the node/data/global table writers, constant interning)</td></tr>
+      <tr><td><code>lib/num_to_str.py</code></td><td><code>num_to_str.m</code></td><td>shortest round-tripping decimal string (used by <code>to_string</code>)</td></tr>
+      <tr><td><code>lib/interpolate.py</code> · <code>lib/ifelse.py</code></td><td><code>interpolate.m</code> · <code>ifelse.m</code></td><td><code>OP_INTERP</code> / <code>OP_SELECT</code> node builders + numeric evaluation</td></tr>
+      <tr><td><code>lib/fld.py</code> · <code>lib/cld.py</code> · <code>lib/rabi_line.py</code></td><td><code>fld.m</code> · <code>cld.m</code> · <code>rabiLine.m</code></td><td>numeric helpers</td></tr>
+    </tbody>
+  </table>
+  <p class="note">Naming follows the governing transliteration rule: class names kept verbatim
+  (<code>SeqVal</code>, <code>SeqContext</code>), methods snake_case (<code>getValID</code> &rarr;
+  <code>get_val_id</code>), one class per file.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="seqval">
+  <h2 class="sec">2. SeqVal — the value AST</h2>
+  <p>A <code>SeqVal</code> is one node of an expression tree: a <code>head</code> (an opcode, or a negative
+  tag for a leaf), a list of <code>args</code>, the owning <code>ctx</code>, and a <code>node_id</code>
+  (0 until serialized). Arithmetic is built by overloading Python's operators, so ordinary syntax grows the
+  tree:</p>
+<pre>e2 = g0 * m1          <span class="cmt"># SeqVal(OP_MUL, [g0, m1], ctx)</span>
+e5 = interpolate(arg0, e2, e3, [1,2,7,3,4,5])   <span class="cmt"># SeqVal(OP_INTERP, [arg0, e2, e3-e2, data], ctx)</span>
+v  = round(g0 * 1000) <span class="cmt"># SeqVal(OP_RINT, [SeqVal(OP_MUL, [g0, 1000.0])])</span></pre>
+
+  <h4>Leaves vs operations</h4>
+  <p>Three leaf kinds carry a negative <code>head</code> so they can never collide with an opcode:
+  <code>H_ARG = -3</code> (<code>arg(i)</code>, a sub-sequence parameter), <code>H_MEASURE = -1</code>
+  (<code>m(id)</code>, a value measured mid-sequence), <code>H_GLOBAL = -2</code> (<code>g(i)</code>, a
+  runtime-settable slot). Everything else is an operation whose <code>head</code> is an opcode 1–50.
+  Constants are not SeqVals at all — a bare Python <code>float</code>/<code>int</code>/<code>bool</code>
+  rides directly as an arg.</p>
+
+  <h4>Construction-time constant folding</h4>
+  <p>MATLAB folds trivial expressions as it builds them, and the byte output depends on it, so the port
+  reproduces it <em>exactly</em>:</p>
+<pre>g0 + 0   <span class="arrow">&rarr;</span> g0          0 * g1  <span class="arrow">&rarr;</span> <span class="kw">False</span>      g0 - g0 <span class="arrow">&rarr;</span> 0
+g0 ** 2  <span class="arrow">&rarr;</span> g0 * g0     g0 ** 0 <span class="arrow">&rarr;</span> int32(1)  1 ** g1 <span class="arrow">&rarr;</span> 1
+xor(g0, 1) <span class="arrow">&rarr;</span> ~g0       ifelse(<span class="kw">True</span>, g0, g1) <span class="arrow">&rarr;</span> g0</pre>
+  <p>These short-circuits are why the equality check used during folding,
+  <code>seqval_isequal(a, b)</code>, is a <em>structural</em> recursion (head + args, type-insensitive for
+  numerics) — it must mirror MATLAB's <code>isequal</code>, not Python identity. (Note <code>g0 - g0</code>
+  folds to the double <code>0</code>, but <code>g0 * 0</code> folds to the logical <code>False</code> — the
+  same distinction MATLAB makes, and it matters for which constant tag is serialized.)</p>
+
+  <div class="callout">
+    <span class="t">No local evaluator (by design)</span>
+    pyctrl never computes the numeric value of a SeqVal — the engine does, every shot, because globals and
+    measures are unknown at build time. So <code>seq_val.py</code> is a pure build-time AST. (This trivially
+    satisfies the build/eval split the plan borrows from brassboard-seq's <code>rtval</code>: there is simply
+    no evaluator to split off.)
+  </div>
+</section>
+
+<!-- ============================================================= -->
+<section id="types">
+  <h2 class="sec">3. The type mapping</h2>
+  <p>The serialized constant tag (<code>bool</code> / <code>int32</code> / <code>float64</code>) is chosen by
+  the Python type of the value, mapped to mirror MATLAB's <code>isfloat</code> / <code>islogical</code> /
+  <code>isinteger</code> dispatch. The one surprise: a <strong>bare Python <code>int</code> is a
+  <code>float64</code></strong>, because a bare MATLAB literal (e.g. <code>3</code>) is a
+  <code>double</code>. To get an int32 constant you use a numpy integer, exactly as MATLAB needs
+  <code>int32(3)</code>.</p>
+  <table>
+    <thead><tr><th>Python value</th><th>Serialized as</th><th>MATLAB equivalent</th></tr></thead>
+    <tbody>
+      <tr><td><code>float</code> / <code>numpy.floating</code></td><td>float64 (<code>ArgConstFloat64</code>)</td><td><code>1.3</code>, <code>double(x)</code></td></tr>
+      <tr><td><code>int</code> (bare Python int)</td><td>float64</td><td><code>3</code> (a bare literal — a <code>double</code>)</td></tr>
+      <tr><td><code>bool</code> / <code>numpy.bool_</code></td><td>bool (<code>ArgConstBool</code>)</td><td><code>true</code> / <code>false</code></td></tr>
+      <tr><td><code>numpy.integer</code> (int8/16/32/64, uint*)</td><td>int32 (<code>ArgConstInt32</code>)</td><td><code>int32(3)</code>, <code>int8(23)</code></td></tr>
+    </tbody>
+  </table>
+  <p class="note">All numpy integer widths intern as the same int32 constant
+  (<code>int8(23)</code> and <code>int16(23)</code> share one node), matching MATLAB's <code>int32(val)</code>
+  in <code>getValID</code>. The single helper <code>_arg_kind()</code> performs this classification and is
+  used by both <code>serialize_arg</code> and <code>get_val_id</code> so they can never disagree.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="seqcontext">
+  <h2 class="sec">4. SeqContext — interning &amp; the serializer</h2>
+  <p><code>SeqContext</code> is the per-sequence bookkeeping table. It mints the leaf factories
+  (<code>get_arg</code>, <code>new_measure</code>, <code>new_global</code>), interns constants, and — the
+  heart of Phase 1 — serializes nodes into the byte layout. The byte format is the value layer of the Phase-0
+  format: <code>[nnodes:4B][ node record × nnodes ]</code>, each record <code>[opcode:1B][ arg × arity ]</code>
+  with self-describing args <code>[argtype:1B][payload]</code>.</p>
+
+  <h4>The two entry points</h4>
+  <ul>
+    <li><code>get_val_id(val)</code> — intern a value as a <strong>top-level</strong> node and return its
+      1-based id. Constants get an <code>OP_IDENTITY</code> wrapper node (and are de-duplicated); a SeqVal is
+      serialized if it has no id yet.</li>
+    <li><code>serialize_arg(res, arg)</code> — append one argument to a node being built. Leaves
+      (<code>arg</code>/<code>measure</code>/<code>global</code>) and constants are written <em>inline</em>;
+      a composite SeqVal is written as <code>ArgNode</code> + the id of its node (serializing it first if
+      needed). This inline-vs-reference split is what makes the table a shared DAG.</li>
+  </ul>
+
+  <h4>One naming collision worth knowing</h4>
+  <p>MATLAB has both a private property <code>node_serialized</code> (the storage cell array) and a method
+  <code>nodeSerialized()</code>. They snake_case to the same name, so the port stores the list as
+  <code>self._node_serialized</code> (it is <code>Access=private</code> in MATLAB anyway) and keeps the
+  method as <code>node_serialized()</code>.</p>
+
+  <div class="callout warn">
+    <span class="t">Little-endian everywhere</span>
+    Every multibyte field is packed with <code>struct '&lt;'</code> to match MATLAB <code>typecast(...,'int8')</code>
+    on x86. Wrong byte order is the single most common serialization bug, so <code>test_serialize.py</code>
+    pins it directly (e.g. <code>1.0</code> &rarr; <code>00 00 00 00 00 00 f0 3f</code>).
+  </div>
+</section>
+
+<!-- ============================================================= -->
+<section id="example">
+  <h2 class="sec">5. Worked example: build &rarr; bytes</h2>
+  <p>This is the real node table from the <code>TestSeqContext</code> port — the same construction MATLAB's
+  <code>dotest</code> builds. The Python below produces the byte table on the right (shown verified against
+  MATLAB in &sect;7).</p>
+
+  <div class="legend">
+    <span class="by-cnt">count (uint32)</span>
+    <span class="by-op">opcode</span>
+    <span class="by-arg">arg type</span>
+    <span class="by-pay">payload</span>
+  </div>
+
+<pre>ctx = SeqContext()
+arg0 = ctx.get_arg(0);  m1, _ = ctx.new_measure()
+g0, _ = ctx.new_global(SeqVal.TYPE_BOOL)
+e2 = g0 * m1                      <span class="cmt"># OP_MUL(global 0, measure 1)</span>
+ctx.get_val_id(1.3)               <span class="cmt"># node 1: const float64</span>
+ctx.get_val_id(<span class="kw">True</span>)              <span class="cmt"># node 2: const bool</span>
+ctx.get_val_id(np.int8(23))       <span class="cmt"># node 3: const int32</span>
+ctx.get_val_id(e2)                <span class="cmt"># node 4: g0 * m1</span></pre>
+
+  <h4>The first four nodes, byte by byte</h4>
+  <div class="bytes">
+    <b class="by-cnt">0f 00 00 00</b> <span class="note">nnodes = 15 (the full dotest graph)</span><br>
+    <b class="by-op">32</b> <b class="by-arg">02</b> <b class="by-pay">cd cc cc cc cc cc f4 3f</b>
+      <span class="note">node 1 = identity( float64 <b>1.3</b> ) — 0x3ff4cccccccccccd, little-endian</span><br>
+    <b class="by-op">32</b> <b class="by-arg">00</b> <b class="by-pay">01</b>
+      <span class="note">node 2 = identity( bool <b>true</b> )</span><br>
+    <b class="by-op">32</b> <b class="by-arg">01</b> <b class="by-pay">17 00 00 00</b>
+      <span class="note">node 3 = identity( int32 <b>23</b> ) — 0x17</span><br>
+    <b class="by-op">03</b> <b class="by-arg">05</b> <b class="by-pay">00 00 00 00</b>
+      <b class="by-arg">04</b> <b class="by-pay">01 00 00 00</b>
+      <span class="note">node 4 = mul( global #0 , measure #1 ) = g(0) * m(1)</span>
+  </div>
+  <p>Node 4 shows the inline-leaf rule: <code>g0</code> and <code>m1</code> are leaves, so they are written
+  straight into the <code>OP_MUL</code> record as <code>ArgGlobal</code>/<code>ArgMeasure</code> — no separate
+  rows. A composite operand (say a nested <code>e4 = e3 - e2</code>) would instead appear as
+  <code>ArgNode</code> + its id, which is how <code>(g(0)*2)*1000</code>-style trees become a shared graph.
+  <code>OP_IDENTITY</code> (50) is the uniform wrapper for a bare constant that needs its own id.</p>
+
+  <h4>Interning &amp; de-duplication</h4>
+  <p>Three separate caches make each distinct constant appear once: <code>const_f64_ids</code> (keyed by the
+  8 packed bytes, so it splits <code>+0.0</code>/<code>-0.0</code> like MATLAB's hash),
+  <code>const_i32_ids</code>, and <code>const_b_ids</code>. Interpolation tables are de-duplicated the same
+  way in <code>get_data_id</code> — the dotest's two <code>interp</code> calls that share
+  <code>[1,2,7,3,4,5]</code> reference one data entry, exactly as MATLAB packs them.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="compare">
+  <h2 class="sec">6. Comparison operators &amp; canonicalization</h2>
+  <p>One Python-specific wrinkle is worth its own section, because it shapes how comparisons are written and
+  verified. Python has no <code>__rlt__</code>: a constant on the <em>left</em> of a comparison reflects to
+  the opposite operator on the right operand.</p>
+<pre>3 &lt; g     <span class="cmt"># Python evaluates int.__lt__(3, g) -&gt; NotImplemented</span>
+          <span class="cmt"># then g.__gt__(3)  =&gt;  GT{g, 3}</span>
+
+3 &lt; g     <span class="cmt"># MATLAB: lt(3, g)  =&gt;  LT{3, g}</span></pre>
+  <p>So the front-end serializes <code>GT{g,3}</code> where MATLAB serializes <code>LT{3,g}</code>. These are
+  the <em>same</em> comparison (<code>3 &lt; g &equiv; g &gt; 3</code>, true even under IEEE-754 NaN, where both are
+  false) — but the bytes differ: a different opcode and swapped args. Arithmetic does <strong>not</strong>
+  have this problem; its reflected dunders (<code>__radd__</code> …) preserve operand order, so
+  <code>3 - g</code> serializes identically to MATLAB.</p>
+
+  <div class="callout">
+    <span class="t">The decision: keep operators ergonomic, make the comparator smart</span>
+    Rather than force porters to write <code>lt(3, g)</code> instead of <code>3 &lt; g</code> (tedious and
+    un-Pythonic), the <strong>byte comparator</strong> canonicalizes swappable comparison nodes. So
+    <code>3 &lt; g</code> is fine to write; verification treats the reflected form as equivalent.
+  </div>
+
+  <p><code>compare_bytes.py</code> grew <code>canonical_node()</code> / <code>normalize()</code>: orderings
+  are expressed as LT/LE (flip <code>GT&rarr;LT</code>, <code>GE&rarr;LE</code> and swap args), and the
+  commutative <code>EQ</code>/<code>NE</code> have their two args sorted. After that, the two forms are equal:</p>
+  <div class="grid2">
+    <div>
+      <div class="bytes"><span class="note">Python <code>3 &lt; g0</code> &rarr; GT{g0, 3}:</span><br>
+        <b class="by-op">06</b> <b class="by-arg">05</b> <b class="by-pay">00 00 00 00</b>
+        <b class="by-arg">02</b> <b class="by-pay">… 08 40</b></div>
+    </div>
+    <div>
+      <div class="bytes"><span class="note">MATLAB <code>3 &lt; g0</code> &rarr; LT{3, g0}:</span><br>
+        <b class="by-op">05</b> <b class="by-arg">02</b> <b class="by-pay">… 08 40</b>
+        <b class="by-arg">05</b> <b class="by-pay">00 00 00 00</b></div>
+    </div>
+  </div>
+  <p><code>canonical_node(GT{g0,3})</code> flips to <code>LT{3,g0}</code> &rarr; the two match.
+  <code>test_compare_canonical.py</code> proves this end to end for <code>&lt; &gt; &lt;= &gt;=</code>.</p>
+
+  <div class="callout warn">
+    <span class="t">Narrow and safe — not a blanket relaxation</span>
+    Reflection only fires with a <em>constant</em> on the left, so at most one operand is a compound
+    sub-node and the node-graph ids stay aligned — canonicalizing the comparison node alone is sufficient. A
+    genuine opcode mistake (e.g. <code>GT</code> where <code>LT</code> was meant, <em>same</em> arg order)
+    still diffs. <code>compare_bytes.py … --strict</code> requires literal byte-identity. THE ONE RULE is now
+    "byte-identical up to comparison-operator orientation."
+  </div>
+</section>
+
+<!-- ============================================================= -->
+<section id="proof">
+  <h2 class="sec">7. Proving byte-equality</h2>
+  <p>Phase 1 correctness rests on three checks, strongest first:</p>
+  <ol>
+    <li><strong>Ported reference bytes.</strong> <code>test_seq_context.py</code> reproduces
+      <code>TestSeqContext.m</code>, asserting the exact <code>node_serialized()</code> /
+      <code>data_serialized()</code> / <code>global_serialized()</code> bytes the MATLAB test pins.</li>
+    <li><strong>Live MATLAB still emits those bytes.</strong> Running the MATLAB suite on this machine —
+      <code>TestSeqContext</code> 5/5, <code>TestNumToStr</code> 5/5, <code>TestMath</code> 4/4 — confirms the
+      reference literals are what MATLAB produces today.</li>
+    <li><strong>Direct hex diff (transcription-free).</strong> The same dotest graph was built in <em>live
+      MATLAB</em> and in Python and the raw tables compared — byte-identical:</li>
+  </ol>
+<pre><span class="cmt"># MATLAB  tohex(ctx.nodeSerialized())   vs   Python  ctx.node_serialized().hex()</span>
+NODES  : MATCH   (171 bytes)
+DATA   : MATCH   (100 bytes)
+GLOBAL : MATCH   (6 bytes)
+RESULT : ALL THREE TABLES BYTE-IDENTICAL (MATLAB == Python)</pre>
+  <p>The first byte of <code>NODES</code> is the <code>0f 00 00 00</code> (15 nodes) seen in &sect;5; the
+  <code>DATA</code> table is the two shared interpolation vectors; <code>GLOBAL</code> is
+  <code>02 00 00 00 01 03</code> — two slots, types bool(1) and float64(3).</p>
+  <div class="callout">
+    <span class="t">Phase 1 status — complete</span>
+    <span class="pill ok">MATLAB↔Python byte-identical</span> &nbsp;
+    <span class="pill ok">MATLAB suite 14/14 (SeqContext+NumToStr+Math)</span> &nbsp;
+    <span class="pill ok">104 tests pass</span>
+  </div>
+</section>
+
+<!-- ============================================================= -->
+<section id="seqplotter">
+  <h2 class="sec">8. The SeqPlotter <code>.seq</code> addition</h2>
+  <p>Alongside the serializer sits a second, <em>output-only</em> format: <code>.seq</code>, the
+  <strong>flattened</strong> sequence that <a href="https://github.com/nacs-lab/SeqPlotter">SeqPlotter</a>
+  reads to draw what each channel actually does over time. It is not <code>serialize()</code>:</p>
+  <table>
+    <thead><tr><th></th><th><code>serialize()</code> (&sect;1–7)</th><th><code>.seq</code> (this section)</th></tr></thead>
+    <tbody>
+      <tr><td>Contents</td><td><em>symbolic</em> node graph + tables</td><td><em>evaluated</em> per-channel <code>(time, value, pulse_id)</code> points</td></tr>
+      <tr><td>Consumer</td><td>the libnacs engine (compiles it)</td><td>SeqPlotter (a Dash/Plotly viewer)</td></tr>
+      <tr><td>Who computes it</td><td>built by SeqVal/SeqContext</td><td>the <strong>engine</strong> — <code>get_nominal_output(pts_per_ramp)</code></td></tr>
+      <tr><td>Bound by THE ONE RULE?</td><td><strong>yes</strong> — fed to the engine</td><td><strong>no</strong> — a viewer artifact, never fed back</td></tr>
+    </tbody>
+  </table>
+
+  <h4>What pyctrl does (and does not) do</h4>
+  <p>Crucially, pyctrl does <strong>not</strong> re-evaluate the sequence in Python. The engine already
+  produces the points; <code>lib/dump_output.py</code> only orchestrates the engine call and packs the
+  result, delegating the actual byte layout to <code>tools/compare_seq_bytes.py</code> so reader and writer
+  share one source of truth:</p>
+<pre><span class="kw">def</span> <span class="fn">dump_output</span>(engine_seq, pts_per_ramp=100, seq_name=<span class="str">""</span>, params=<span class="kw">None</span>, inverse_chn_map=<span class="kw">None</span>):
+    res = engine_seq.<span class="fn">get_nominal_output</span>(pts_per_ramp)   <span class="cmt"># engine evaluates</span>
+    channels = <span class="fn">channels_from_nominal_output</span>(res, inverse_chn_map)
+    <span class="kw">return</span> <span class="fn">pack</span>([<span class="fn">build_seq_struct</span>(seq_name, 1, channels, params)])   <span class="cmt"># compare_seq_bytes.encode</span></pre>
+  <p><code>dump_output()</code> handles a single basic sequence and is compile/eval-only (safe on a compiled
+  handle). <code>dump_output_branches()</code> walks <code>init_run &rarr; pre_run &rarr; get_nominal_output
+  &rarr; post_run</code> for multi-branch sequences — <code>init_run</code> is NEEDS-HARDWARE, so it runs only
+  with the real engine in a downtime window (the board-free dummy raises on it by design).</p>
+
+  <h4>The <code>.seq</code> byte format</h4>
+  <p>Verified by an exact round-trip of a real 132,855-byte MATLAB sample
+  (<code>tests/reference/seqplotter_sample_ryddet.seq</code>). Per point:
+  <code>[time int64][value float64][pulse_id uint32]</code> = 20 bytes, matching SeqPlotter's
+  <code>struct.unpack('&lt;qdI', …)</code>.</p>
+<pre>[nseqs : uint32]
+per seq:
+  [seq_name\0]                 <span class="cmt"># "yyyymmdd_HHMMSS:name" — the only nondeterministic field</span>
+  [seq_idx : uint32]           <span class="cmt"># 1, then 2.. for branch targets</span>
+  [nchns : uint32]
+  per channel:
+    [chn_name\0]               <span class="cmt"># alias-decorated "alias1, alias2 (nominal)" (Phase 3 map)</span>
+    [npts : uint32][ time i64, value f64, pulse_id u32 × npts ]
+  [has_params : uint8][ params\0 ]   <span class="cmt"># JSON; present iff has_params</span>
+[has_bt_info : uint8][ … ]     <span class="cmt"># optional debug backtrace; not needed for plotting</span></pre>
+
+  <h4>The highlight hook for scanned parameters</h4>
+  <p>Each params leaf is <code>{"value", "type", "config_value"?}</code> — there is <strong>no native
+  "this was scanned" flag</strong>. Because <code>.seq</code> is a viewer artifact (not bound by THE ONE
+  RULE), pyctrl is free to <em>enrich</em> it: <code>mark_scanned(params, scanned_paths, scan_dims)</code>
+  injects <code>"scanned": true</code> (and optionally <code>"scan_dim"</code>) into the swept leaves, which
+  the dashboard reads to highlight them. A strict-parity <code>.seq</code> simply omits the call.</p>
+
+  <div class="callout">
+    <span class="t">Where it lands later</span>
+    The seam is ready now; the remaining wiring is mechanical and phase-gated: alias-decorated channel names
+    and the params-JSON block need the channel map + <code>convert_seqval_to_string</code> port
+    (<strong>Phase 3</strong>); the per-scan-point <code>scanned</code> marker needs
+    <code>ScanGroup.get_seq(n)</code> (<strong>Phase 4</strong>); auto-save on each run + the dashboard view
+    come with the run loop (<strong>Phase 5–6</strong>). See <code>docs/seqplotter_integration.md</code>.
+  </div>
+</section>
+
+<!-- ============================================================= -->
+<section id="tests">
+  <h2 class="sec">9. Tests &amp; status</h2>
+  <table>
+    <thead><tr><th>File</th><th>Marker</th><th>What it checks</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_seq_context.py</code></td><td><span class="pill ok">no_hardware</span></td><td>port of <code>TestSeqContext.m</code>: AST, operator overloading, folding, <code>to_string</code>, and the exact serialized node/data/global bytes</td></tr>
+      <tr><td><code>test_num_to_str.py</code> · <code>test_math.py</code></td><td><span class="pill ok">no_hardware</span></td><td>ports of <code>TestNumToStr.m</code> / <code>TestMath.m</code> (number formatting; <code>fld</code>/<code>cld</code>/<code>ifelse</code>/<code>interpolate</code>/<code>rabiLine</code>)</td></tr>
+      <tr><td><code>test_serialize.py</code></td><td><span class="pill ok">no_hardware</span></td><td>byte-order (little-endian) + constant-reuse / data-dedup guards</td></tr>
+      <tr><td><code>test_compare_canonical.py</code></td><td><span class="pill ok">no_hardware</span></td><td>swappable-comparison canonicalization; reflected <code>3 &lt; g</code> verifies equal to the MATLAB form; a real opcode mistake still diffs</td></tr>
+      <tr><td><code>test_dump_output.py</code></td><td><span class="pill ok">no_hardware</span></td><td><code>.seq</code> writer: channel packing, params + <code>mark_scanned</code>, round-trip via <code>compare_seq_bytes</code> (engine stubbed)</td></tr>
+    </tbody>
+  </table>
+<pre><span class="cmt"># pytest pyctrl                    (default — no engine, no hardware)</span>
+104 passed, 7 deselected
+
+<span class="cmt"># python pyctrl/tools/compare_seq_bytes.py --selftest pyctrl/tests/reference</span>
+ok    seqplotter_sample_ryddet.seq   132855 bytes  | nseqs=1 …
+1/1 .seq files decoded and round-tripped exactly</pre>
+  <p class="note">The <code>.seq</code> round-trip of the real 132,855-byte MATLAB sample is the same kind of
+  proof Phase 0 used for <code>serialize()</code>: if the reader/encoder reproduce a genuine sample
+  byte-for-byte, they understand the format completely.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="appendix">
+  <h2 class="sec">Appendix: quick reference</h2>
+
+  <h4>SeqVal head tags</h4>
+  <table>
+    <thead><tr><th>head</th><th>kind</th><th>serialized as</th></tr></thead>
+    <tbody>
+      <tr><td>1–50</td><td>operation (opcode)</td><td><code>[opcode][args]</code> — see Phase 0 appendix for the full opcode/arity tables</td></tr>
+      <tr><td><code>H_ARG = -3</code></td><td>leaf <code>arg(i)</code></td><td><code>OP_IDENTITY</code> + <code>ArgArg</code> + index</td></tr>
+      <tr><td><code>H_MEASURE = -1</code></td><td>leaf <code>m(id)</code></td><td><code>OP_IDENTITY</code> + <code>ArgMeasure</code> + id</td></tr>
+      <tr><td><code>H_GLOBAL = -2</code></td><td>leaf <code>g(i)</code></td><td><code>OP_IDENTITY</code> + <code>ArgGlobal</code> + slot</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Runnable tools</h4>
+  <table>
+    <thead><tr><th>Command</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td><code>compare_bytes.py A B</code></td><td>diff two <code>serialize()</code> blobs (canonicalizes swappable comparisons; <code>--strict</code> for literal)</td></tr>
+      <tr><td><code>compare_seq_bytes.py A B --no-name</code></td><td>diff two <code>.seq</code> blobs, ignoring the timestamp in <code>seq_name</code></td></tr>
+      <tr><td><code>compare_seq_bytes.py --selftest DIR</code></td><td>round-trip every <code>*.seq</code> in a directory</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note" style="margin-top:26px">Generated for pyctrl Phase 1. Source of truth:
+  <code>matlab_new/lib/SeqVal.m</code>, <code>matlab_new/lib/SeqContext.m</code>,
+  <code>matlab_new/lib/ExpSeq.m</code> (<code>.seq</code> format). Runnable forms:
+  <code>pyctrl/lib/seq_context.py</code>, <code>pyctrl/tools/compare_bytes.py</code>,
+  <code>pyctrl/tools/compare_seq_bytes.py</code>. See also <code>docs/phase0_walkthrough.html</code> and
+  <code>docs/seqplotter_integration.md</code>.</p>
+</section>
+
+</main>
+</div>
+</body>
+</html>
