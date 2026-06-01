@@ -40,6 +40,11 @@ function capture_ybseqs_reference(seqs_dir, out_json)
 
     % Sequences that drive hardware directly in-body -> never attempt to build.
     denylist = 'AWG|SLM|AOD|Orca|Pico|Rearrange|HandOver|Trigger|SingleMove|setAWG|[Mm]odulation';
+    % Names that match the denylist but were verified to put ALL hardware
+    % (SLM lock / HTTP) in deferred callbacks (regBeforeStart/regBeforeBSeq/
+    % regAfterEnd), so build + serialize() never touches it. These also add
+    % branch / multi-basic-sequence byte coverage the other captures lack.
+    allowlist = {'RearrangeCommSeq', 'RearrangeCommSeq2'};
 
     % Real production tick rate (config.yml: 1e12 == 1 ps). The synthetic
     % reference_list.m builders could use 1000 because their steps are ms-scale;
@@ -53,7 +58,7 @@ function capture_ybseqs_reference(seqs_dir, out_json)
     n_ok = 0;
     for i = 1:numel(files)
         name = files(i).name(1:end-2);   % strip .m
-        if ~isempty(regexp(name, denylist, 'once'))
+        if ~isempty(regexp(name, denylist, 'once')) && ~any(strcmp(name, allowlist))
             parts{end+1} = entry_json(name, 'skip:hardware-driver', ''); %#ok<AGROW>
             continue;
         end
