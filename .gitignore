@@ -1,3 +1,6 @@
+# Local working memory for pyctrl development (loaded by the pyctrl skill, not versioned)
+.claude/memory/
+
 # Python
 __pycache__/
 *.py[cod]
