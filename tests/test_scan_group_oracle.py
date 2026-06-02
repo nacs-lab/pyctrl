@@ -92,6 +92,72 @@ def build_two_scan_basemerge():
     return g
 
 
+# --- W5 production shapes (twins of scangroup_list.m's real-YbScans builders) - #
+def build_spectrum399_like():
+    g = ScanGroup()
+    g().Pushout.Blue.Amp = 0.25
+    g().Pushout.Blue.Freq.scan(1, [v * 1e6 for v in range(220, 361, 20)])  # 8 points
+    g().Pushout.Time = 10e-3
+    g.runp().NumPerGroup = 10000
+    g.runp().NumImages = 2
+    g.runp().Scramble = 1
+    g.runp().isGrid2 = 0
+    g.runp().isInit = 0
+    g.runp().isHC = 0
+    g().scanname = "spectrum399_like"
+    return g
+
+
+def build_imaging_hist_like():
+    g = ScanGroup()
+    g().Imag399.ExposureTime = 100e-3
+    g().SLM.VServo = 1
+    g().Imag399.FreqDetuning.scan(1, [-5 * 1e6, 0 * 1e6])
+    g().Imag399.Amp.scan(2, [0.2, 0.3])
+    g().Pushout.Green.Amp = 0
+    g().Pushout.Blue.Amp = 0
+    g().Pushout.Time = 10e-3
+    g.runp().NumPerGroup = 2 * 2 * 100
+    g.runp().NumImages = 2
+    g.runp().Scramble = 1
+    g.runp().isInit = 1
+    g.runp().isHC = 0
+    g().scanname = "imaging_hist_like"
+    return g
+
+
+def build_stirap_awg_like():
+    g = ScanGroup()
+    g().Imag399.ExposureTime = 100e-3
+    g().BlueMOT.LoadingTime = 0.5
+    g().AWG.AWG556.carrier_freq_MHz = 142.87
+    g().AWG.AWG556.pulse_width_us = 4
+    g().AWG.AWG556.steepness = 4
+    g().AWG.AWG556.max_amplitude_vpp = 11
+    g().AWG.AWG556.amplitude_scale = 1
+    g().AWG.AWG308.carrier_freq_MHz = 200
+    g().AWG.AWG308.pulse_width_us = 4
+    g().AWG.AWG308.steepness = 4
+    g().AWG.AWG308.max_amplitude_vpp = 6.5
+    g().AWG.AWG308.amplitude_scale = 1
+    g.runp().AWGs = ["AWG556", "AWG308"]
+    g().Pushout.MRabi.Freq = 10863.04
+    g().Pushout.MRabi.Gain = 3000
+    g().Pushout.VRydTrap = 0.1
+    g().Pushout.STIRAP.delay = 1.1e-6
+    g().Pushout.STIRAP.ifReverse = True
+    g().Pushout.STIRAP.reverse_delay = 1.1e-6
+    g().Pushout.STIRAP.gap.scan(1, [v * 1e-9 for v in range(100, 801, 100)])  # 8 points
+    g().Pushout.STIRAP.waitTime = 0.5e-6
+    g.runp().NumPerGroup = 100000
+    g.runp().NumImages = 2
+    g.runp().Scramble = 1
+    g.runp().isInit = 0
+    g.runp().isHC = 0
+    g().scanname = "stirap_awg_like"
+    return g
+
+
 BATTERY = {
     "fixed_only": build_fixed_only,
     "scan_1d": build_scan_1d,
@@ -99,6 +165,9 @@ BATTERY = {
     "awg_like": build_awg_like,
     "mixed_float_1d": build_mixed_float_1d,
     "two_scan_basemerge": build_two_scan_basemerge,
+    "spectrum399_like": build_spectrum399_like,
+    "imaging_hist_like": build_imaging_hist_like,
+    "stirap_awg_like": build_stirap_awg_like,
 }
 
 
