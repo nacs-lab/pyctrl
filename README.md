@@ -6,13 +6,24 @@ engine. It runs **in parallel** with `matlab_new/` (no changes to MATLAB code)
 and is intended to be added to the `experiment-control` superproject as a git
 submodule. See `../PYTHON_FRONTEND_PLAN.md` for the full phased plan.
 
-## Status: Phase 1 (value math & serializer) — complete
+## Status: Phase 4 (ScanGroup) — complete
 
-Phase 0 (bootstrap & format pinning) and Phase 1 (the value/node serializer) are
-done. The value algebra and node table now serialize **byte-identically** to
-MATLAB: verified both against the `TestSeqContext.m` reference bytes and by a
-direct hex diff of live MATLAB `SeqContext` output vs the Python port (NODES /
-DATA / GLOBAL tables, all identical).
+Phases 0–4 are done; **Phase 5 (run loop) is next**. Everything through ScanGroup
+serializes **byte-identically** to MATLAB, verified against `TestSeqContext.m` /
+`TestScanGroup.m` reference bytes, against live-MATLAB hex diffs, and by per-point
+byte oracles over the real `YbScans` corpus.
+
+| Phase | What | State |
+|------|------|-------|
+| 0 | Bootstrap & format pinning (`compare_bytes.py`, `seq_manager.py`, reference capture) | ✅ |
+| 1 | Value math & serializer (`SeqVal` + `SeqContext`, NODES/DATA/GLOBAL tables) | ✅ byte-verified |
+| 2 | Sequence tree & timing (`ExpSeq`/`RootSeq`/`SubSeq`/`TimeStep`) | ✅ byte-verified |
+| 3 | Config & globals (`SeqConfig` from real `expConfig`, `DynProps`/`SubProps`, `Consts()`); 15/16 ok `YbSeqs` build byte-identical | ✅ byte-verified |
+| 4 | `ScanGroup` (EnableScan, core model + DSL, materialization, `usevar`, `ScanAccessTracker`), full `TestScanGroup` parity | ✅ byte-verified |
+| 5 | Run loop (ExptServer / abort / pause; first phase touching the server and hardware) | ⬜ next |
+| 6 | Experiment migration | ⬜ |
+
+Walkthroughs of the completed phases live in `docs/phase{2,3,4}_walkthrough.html`.
 
 Phase 0 files:
 

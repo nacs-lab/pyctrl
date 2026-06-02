@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 3 walkthrough — Config &amp; globals (pyctrl)</title>
+<style>
+  :root {
+    --fg: #1a1a2e; --muted: #5a5a72; --bg: #ffffff; --soft: #f6f8fa;
+    --border: #d8dbe2; --accent: #2d5bd7; --code: #b3306b; --ok: #1a7f37;
+  }
+  * { box-sizing: border-box; }
+  body {
+    max-width: 880px; margin: 0 auto; padding: 2.4rem 1.4rem 5rem;
+    font: 16px/1.65 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .2rem; }
+  h2 { font-size: 1.35rem; margin: 2.6rem 0 .8rem; padding-bottom: .3rem;
+       border-bottom: 2px solid var(--border); }
+  h3 { font-size: 1.08rem; margin: 1.8rem 0 .5rem; }
+  p, li { color: var(--fg); }
+  a { color: var(--accent); }
+  code {
+    font-family: "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    font-size: .87em; background: var(--soft); color: var(--code);
+    padding: .12em .38em; border-radius: 4px; border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--soft); border: 1px solid var(--border); border-radius: 8px;
+    padding: .9rem 1.1rem; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--fg); font-size: .85em; }
+  blockquote {
+    margin: 1rem 0; padding: .6rem 1.1rem; border-left: 4px solid var(--accent);
+    background: #f3f6ff; color: var(--muted); border-radius: 0 6px 6px 0;
+  }
+  blockquote p { color: var(--muted); margin: .5rem 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid var(--border); padding: .5rem .7rem; text-align: left; vertical-align: top; }
+  th { background: #eef1f6; font-weight: 600; }
+  tbody tr:nth-child(even) { background: #fafbfc; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .lede { color: var(--muted); font-size: 1.05rem; margin-top: .2rem; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<h1>Phase 3 walkthrough — Config &amp; globals</h1>
+<p class="lede">pyctrl Python front-end migration · work items W1–W5</p>
+
+<blockquote>
+<p><strong>Goal of Phase 3:</strong> give pyctrl the <strong>real experiment config</strong>
+(<code>expConfig</code> consts, channel aliases, default values), the MATLAB
+<code>obj.field(default)</code> access model (<code>DynProps</code>/<code>SubProps</code>/<code>Consts</code>),
+and a hand-ported <strong>step cone</strong> — enough that real <code>YbSeqs</code> sequences
+can be <em>built in Python</em> and serialize <strong>byte-identical</strong> to the MATLAB capture.</p>
+<p>This doc walks the five work items (W1–W5), the locked design decisions, the non-obvious
+byte-equality fixes, and where the migration stands.</p>
+</blockquote>
+
+<h2>TL;DR</h2>
+<ul>
+  <li><strong>THE ONE RULE</strong> still governs: for every sequence, <code>serialize()</code>
+    must produce a byte array <strong>identical</strong> to MATLAB's. Phase 3 is the first time
+    <em>real production sequences</em> (not synthetic <code>TestExpSeq</code>) are reconstructed
+    end-to-end in Python and byte-checked.</li>
+  <li><strong>15 of the 16 <code>ok</code>-corpus <code>YbSeqs</code> build byte-identical</strong>
+    to <code>tests/reference_ybseqs/ybseqs_reference.json</code> — the full linear family plus
+    both <code>RearrangeComm</code> branch sequences (2- and 3-basic-seq). (<code>EOM616Ramp</code>
+    is deliberately excluded — see W5.)</li>
+  <li>Config is a <strong>committed JSON capture</strong> (<code>tests/reference/config_reference.json</code>),
+    opt-in via <code>SeqConfig.load_real()</code>; the default stays an <strong>empty</strong>
+    config so Phase-2 byte tests are untouched.</li>
+  <li>Full suite: <span class="ok">284 passed / 13 deselected</span>, <code>no_hardware</code>
+    (engine never loaded).</li>
+  <li>Status: <strong>W1–W5 done</strong> (W6 was folded into W2). Only
+    <strong>W7 (globals round-trip, <code>needs_engine</code>)</strong> remains before Phase 4 (ScanGroup).</li>
+</ul>
+
+<h2>The byte oracle — how a Phase-3 build is checked</h2>
+<table>
+  <thead><tr><th>Knob</th><th>Phase-2 synthetic (<code>TestExpSeq</code>)</th><th>Phase-3 real sequences</th></tr></thead>
+  <tbody>
+    <tr><td>Config</td><td>empty default (<code>SeqConfig.get()</code>)</td><td>real <code>SeqConfig.load_real()</code></td></tr>
+    <tr><td>Tick rate</td><td><code>override_tick_per_sec(1000)</code></td><td><code>override_tick_per_sec(1e12)</code> (1 ps; µs-scale steps round to 0 ticks at 1000 and the build <em>raises</em>)</td></tr>
+    <tr><td>Reference</td><td><code>matlab_new/lib/test/seq*.json</code></td><td><code>tests/reference_ybseqs/ybseqs_reference.json</code></td></tr>
+    <tr><td>Engine</td><td>never loaded</td><td>never loaded</td></tr>
+  </tbody>
+</table>
+
+<pre><code># safe default (no engine, no hardware) — runs the whole Phase-3 suite
+pytest pyctrl
+# just the real-sequence byte builds + int/float canary
+pytest pyctrl/tests/test_ybseqs_build.py -v</code></pre>
+
+<p>Both <code>config_reference.json</code> and <code>ybseqs_reference.json</code> are captured
+<strong>engine-free</strong> in a separate MATLAB session
+(<code>tools/capture_config_reference.m</code>, <code>tools/capture_ybseqs_reference.m</code>);
+re-capture them <strong>together</strong> from the same <code>expConfig.m</code> state so config
+and sequence bytes stay consistent.</p>
+
+<h2>The work items</h2>
+<table>
+  <thead><tr><th>WI</th><th>What</th><th>File(s)</th><th>Commit</th></tr></thead>
+  <tbody>
+    <tr><td>W1</td><td><code>SeqConfig</code> loader (real config opt-in, channel translation, float-coercion)</td><td><code>lib/seq_config.py</code>, <code>tests/test_seq_config.py</code></td><td><code>efa4e1d</code></td></tr>
+    <tr><td>W2</td><td>Faithful <code>DynProps</code> + <code>SubProps</code> (default-fallback, access tracking, handle aliasing)</td><td><code>lib/dyn_props.py</code>, <code>lib/sub_props.py</code>, <code>tests/test_dyn_props.py</code></td><td><code>8614672</code></td></tr>
+    <tr><td>W3</td><td><code>Consts()</code> over the active config's consts</td><td><code>lib/consts.py</code>, <code>tests/test_consts.py</code></td><td><code>d913a2d</code></td></tr>
+    <tr><td>W4</td><td>Step cone (16 steps) + 15 ok seqs, byte-built</td><td><code>YbSteps/*.py</code>, <code>YbSeqs/*.py</code>, <code>tests/test_ybseqs_build.py</code></td><td><code>9efb8e3</code></td></tr>
+    <tr><td>W5</td><td>Finalize corpus at 15/16 + int→float64 canary</td><td><code>tests/test_ybseqs_build.py</code></td><td><code>11f381d</code></td></tr>
+  </tbody>
+</table>
+
+<h3>W1 — <code>SeqConfig</code> (config loader)</h3>
+<p><code>lib/seq_config.py</code> is a process singleton that mirrors how MATLAB picks the config
+by which <code>expConfig.m</code> is on the path:</p>
+<ul>
+  <li><strong>Empty by default</strong> (<code>SeqConfig.get()</code>): no aliases (identity
+    channel translation), no consts, no defaults — so the Phase-2 <code>seq*.json</code> byte
+    tests keep building unchanged.</li>
+  <li><strong>Real config opt-in</strong>: <code>SeqConfig.load_real()</code> loads the committed
+    capture. A real-seq build <strong>must</strong> call <code>load_real()</code> first and
+    <code>SeqConfig.reset()</code> in teardown, or the real config leaks into other tests
+    (it's a process singleton).</li>
+</ul>
+<p>What the loader reproduces from <code>SeqConfig.m</code>:</p>
+<ul>
+  <li><code>translate_channel</code> — recursive alias expansion (only the first
+    <code>/</code>-component is aliased, then re-joined and re-resolved), trailing-<code>/</code>
+    trim done at capture, a <code>name_map</code> memo with a <code>None</code> loop-sentinel.</li>
+  <li><code>default_vals</code> re-keyed by <strong>translated backend name</strong> (with
+    MATLAB's conflict check).</li>
+  <li><code>check_channel_disabled → False</code> (<code>disabledChannels</code> is empty in
+    <code>expConfig.m</code>).</li>
+</ul>
+
+<h3>W2 — <code>DynProps</code> + <code>SubProps</code> (the <code>obj.field(default)</code> model)</h3>
+<p>A faithful 1:1 transliteration of <code>DynProps.m</code> (chosen over the brassboard
+<code>ParamPack</code> triple — the access tree is <strong>zero bytes</strong>, so the triple
+bought nothing for byte-equality while breaking the byte-mismatch→MATLAB-method debugging map).</p>
+<ul>
+  <li><code>DynProps</code> owns the value store and the access tracker; <code>SubProps</code> is
+    a thin path-carrying proxy that re-enters the root on every read/write (so
+    <code>a = c.X; a.f = 1</code> mutates <code>c.X.f</code> — handle-class aliasing, reproduced
+    deliberately).</li>
+  <li>Semantics: scalar-leaf read → value <strong>and</strong> marked accessed; struct read →
+    <code>SubProps</code>, <strong>not</strong> marked; parens <code>c.X(default)</code> →
+    resolve + mark + <strong>persist</strong> the default (struct defaults merge,
+    existing/leftmost wins, NaN-as-missing); brace <code>c.X[default]</code> → proxy, not marked,
+    still persists; <code>dp()</code> collapses <code>accessed</code> to the <code>True</code> sentinel.</li>
+  <li><code>tests/test_dyn_props.py</code> is full <code>TestDynProps.m</code> parity (9 tests) —
+    <strong>this is also W6</strong> (brace <code>{}</code>→<code>__getitem__</code>,
+    <code>test_disp</code> rewritten).</li>
+</ul>
+
+<h3>W3 — <code>Consts()</code></h3>
+<p><code>lib/consts.py</code> is the whole 8-line port:</p>
+<pre><code>class Consts(DynProps):
+    def __init__(self):
+        super().__init__(SeqConfig.get().consts)   # DynProps deep-copies the store</code></pre>
+<p><code>Consts()</code> is a <code>DynProps</code> over the active config's consts — it wraps the
+<em>same</em> tree <code>ExpSeq</code> copies into <code>s.C</code>, so a bare-build step reads
+identical values via both <code>Consts().X</code> and <code>s.C.X</code>. The W2 deepcopy makes
+every <code>Consts()</code> instance independent.</p>
+
+<h3>W4 — the step cone + seq wiring (the capstone)</h3>
+<p>The first time real production sequences are <em>built</em> in Python. Layout mirrors
+<code>matlab_new/</code>:</p>
+<ul>
+  <li><strong><code>YbSteps/&lt;StepName&gt;.py</code></strong> — 16 steps the <code>ok</code> corpus
+    actively calls: backbone <code>InitStep</code>/<code>BlueMOTStep</code>/<code>SLMStep</code>/<code>GreenMOTStep</code>/<code>LACStep</code>/<code>Imag399Step</code>
+    + <code>CoreShellMOTStep</code>/<code>AbsImagStep</code> + <code>BlueLACStep</code>/<code>Cool556Step</code>/<code>Cool556hXStep</code>
+    + <code>SLMTrapModulationStep</code>/<code>ReleaseRecaptureStep</code> + <code>PushoutStep</code>/<code>Pushout399Step</code>/<code>PushouthXStep</code>.
+    Each is <code>def &lt;StepName&gt;(s, g)</code> — a faithful transliteration of the
+    <code>add</code>/<code>add_step</code>/<code>wait</code>/<code>ramp_to</code> call sequence
+    (byte output depends on call order — an internal counter interleaves).</li>
+  <li><strong><code>YbSeqs/&lt;SeqName&gt;.py</code></strong> — 15 sequences wiring the steps.
+    Deferred server/SLM/camera callbacks (<code>regBeforeStart</code>/<code>regBeforeBSeq</code>/<code>regAfterEnd</code>)
+    → no-op stubs; <code>serialize()</code> never runs them.</li>
+  <li><strong>Naming</strong>: <code>YbSteps/</code> and <code>YbSeqs/</code> keep the
+    <strong>MATLAB names verbatim</strong> (<code>InitStep.py</code> / <code>def InitStep</code>),
+    <em>not</em> snake_case — they mirror the <code>.m</code> filenames 1:1 and are referenced by
+    those names across scan files. (The snake_case transliteration rule still governs
+    <code>lib/</code> only.) Both dirs are on the flat import path (<code>pyproject.toml</code> +
+    <code>tests/conftest.py</code>).</li>
+  <li><strong><code>tests/test_ybseqs_build.py</code></strong> — builds each ok seq (real config,
+    tick <code>1e12</code>) and asserts <code>serialize()</code> == the capture
+    <strong>byte for byte</strong>, plus repeatability.</li>
+</ul>
+<p>How it was built: a 3-step CoreShell cone was ported and byte-validated first to lock the
+conventions, the remaining 13 steps were ported in parallel and <strong>adversarially verified
+line-by-line against their MATLAB source</strong>, and the byte oracle (all 15 seq builds) was
+the final arbiter — green on the first validated pass.</p>
+
+<h3>W5 — finalize the corpus + int/float canary</h3>
+<ul>
+  <li><strong><code>EOM616Ramp</code> dropped</strong> from the byte-build corpus (→ 15/16). It is
+    the lone ok seq that reads <code>MemoryMap</code> <em>at build time</em>, so its bytes depend
+    on lab state, not the sequence definition. pyctrl <strong>deliberately does not model
+    <code>MemoryMap</code></strong> — see the design note below. It uses no step-cone steps, so
+    coverage is complete.</li>
+  <li><strong><code>test_seq_has_no_int32_constants</code></strong> (capture-independent): decode
+    each built seq and assert <strong>zero</strong> int32 constants. Empirically confirms the
+    int→float64 mapping across the real corpus, so option-2 int32 coercion stays unbuilt.</li>
+</ul>
+
+<h2>Three non-obvious byte-equality fixes</h2>
+<p>Each silently breaks byte-equality if missed (all landed in W1/W2):</p>
+<ol>
+  <li><strong>Eager-resolve proxy default args.</strong> <code>Consts().A.B.C</code> <em>as a
+    default argument</em> is a bare <code>SubProps</code> in Python (MATLAB resolves it to a number
+    first). <code>DynProps._make_default</code> resolves any <code>SubProps</code>/<code>DynProps</code>
+    arg to its value — else a proxy is written into the store and corrupts every later read.</li>
+  <li><strong>Deepcopy the nested store</strong> in <code>DynProps.__init__</code>. A shallow
+    <code>dict(store)</code> aliases nested dicts shared with <code>SeqConfig.consts</code>;
+    default-writes would mutate shared consts.</li>
+  <li><strong>Float-coerce every numeric consts/default leaf</strong> on JSON load. JSON
+    <code>1</code>→Python <code>int</code> would tag <code>ARG_CONST_INT32</code> and diverge from
+    MATLAB's <code>double</code>→<code>ARG_CONST_FLOAT64</code>.</li>
+</ol>
+
+<h2>int vs float — the reality check</h2>
+<table>
+  <thead><tr><th>Where a numeric literal appears</th><th>Coerced by framework?</th><th>How to write it</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Pulse value</strong> — 2nd arg to <code>.add(name, VALUE)</code></td><td><span class="ok">✅</span> <code>_resolve_pulse</code> calls <code>float()</code></td><td>verbatim MATLAB int (<code>0</code>, <code>1</code>, <code>200e6</code>) — serializes FLOAT64</td></tr>
+    <tr><td><strong>Step time</strong> / arithmetic on <strong>concrete</strong> config floats</td><td>n/a (already float)</td><td>verbatim</td></tr>
+    <tr><td><strong>SeqVal operand</strong> — a literal combined with a <strong>global</strong>/<strong>measure</strong></td><td>❌ not coerced</td><td><strong>explicit float</strong></td></tr>
+  </tbody>
+</table>
+<p>The only SeqVal-operand case in the corpus is the Pushout-family EOM616 block:
+<code>abs((Freq - global) * 20e-9 * 3.0) + 20e-3</code> — the <code>3</code> had to be written
+<code>3.0</code> (MATLAB <code>double</code>→FLOAT64; a bare int → INT32 and diverges).</p>
+<p>One related transliteration trap: in seq <strong>bodies</strong>, a bare scalar-leaf read like
+<code>Consts().Imag399.Amp</code> must be forced with <code>()</code> before use in
+<code>.add(...)</code> — MATLAB auto-resolves a scalar leaf, but pyctrl's <code>SubProps</code> is
+lazy and would otherwise reach <code>.add()</code> unresolved. The steps avoid this because they
+always use the <code>g.X(Consts()...)</code> default-call form.</p>
+
+<h2>Design note — no <code>MemoryMap</code> in pyctrl</h2>
+<p>For byte-equality the <strong>storage mechanism is irrelevant — only the value baked into the
+bytes matters</strong>, so a <code>MemoryMap</code> abstraction in the front-end buys nothing and
+couples the build to lab state. The byte-reproducible pattern (already used by the Pushout seqs):
+declare a sequence <strong>global</strong> at build (<code>s.new_global()</code>) and let the
+<em>deferred runtime callback</em> inject the persisted value via <code>set_global</code> — the
+build stays pure, the global's <em>value</em> is set at runtime. <code>EOM616Ramp</code> is the
+legacy outlier that reads <code>MemoryMap</code> directly at build; revisit it only if pyctrl grows
+a real runtime (Phase 5), where cross-shot state belongs in an explicit store (JSON/SQLite), not a
+memory-mapped file.</p>
+
+<h2>What's covered</h2>
+<table>
+  <thead><tr><th>Sequence</th><th>Bytes</th><th>Shape</th></tr></thead>
+  <tbody>
+    <tr><td>CoreShellMOTSeq</td><td>5381</td><td>backbone + abs-imaging</td></tr>
+    <tr><td>GreenMOTSeq</td><td>5544</td><td>backbone</td></tr>
+    <tr><td>DummySeq</td><td>5406</td><td>loading (nargin-0, builds own <code>ExpSeq</code>)</td></tr>
+    <tr><td>TweezerLoadingSeq</td><td>5999</td><td>loading + Imag399</td></tr>
+    <tr><td>BlueTweezerLoadingSeq</td><td>6542</td><td>BlueLAC + Cool556hX</td></tr>
+    <tr><td>TweezerEnhancedLoadingSeq</td><td>6267</td><td>BlueLAC</td></tr>
+    <tr><td>CoolingOptimizationSeq</td><td>6956</td><td>SLM trap modulation</td></tr>
+    <tr><td>ImagingSurvivalSeq</td><td>6644</td><td>body-code config reads</td></tr>
+    <tr><td>ReleaseRecaptureSeq</td><td>6971</td><td>release/recapture</td></tr>
+    <tr><td>PushoutSurvivalSeq</td><td>7660</td><td>EOM616 global + Pushout</td></tr>
+    <tr><td>PushoutSurvival399Seq</td><td>7956</td><td>Pushout399</td></tr>
+    <tr><td>ImagingPushoutSurvivalSeq</td><td>7915</td><td>PushouthX + double cool</td></tr>
+    <tr><td>RearrangeCommSeq</td><td>7447</td><td><strong>2 basic seqs</strong> (branch)</td></tr>
+    <tr><td>RearrangeCommSeq2</td><td>8005</td><td><strong>3 basic seqs</strong> (branch)</td></tr>
+    <tr><td>get_my_seq</td><td>164</td><td>singleton</td></tr>
+    <tr><td><em>EOM616Ramp</em></td><td><em>294</em></td><td><em>excluded — reads MemoryMap at build</em></td></tr>
+  </tbody>
+</table>
+
+<h2>Status &amp; what's next</h2>
+<ul>
+  <li><strong>Done:</strong> Phase 2 (<code>654d101</code>) + Phase 3 <strong>W1–W5</strong>.
+    W6 (<code>test_dyn_props</code> full parity) was delivered in W2.</li>
+  <li><strong>Remaining in Phase 3:</strong> <strong>W7 — globals round-trip</strong>
+    (<code>needs_engine</code>): a <code>set_global</code> / <code>get_global</code> round-trip +
+    <code>[nslots]</code>/<code>[nassigns]</code> byte-check in an engine window. (The build-time
+    global <em>declaration</em> is already byte-verified by the Pushout seqs; W7 is the run-time
+    assign check.)</li>
+  <li><strong>After Phase 3:</strong> Phase 4 (ScanGroup — the hardest port), Phase 5 (run loop),
+    Phase 6 (full experiment migration).</li>
+</ul>
+
+<footer>
+<strong>See also</strong><br>
+· <code>PYTHON_FRONTEND_PLAN.md</code> §"Phase 3 — Config &amp; globals" — the plan + byte-format appendix.<br>
+· <code>.claude/memory/project_pyctrl_realseq_beachhead.md</code> — running W1–W7 progress log.<br>
+· <code>docs/seqplotter_integration.md</code> — the <code>.seq</code> (evaluated output) viewer artifact, separate from <code>serialize()</code>.
+</footer>
+
+</body>
+</html>

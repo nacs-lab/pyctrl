@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 2 walkthrough — Sequence tree &amp; timing (pyctrl)</title>
+<style>
+  :root {
+    --fg: #1a1a2e; --muted: #5a5a72; --bg: #ffffff; --soft: #f6f8fa;
+    --border: #d8dbe2; --accent: #2d5bd7; --code: #b3306b; --ok: #1a7f37;
+  }
+  * { box-sizing: border-box; }
+  body {
+    max-width: 880px; margin: 0 auto; padding: 2.4rem 1.4rem 5rem;
+    font: 16px/1.65 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .2rem; }
+  h2 { font-size: 1.35rem; margin: 2.6rem 0 .8rem; padding-bottom: .3rem;
+       border-bottom: 2px solid var(--border); }
+  h3 { font-size: 1.08rem; margin: 1.8rem 0 .5rem; }
+  p, li { color: var(--fg); }
+  a { color: var(--accent); }
+  code {
+    font-family: "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    font-size: .87em; background: var(--soft); color: var(--code);
+    padding: .12em .38em; border-radius: 4px; border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--soft); border: 1px solid var(--border); border-radius: 8px;
+    padding: .9rem 1.1rem; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--fg); font-size: .85em; }
+  blockquote {
+    margin: 1rem 0; padding: .6rem 1.1rem; border-left: 4px solid var(--accent);
+    background: #f3f6ff; color: var(--muted); border-radius: 0 6px 6px 0;
+  }
+  blockquote p { color: var(--muted); margin: .5rem 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid var(--border); padding: .5rem .7rem; text-align: left; vertical-align: top; }
+  th { background: #eef1f6; font-weight: 600; }
+  tbody tr:nth-child(even) { background: #fafbfc; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .lede { color: var(--muted); font-size: 1.05rem; margin-top: .2rem; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<h1>Phase 2 walkthrough — Sequence tree &amp; timing</h1>
+<p class="lede">pyctrl Python front-end migration · the builder that turns an <code>ExpSeq</code> tree into the serialized byte blob</p>
+
+<blockquote>
+<p><strong>Goal of Phase 2:</strong> build sequences in Python — time steps, pulses, ramps,
+sub-sequences, branches, ordering constraints — whose <code>serialize()</code> output is a byte
+array <strong>identical</strong> to what MATLAB produces for the equivalent sequence. This is the
+engine that everything downstream feeds: Phase 3 gives it the real config so production
+<code>YbSeqs</code> can be built; Phase 4 will sweep it.</p>
+<p>This doc walks the class tree, the two-level byte format, the timing model, and the three
+places where a byte hinges on something non-obvious.</p>
+</blockquote>
+
+<h2>TL;DR</h2>
+<ul>
+  <li><strong>THE ONE RULE:</strong> <code>serialize()</code> must equal MATLAB's byte-for-byte.
+    Phase 2 is a <strong>straight 1:1 transliteration</strong> of <code>matlab_new/lib/</code> — the
+    brassboard re-architecture ideas (a new <code>EventTime</code> model, a
+    <code>SeqCompiler</code>/<code>BackendBase</code> split, a "new" <code>BasicSeq</code>) were all
+    <strong>declined</strong> after reading the actual source; see the design note.</li>
+  <li><code>TestExpSeq</code> <code>test1</code>–<code>test7</code> reproduce the committed
+    <code>matlab_new/lib/test/seq{1..6}.json</code> byte-for-byte, plus ramp / timing / branch /
+    TTL-manager cases and reader round-trips over the real <code>YbSeqs</code> corpus.</li>
+  <li>Build + <code>serialize()</code> benchmarked <strong>~8–10× faster than MATLAB R2023a</strong>
+    (~5&nbsp;µs/output, linear; negligible next to a shot).</li>
+  <li>Runs entirely <code>no_hardware</code> — the engine is never loaded; the check is pure byte math.</li>
+  <li>Status: <span class="ok">DONE &amp; committed — <code>654d101</code></span>. Phase 3 (config &amp;
+    globals) is built directly on this layer.</li>
+</ul>
+
+<h2>The class tree</h2>
+<p>Mirrors <code>matlab_new/lib/</code> one file per class, snake_case module / verbatim class name
+(<code>SeqContext.m</code> → <code>seq_context.py</code> / <code>class SeqContext</code>):</p>
+<table>
+  <thead><tr><th>Class (file)</th><th>Role</th></tr></thead>
+  <tbody>
+    <tr><td><code>ExpSeq</code> (<code>exp_seq.py</code>)</td><td>The top-level sequence + the <strong>only</strong> <code>serialize()</code>. Owns the channel map, default values, the <code>SeqContext</code>, and basic-seq #1.</td></tr>
+    <tr><td><code>RootSeq</code> (<code>root_seq.py</code>)</td><td>Shared base for anything that serializes <em>as a basic sequence</em>: <code>serialize_bseq</code>, time/order/measure/assign/branch tables, globals.</td></tr>
+    <tr><td><code>ExpSeqBase</code> (<code>exp_seq_base.py</code>)</td><td>The timing API: <code>add_step</code>/<code>add</code>/<code>wait</code>/<code>add_background</code>/<code>add_at</code>, channel registration, the <code>@callback</code> sub-sequence dispatch.</td></tr>
+    <tr><td><code>SubSeq</code> (<code>sub_seq.py</code>)</td><td>A child timing scope created by <code>add_step(@fn, …)</code>.</td></tr>
+    <tr><td><code>BasicSeq</code> + <code>ConditionalWrapper</code></td><td>A non-top-level compilation unit (a branch target) and the conditional-add wrapper. <strong>Existing MATLAB classes</strong>, transliterated 1:1 — not a new abstraction.</td></tr>
+    <tr><td><code>TimeStep</code> (<code>time_step.py</code>)</td><td>A timed slot holding per-channel pulses; <code>.add(name, value)</code> chains and returns self.</td></tr>
+    <tr><td><code>SeqTime</code> (<code>seq_time.py</code>)</td><td>A point in time — a <strong>signed linked list of additive terms</strong> (see below).</td></tr>
+    <tr><td><code>SeqContext</code> (<code>seq_context.py</code>)</td><td>The value/node table + the global <code>obj_counter</code> that numbers everything.</td></tr>
+    <tr><td><code>Pulse</code>/<code>IRPulse</code> + ramps</td><td><code>pulse.py</code>, <code>ir_pulse.py</code>, <code>linear_ramp.py</code>, <code>ramp_to.py</code>, <code>ramp_to_sqrt.py</code>, <code>sqrt_ramp.py</code>, <code>interpolate.py</code> — constant and callable/ramped channel values.</td></tr>
+  </tbody>
+</table>
+
+<h2>The byte format — two levels</h2>
+<p>The MATLAB↔engine boundary is a single blob. <code>ExpSeq.serialize()</code>
+(<code>exp_seq.py:146</code>) writes the top level; each basic sequence is written by
+<code>RootSeq.serialize_bseq()</code> (<code>root_seq.py:115</code>). All packing is
+<strong>little-endian</strong> (<code>struct '&lt;'</code>).</p>
+
+<h3>Top level</h3>
+<pre><code>[version = 0 : 1B]
+[nnodes : 4B][ node records … ]         # seq_ctx.node_serialized()
+[nchns  : 4B][ chnname\0 … ]            # compacted cid count (disabled -> 0, skipped)
+[ndefvals : 4B][ chnid:4B, type:1B, value … ]   # skip default==0 / disabled
+[nslots : 4B][ … ]                      # globals (seq_ctx.global_serialized())
+[nnoramp : 4B = 0]
+[nbasicseqs : 4B][ BasicSeq … ]         # ExpSeq is #1, then self.basic_seqs
+[ndatas : 4B][ … ]                      # interpolation tables (data_serialized())
+[nbackenddatas : 4B][ ZYNQZYNQ blocks … ]</code></pre>
+<blockquote>
+<p><strong>Ordering subtlety that costs bytes:</strong> the basic sequences are built
+<em>first</em> (<code>exp_seq.py:191-194</code>) because walking them is what <em>interns</em> the
+value nodes into the <code>SeqContext</code>. Only then is <code>node_serialized()</code> emitted —
+into its slot near the <em>front</em> of the blob (<code>exp_seq.py:202</code>). So the node table is
+<strong>positioned early but computed late</strong>; build order and emit order differ on purpose.</p>
+</blockquote>
+
+<h3>Per basic sequence (<code>serialize_bseq</code>)</h3>
+<pre><code>[ntimes : 4B][ sign:1B, id:4B, delta_node:4B, prev_id:4B … ]   # the SeqTime chain
+[nendtimes : 4B][ time_id:4B … ]
+[ntimeorders : 4B][ sign:1B, id:4B, before_id:4B, after_id:4B … ]
+[noutputs : 4B][ id:4B, time_id:4B, len:4B, val:4B, cond:4B, chn:4B … ]
+[nmeasures : 4B][ id:4B, time_id:4B, chn:4B … ]    # count includes skipped (disabled) ones
+[nassigns : 4B][ assign_id:4B, global_id:4B, val:4B … ]
+[nbranches : 4B][ branch_id:4B, target_id:4B, cond:4B … ][ default_target : 4B ]</code></pre>
+
+<h2>The timing model — a signed linked list, not an offset</h2>
+<p><code>SeqTime</code> (<code>seq_time.py:35</code>) is a point in time represented as a chain of
+additive terms, each carrying its own <code>id</code> and <code>sign</code>:</p>
+<pre><code>class SeqTime:
+    UNKNOWN = 0; NONNEG = 1; POS = 2          # serialized as a 1-byte int8 sign
+    def __init__(self, seq, id, sign, parent, term):
+        ...   # `term` is already in TICKS; build only via zero()/create()/combine()</code></pre>
+<p>Each term is serialized <strong>per-term</strong> as
+<code>[sign:1B][id:4B][delta_node:4B][prev_id:4B]</code>. That is why pyctrl <strong>declined</strong>
+brassboard-seq's <code>EventTime{static|rt}</code> "single offset" model: collapsing the chain into
+one offset slot would lose those per-term bytes. <code>add_order(sign, before, after)</code>
+records an ordering constraint; <code>add_equal</code> is simply <em>two</em>
+<code>add_order(NONNEG, …)</code> calls (<code>root_seq.py:110-112</code>) — there is no
+<code>OrderEqual</code> opcode.</p>
+
+<h2>Three places a byte hinges on something non-obvious</h2>
+<p>The <code>exp_seq_base.py</code> module docstring says it plainly: <em>"Every byte hinges on (a)
+the global <code>obj_counter</code> interleaving …"</em></p>
+<ol>
+  <li><strong>Creation-order interleaving.</strong> Pulse / time / order / measure / assign / branch
+    ids are <em>all</em> drawn from one counter — <code>SeqContext.next_obj_id()</code>
+    (<code>seq_context.py:130</code>). So the Python build must call into the framework in MATLAB's
+    <em>exact</em> creation order; a re-ordered <code>.add()</code> or <code>add_order</code> shifts
+    every downstream id and the bytes diverge. (This is why the ported steps are faithful call-for-call,
+    not "logically equivalent".)</li>
+  <li><strong>Rounding mode.</strong> MATLAB <code>round</code> is <strong>half-away-from-zero</strong>,
+    applied at every <code>round(t * time_scale)</code> site. Python's built-in <code>round</code> is
+    banker's rounding and would silently drift. pyctrl routes all time rounding through
+    <code>mat_utils.mat_round</code> (<code>mat_utils.py:22</code>):
+    <pre><code>def mat_round(x):
+    if isinstance(x, SeqVal): return x.__round__()   # -> OP_RINT node
+    if x >= 0: return float(math.floor(x + 0.5))
+    return float(math.ceil(x - 0.5))</code></pre></li>
+  <li><strong>int vs float constants (status quo).</strong> A bare Python number used as a channel
+    value serializes as <strong>float64</strong>, mirroring a MATLAB bare double — so real steps
+    saturated with <code>.add('TTL…', 1)</code> / <code>.add('Amp…', 0)</code> match byte-for-byte
+    with zero int/float work. "Option 2" (int-natural <code>3 = int32</code>) stays
+    <strong>deferred/unbuilt</strong> until a real sequence forces it. (Phase 3 later confirmed this
+    empirically across the whole real corpus.)</li>
+</ol>
+
+<h2>Branches &amp; multiple basic sequences</h2>
+<p><code>ExpSeq.new_basic_seq()</code> creates a <code>BasicSeq</code> (a branch target); a parent
+routes into it with <code>cond_branch(cond, target)</code> (and an optional default branch). The
+target's <code>bseq_id</code> is what lands in the <code>[nbranches]</code> table
+(<code>root_seq.py:163+</code>); each basic sequence serializes the same per-bseq layout. This is a
+plain transliteration of the existing MATLAB <code>BasicSeq.m</code>/<code>ConditionalWrapper.m</code>
+— naming it did <strong>not</strong> let us delete a tree-walker (there isn't one: the C++ engine
+only ever consumes <code>create_sequence(bytes)</code>). The real
+<code>RearrangeCommSeq</code>/<code>RearrangeCommSeq2</code> sequences (2- and 3-basic-seq) exercise
+this path in Phase 3.</p>
+
+<h2>Design note — what was declined from brassboard-seq</h2>
+<p>The original plan floated three brassboard-inspired re-architectures for Phase 2. An 8-way read of
+the actual <code>lib/</code> classes settled them — <strong>transliterate, don't re-architect</strong>:</p>
+<table>
+  <thead><tr><th>Proposed</th><th>Verdict</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td><code>EventTime{static|rt}</code> + <code>TimeOrder</code> enum</td><td><strong>declined</strong></td><td><code>SeqTime</code> is a signed linked list whose terms serialize individually; one offset slot loses bytes.</td></tr>
+    <tr><td><code>SeqCompiler</code> + <code>BackendBase</code> split</td><td><strong>declined</strong></td><td>Only one backend (libnacs) exists; the byte layout already lives in <code>RootSeq.serialize_bseq</code>. No <code>seq_compiler.py</code> / <code>libnacs_backend.py</code> built.</td></tr>
+    <tr><td>introduce a "new" <code>BasicSeq</code></td><td><strong>superseded</strong></td><td><code>BasicSeq</code>/<code>ConditionalWrapper</code> are <em>existing</em> MATLAB classes — a 1:1 port, with no <code>SeqManager</code> tree-walker to delete.</td></tr>
+  </tbody>
+</table>
+<p>The byte format is sourced <strong>only</strong> from MATLAB (via <code>capture_matlab_reference.m</code>);
+brassboard's 1&nbsp;ps <code>EventTime</code> and rtval AST <em>look</em> wire-compatible but target a
+different engine (ARTIQ/RFSoC) — never copy its bytes.</p>
+
+<h2>How it's checked</h2>
+<table>
+  <thead><tr><th>Test</th><th>What</th></tr></thead>
+  <tbody>
+    <tr><td><code>tests/test_exp_seq.py</code></td><td><code>TestExpSeq</code> <code>test1</code>–<code>test7</code> → build in Python, diff <code>serialize()</code> against <code>matlab_new/lib/test/seq{1..6}.json</code>.</td></tr>
+    <tr><td><code>tests/test_ramps.py</code></td><td>each ramp type over fixed params → identical interpolation nodes + <code>data</code> table.</td></tr>
+    <tr><td><code>tests/test_basic_seq.py</code></td><td>branch routing across <code>BasicSeq</code> + <code>ConditionalWrapper</code>, default target, per-bseq <code>end_id</code> table.</td></tr>
+    <tr><td><code>tests/test_serialize.py</code></td><td>full-sequence byte equality + TTL-manager / trigger (<code>ZYNQZYNQ</code>) blocks.</td></tr>
+    <tr><td><code>tests/test_ybseqs_roundtrip*.py</code></td><td>reader decode→re-encode over the real <code>YbSeqs</code> capture — proves the byte-format reader handles production-shaped sequences.</td></tr>
+  </tbody>
+</table>
+<pre><code># safe default — no engine, no hardware
+pytest pyctrl
+# field-by-field diff of two blobs when something drifts
+python pyctrl/tools/compare_bytes.py matlab.bin python.bin</code></pre>
+<p>The empty test config (<code>SeqConfig</code> default) and
+<code>override_tick_per_sec(1000)</code> keep these builds engine-free; <code>compare_bytes.py</code>
+reports the <em>first differing field</em> (e.g. <code>bseq[0].outputs[3].chn</code>), not just a byte
+offset.</p>
+
+<h2>Performance</h2>
+<p>Build + <code>serialize()</code> is <strong>~8–10× faster than MATLAB R2023a</strong> (~5&nbsp;µs per
+output, linear in sequence size — negligible next to an experimental shot). The one Python hotspot is
+<code>inspect.signature</code> in <code>TimeStep</code>'s pulse-arity check (~25% of build for
+function-pulse-heavy sequences); caching <code>_nargin</code> is a <strong>deferred</strong>
+optimization, batched with the end-of-migration perf passes.</p>
+
+<h2>Status &amp; what's next</h2>
+<ul>
+  <li><strong>Done:</strong> Phase 2 — <code>654d101</code> (209 tests green at the time; the full
+    suite is larger now that Phase 3 has landed).</li>
+  <li><strong>Built on it:</strong> Phase 3 (config &amp; globals) supplies the real
+    <code>expConfig</code> + <code>DynProps</code>/<code>Consts</code> so real <code>YbSeqs</code> build
+    on this exact serializer — see <code>docs/phase3_walkthrough.html</code>.</li>
+  <li><strong>Ahead:</strong> Phase 4 (ScanGroup), Phase 5 (run loop), Phase 6 (full experiment
+    migration).</li>
+</ul>
+
+<footer>
+<strong>See also</strong><br>
+· <code>PYTHON_FRONTEND_PLAN.md</code> §"Phase 2 — Sequence tree &amp; timing" + §10 byte-format appendix.<br>
+· <code>docs/phase1_walkthrough.html</code> — value math &amp; the serializer foundation this builds on.<br>
+· <code>docs/phase3_walkthrough.html</code> — config &amp; globals (the next layer up).<br>
+· <code>.claude/memory/project_pyctrl_tree_perf.md</code> — the benchmark + the <code>inspect.signature</code> hotspot.
+</footer>
+
+</body>
+</html>

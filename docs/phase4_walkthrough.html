@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 4 walkthrough — ScanGroup (pyctrl)</title>
+<style>
+  :root {
+    --fg: #1a1a2e; --muted: #5a5a72; --bg: #ffffff; --soft: #f6f8fa;
+    --border: #d8dbe2; --accent: #2d5bd7; --code: #b3306b; --ok: #1a7f37;
+  }
+  * { box-sizing: border-box; }
+  body {
+    max-width: 880px; margin: 0 auto; padding: 2.4rem 1.4rem 5rem;
+    font: 16px/1.65 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .2rem; }
+  h2 { font-size: 1.35rem; margin: 2.6rem 0 .8rem; padding-bottom: .3rem;
+       border-bottom: 2px solid var(--border); }
+  h3 { font-size: 1.08rem; margin: 1.8rem 0 .5rem; }
+  p, li { color: var(--fg); }
+  a { color: var(--accent); }
+  code {
+    font-family: "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    font-size: .87em; background: var(--soft); color: var(--code);
+    padding: .12em .38em; border-radius: 4px; border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--soft); border: 1px solid var(--border); border-radius: 8px;
+    padding: .9rem 1.1rem; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--fg); font-size: .85em; }
+  blockquote {
+    margin: 1rem 0; padding: .6rem 1.1rem; border-left: 4px solid var(--accent);
+    background: #f3f6ff; color: var(--muted); border-radius: 0 6px 6px 0;
+  }
+  blockquote p { color: var(--muted); margin: .5rem 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid var(--border); padding: .5rem .7rem; text-align: left; vertical-align: top; }
+  th { background: #eef1f6; font-weight: 600; }
+  tbody tr:nth-child(even) { background: #fafbfc; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .lede { color: var(--muted); font-size: 1.05rem; margin-top: .2rem; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<h1>Phase 4 walkthrough — ScanGroup</h1>
+<p class="lede">pyctrl Python front-end migration · work items W1–W9 (<span class="ok">complete</span>)</p>
+
+<blockquote>
+<p><strong>Goal of Phase 4:</strong> port <code>ScanGroup</code> — the N-dimensional
+<em>parameter-sweep</em> layer that turns one parametric sequence definition into the ordered
+list of concrete <code>seq</code> structs a run produces. A scan file writes
+<code>g().Pushout.Blue.Freq.scan(1) = [..]</code>; <code>getseq(n)</code> materializes the
+n-th point; <code>ExpSeq(getseq(n))</code> then merges it onto the config and serializes.
+Phase 4 makes that whole front edge run in Python and produce the <strong>same per-point
+bytes</strong> as MATLAB.</p>
+<p>This doc walks the nine work items, the locked design decisions, the one byte-critical
+algorithm (column-major expansion), the two MATLAB oracles that pin it, and the test-only
+surface (<code>usevar</code>, concat, load, the access-tracker lint).</p>
+</blockquote>
+
+<h2>TL;DR</h2>
+<ul>
+  <li><strong>THE ONE RULE</strong> still governs. ScanGroup itself emits no bytes, but it
+    decides <em>which values</em> get baked into each sequence — so the headline check is that
+    <code>ExpSeq(g.getseq(n))</code> serializes byte-identical to MATLAB's per-point capture
+    over <strong>real YbScans</strong> (W6).</li>
+  <li><strong>Faithful 1:1 transliteration</strong> of <code>ScanGroup.m</code> +
+    <code>ScanParam</code>/<code>ScanInfo</code>/<code>ScanAccessTracker</code>/<code>EnableScan</code>/<code>MutableRef</code>.
+    The brassboard "visited-tree" framing was <strong>declined</strong>: a parameter is swept
+    vs fixed <em>structurally</em> (it lives under <code>scan.vars[dim].params</code> vs
+    <code>scan.params</code>), decided at <code>.scan()</code>-call time — no listeners, no
+    visited tree.</li>
+  <li><strong>ScanGroup is a <code>handle</code> (reference) class</strong> — no
+    copy-on-assignment. Only the struct <em>param data</em> deep-copies (MATLAB value structs;
+    Python dicts alias), at four boundaries: <code>getfullscan</code>, whole-scan assign,
+    <code>cat_scans</code>, <code>dump</code>/<code>load</code>.</li>
+  <li>The <strong>column-major mixed-radix expansion</strong> in <code>getseq_in_scan</code> is
+    the #1 byte risk; it is pinned <strong>field-for-field, value-for-value, order-for-order
+    against real MATLAB</strong> by the W4 oracle and byte-for-byte by the W6 per-point oracle.</li>
+  <li>Full default suite: <span class="ok">391 passed / 13 deselected</span>,
+    <code>no_hardware</code> (engine never loaded; ScanGroup touches no
+    <code>SeqConfig</code>/<code>SeqManager</code>/engine at all).</li>
+  <li>Status: <strong>W1–W9 all done.</strong> Phase 4 complete. Next is Phase 5 (run loop /
+    abort-pause).</li>
+</ul>
+
+<h2>The mental model — where ScanGroup sits</h2>
+<p>A scan file builds a <code>ScanGroup</code> declaratively, then hands it plus a sequence
+function to the runner. The runner's inner loop is, in essence:</p>
+<pre><code>for n = 1:nseq(g)
+    params = g.getseq(n)        # the n-th point: concrete scalar values
+    s = ExpSeq(params)          # merge params onto the config consts
+    SequenceFn(s)               # build the step tree
+    serialize(s)  -> bytes      # hand to libnacs</code></pre>
+<p>So ScanGroup's job is purely <strong>data-model arithmetic</strong>: store the swept/fixed
+parameter structure, and enumerate it deterministically. Two structural facts drive everything:</p>
+<table>
+  <thead><tr><th>Concept</th><th>Lives under</th><th>Set by</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Fixed</strong> parameter</td><td><code>scan.params</code></td><td><code>g(i).a.b = x</code></td></tr>
+    <tr><td><strong>Swept</strong> parameter (axis)</td><td><code>scan.vars[dim].params</code></td><td><code>g(i).a.b.scan(dim, [..])</code></td></tr>
+    <tr><td><strong>Default</strong> (fallback) scan</td><td><code>base</code> (idx 0)</td><td><code>g().a = x</code> — merged into every scan via the base chain</td></tr>
+    <tr><td><strong>Run</strong> parameters</td><td><code>runparam</code> (a <code>DynProps</code>)</td><td><code>g.runp().NumImages = 2</code></td></tr>
+  </tbody>
+</table>
+
+<h2>The Python DSL — where it diverges from MATLAB</h2>
+<p>MATLAB overloads <code>subsref</code>/<code>subsasgn</code> for syntax Python can't reproduce
+(<code>.scan(dim) = vals</code>, <code>g(i) = rhs</code>). The port keeps everything else 1:1 and
+diverges only where forced:</p>
+<table>
+  <thead><tr><th>MATLAB</th><th>pyctrl</th><th>Note</th></tr></thead>
+  <tbody>
+    <tr><td><code>g(i).a.b = x</code></td><td><code>g(i).a.b = x</code></td><td>same — fixed param</td></tr>
+    <tr><td><code>g(i).a.b.scan(dim) = vals</code></td><td><code>g(i).a.b.scan(dim, vals)</code></td><td>no assignment-into-call</td></tr>
+    <tr><td><code>g(i).a.b.scan(vals)</code></td><td><code>g(i).a.b.scan(vals)</code></td><td>same — dim 1</td></tr>
+    <tr><td><code>g(i) = rhs</code></td><td><code>g(i).assign(rhs)</code></td><td>whole-scan replace</td></tr>
+    <tr><td><code>val = g(i).a()</code></td><td><code>val = g(i).a()</code></td><td>resolve a fixed/swept value</td></tr>
+    <tr><td><code>[g1, g2]</code> / <code>horzcat</code></td><td><code>ScanGroup.cat_scans(g1, g2)</code></td><td>no <code>[]</code> operator</td></tr>
+    <tr><td><code>g(2:end)</code> / <code>g([1,3])</code></td><td><code>g(slice(2, g.end))</code> / <code>g([1,3])</code></td><td>multi-index (concat only)</td></tr>
+  </tbody>
+</table>
+<p>Because <code>scan</code>/<code>assign</code>/<code>size</code>/<code>usevar</code>/<code>toscan</code>
+are real methods, a parameter literally named one of those is shadowed — MATLAB likewise
+special-cases <code>scan</code>/<code>usevar</code>. The proxy classes (<code>ScanParam</code>,
+<code>ScanInfo</code>) <strong>fold in the <code>SubProps</code> role</strong>: rather than a
+second generic proxy, each carries the accumulated dotted <code>path</code> itself
+(<code>g(i)</code> has <code>path=()</code>; <code>g(i).a.b</code> is the same class with
+<code>path=('a','b')</code>) and forwards <code>(idx, path, …)</code> to the group exactly as
+MATLAB forwards <code>(idx, S)</code>.</p>
+
+<h2>The byte-critical core — column-major expansion</h2>
+<p>This is the one place a subtle bug would silently change which value lands in the bytes.
+<code>getseq_in_scan(scanidx, seqidx)</code> is a deterministic mixed-radix enumeration:
+<strong>dimension 1 varies fastest</strong>, dummy (size-0) dimensions are skipped, indices are
+0-based internally (<code>v[subidx]</code>) but 1-based at the API:</p>
+<pre><code>scan = getfullscan(scanidx)        # base-merged, independent deepcopy
+seq  = scan.params                 # the fixed values
+seqidx -= 1                        # 0-based
+for var in scan.vars:
+    if var.size == 0: continue     # dummy dim
+    subidx  = seqidx % var.size
+    seqidx  = seqidx // var.size
+    for (v, path) in leaves(var.params):
+        seq[path] = v[subidx]      # pick this point's value off the axis
+return seq</code></pre>
+<p>Leaf-walk order matters (it determines field insertion order, which the W4 oracle compares
+order-sensitively): <code>leaves()</code> is depth-first in dict insertion order, empty
+sub-structs skipped, a list/array (an axis) is a leaf. Python dicts preserve insertion order, so
+this matches MATLAB <code>fieldnames</code> order.</p>
+
+<h3>Base merge — the other half</h3>
+<p><code>getfullscan(idx)</code> merges a scan with its base chain (every scan's
+<code>baseidx</code> defaults to 0 = the "default" scan, so the default is always merged), with a
+dirty-flag cache. <strong>The child always wins</strong> (a base value never lands on a
+child-owned path, tracked by <code>find_scan_dim</code>), base axes keep their original
+dimension index, and sizes are recounted with a strict consistency check. It returns an
+<strong>independent deepcopy</strong> — the value-copy boundary that lets every caller mutate
+freely without corrupting the cache.</p>
+
+<h2>The two oracles — how expansion is pinned to MATLAB</h2>
+<table>
+  <thead><tr><th></th><th>W4 — expansion equality</th><th>W6 — per-point bytes</th></tr></thead>
+  <tbody>
+    <tr><td>Checks</td><td>each <code>getseq(n)</code> struct (fields, values, <strong>and order</strong>)</td><td>each point's <strong>serialized bytes</strong></td></tr>
+    <tr><td>Against</td><td><code>tests/reference_scangroup/scangroup_reference.json</code></td><td><code>tests/reference_scan_point/scan_point_reference.json</code></td></tr>
+    <tr><td>Battery</td><td>9 groups incl. 3 real-YbScans shapes</td><td>2 real scan×seq pairs (Spectrum399, ImagingHist)</td></tr>
+    <tr><td>Seam tested</td><td>—</td><td><code>ExpSeq(getseq(n))</code> top-level merge onto consts</td></tr>
+    <tr><td>Engine</td><td>never loaded</td><td>never loaded</td></tr>
+  </tbody>
+</table>
+<p>Both JSONs are captured <strong>engine-free</strong> in a separate headless
+<code>matlab -batch</code> session (ScanGroup has no <code>SeqConfig</code>/<code>SeqManager</code>/engine
+reference, so <code>-batch</code> is isolated from the live MATLAB desktop and safe mid-experiment
+— do <em>not</em> use the MATLAB MCP server, which shares the live session). The committed JSON
+is read by the default test, so no MATLAB is needed to <em>run</em> the suite.</p>
+<pre><code># re-capture the expansion oracle (engine-free, headless)
+matlab -batch "cd pyctrl/tools; capture_scangroup_reference"</code></pre>
+<blockquote>
+<p><strong>W6 surfaced a config drift.</strong> <code>expConfig.m</code> had been recalibrated
+(<code>Init.VSLMServo = 4 → 6</code>) since the Phase-3 capture; the no-param Phase-3 build masked
+it (same 8-byte float64 length), but a scan that <em>replaces</em> <code>Pushout</code> forces the
+<code>Consts().Init.VSLMServo</code> fallback into the node table and exposes it. Fix: refresh
+<code>config_reference.json</code> + re-capture <code>ybseqs_reference.json</code> from the current
+config. The ScanGroup oracle needed no refresh (config-independent). <em>Lesson:</em> a
+single-value, length-invariant byte mismatch ⇒ suspect config drift, not a port bug.</p>
+</blockquote>
+
+<h2>The nine work items</h2>
+<table>
+  <thead><tr><th>WI</th><th>What</th><th>File(s)</th><th>Commit</th></tr></thead>
+  <tbody>
+    <tr><td>W1</td><td><code>EnableScan</code> (process-global pre-run gate, RAII→context manager) + <code>MutableRef</code></td><td><code>lib/enable_scan.py</code>, <code>lib/mutable_ref.py</code></td><td><code>670cc0c</code></td></tr>
+    <tr><td>W2</td><td>Core data model + fluent authoring DSL (fixed/swept/assign/base)</td><td><code>lib/scan_group.py</code>, <code>lib/scan_param.py</code></td><td><code>e8b397a</code></td></tr>
+    <tr><td>W3</td><td>Materialization (<code>getseq</code> column-major) + query surface (<code>get_scan</code>/<code>get_scanaxis</code>/<code>axisnum</code>…)</td><td><code>lib/scan_group.py</code>, <code>lib/scan_info.py</code></td><td><code>5504559</code></td></tr>
+    <tr><td>W4</td><td>Expansion-equality oracle vs real MATLAB (9-group battery)</td><td><code>tools/*scangroup*</code>, <code>tests/test_scan_group_oracle.py</code></td><td><code>9fccc62</code></td></tr>
+    <tr><td>W5</td><td><code>runp</code> round-trip + production scan-shape smoke</td><td><code>tests/test_scan_group_production.py</code></td><td><code>b15054a</code></td></tr>
+    <tr><td>W6</td><td><strong>Per-point byte oracle over real YbScans</strong> (production milestone) + config refresh</td><td><code>tools/*scan_point*</code>, <code>tests/test_scan_point_oracle.py</code></td><td><code>1ddf4a8</code></td></tr>
+    <tr><td>W7</td><td>Full <code>TestScanGroup</code> parity: <code>cat_scans</code>/<code>horzcat</code>/<code>toscan</code> + <code>load</code> + the mega <code>dotest</code> + <code>assign</code></td><td><code>lib/scan_group.py</code>, <code>lib/scan_param.py</code></td><td><code>e8a044c</code></td></tr>
+    <tr><td>W8</td><td><code>usevar</code> (runtime-variable scan axes) + <code>getseq_*_with_var</code> + <code>computed_use_var</code></td><td><code>lib/scan_group.py</code>, <code>lib/scan_param.py</code></td><td><code>ddb5d12</code></td></tr>
+    <tr><td>W9</td><td><code>ScanAccessTracker</code> — unused-parameter lint</td><td><code>lib/scan_access_tracker.py</code></td><td><code>a148796</code></td></tr>
+  </tbody>
+</table>
+<p>All ScanGroup tests live in <code>tests/test_scan_group*.py</code> +
+<code>tests/test_scan_access_tracker.py</code> + <code>tests/test_enable_scan.py</code>, ported from
+<code>matlab_new/lib/test/TestScanGroup.m</code> + <code>TestScanAccessTracker.m</code> +
+<code>TestEnableScan.m</code> (the spec). Dict <code>==</code> is order-insensitive, so most asserts
+hand-translate the MATLAB expected structs directly; the W4 oracle is the one that pins field
+<em>order</em>.</p>
+
+<h3>W1 — <code>EnableScan</code> + <code>MutableRef</code></h3>
+<p>The process-local pre-run gate (set at the top of <code>ybStartScan</code>/<code>ybRunScans</code>),
+<em>not</em> the MemoryMap gentle-abort (that's Phase 5). MATLAB's RAII <code>delete</code> restore
+is ported as a Python <strong>context manager</strong> (ctor sets immediately + captures old,
+<code>__exit__</code>/<code>delete()</code> restore once, <code>disable()</code> cancels,
+<code>__del__</code> best-effort backstop); <code>FacyOnCleanup</code> folded in, not ported
+standalone.</p>
+
+<h3>W2 / W3 — the core + materialization</h3>
+<p>The data model is verbatim: <code>_scans</code> = list of
+<code>{baseidx, params, vars:[{size, params}]}</code>, plus <code>_base</code>, <code>_runparam</code>
+(a <code>DynProps</code>), the tri-state <code>_use_var_*</code> trees, and <code>_scanscache</code>
+dirty flags. Authoring decides swept-vs-fixed at call time; <code>isarray</code> decay (scalar /
+str / 1-element list → fixed param) and the exact MATLAB error messages
+(<code>"Cannot scan a fixed parameter."</code>, …) are ported. W3 adds the column-major
+<code>getseq</code>, the size/dim queries, and <code>ScanInfo</code> — a read-only
+<code>(value, dim)</code> view where a trailing <code>()</code> resolves the path
+(<code>info.c()</code> → <code>(val, dim)</code>; <code>info.k()</code> → <code>(proxy, -1)</code>;
+<code>info.e(2)</code> → <code>(2, 0)</code> default form).</p>
+
+<h3>W7 — concat, load, and the mega <code>dotest</code></h3>
+<p>The test-only surface production never uses but <code>TestScanGroup.m</code> does:</p>
+<ul>
+  <li><strong><code>cat_scans</code></strong> (static) + <code>horzcat</code> + <code>toscan</code>:
+    build a NEW group whose scans are the <em>base-merged</em> scans of every input, baseidx reset
+    to 0, runparam copied from the first input. The Python form of MATLAB's <code>[g1, g2]</code>.</li>
+  <li><strong>Multi-index addressing</strong>: a full colon <code>g(:)</code> maps to the default
+    (idx 0, the MATLAB magic colon), but a bounded <code>g(slice(2, g.end))</code> or
+    <code>g([1,3])</code> yields a <code>ScanParam</code> carrying a <em>list</em> idx — consumed
+    only by <code>cat_scans</code> (no field authoring on it, matching MATLAB's display-only use).</li>
+  <li><strong><code>load</code></strong> / <code>load_v1</code> / <code>load_v0</code> — the inverse of
+    <code>dump</code>, version-dispatched; v1 deep-copies + injects <code>use_var</code> defaults for
+    old payloads, v0 is the legacy <code>p</code>/<code>scan</code> struct-array layout.
+    <code>validate()</code> is a faithful <strong>no-op stub</strong> (a latent MATLAB bug —
+    <code>load</code> calls it expecting checks that were never written; replicated for behavior
+    parity).</li>
+  <li>The <code>dotest</code> port keeps every semantic assert (build / dump / getseq / get_scan /
+    concat / load / assign battery) and drops every display-only <code>checked_disp</code> line. Key
+    traces it pins: <code>g2 = [g, g]</code> is an independent deepcopy (mutating <code>g</code> via
+    <code>setbase</code> leaves <code>g2.dump()</code> unchanged), and the load→assign battery
+    (<code>g3(3)=g3(1)</code>, <code>g3(5)=g3(2)</code>, <code>g3(:).name=…</code>, <code>g3(4)=struct</code>).</li>
+</ul>
+
+<h3>W8 — <code>usevar</code> (runtime-variable scan axes)</h3>
+<p><code>usevar</code> marks a scan axis as a <strong>runtime variable</strong> (injected as a
+sequence global per shot) instead of expanding it into distinct compiled sequences — so seqs that
+differ <em>only</em> in usevar dims share one compiled <code>id</code>. <code>getseq_with_var(n)</code>
+splits each axis into either a fixed expansion (folded into <code>seq</code>, advancing the
+mixed-radix <code>id</code> + cross-scan <code>count</code>) or a variable (collected into a
+<code>vars</code> list of <code>(path, value)</code>).</p>
+<p>Which axes are variables is <code>computed_use_var</code>: a dim is a variable iff
+<strong>every</strong> leaf under it resolves (via the per-scan merged use_var tree) to exactly
+<code>+1</code>. The resolution rule (<code>check_use_var</code>) is subtle and ported faithfully:
+the <strong>root</strong> node's flag, overridden by the <strong>leaf</strong> field-node's flag if
+nonzero — <em>intermediate</em> path nodes are not consulted. (So <code>g().A.C.usevar(true)</code>
+makes only <code>A.C</code> a variable; <code>A.B</code> stays fixed.) The full
+<code>TestScanGroup.test_usevar</code> battery (9 states A–I incl. a <code>load</code> round-trip and
+cache invalidation) is ported.</p>
+<blockquote>
+<p><strong>Latent bug replicated:</strong> <code>computed_use_var</code>'s cache is keyed
+<em>only</em> by <code>length(scans)</code>, so base-index churn that keeps the length can return
+stale data. Most mutators clear the cache (masking it); the port keeps the same length-keyed cache
+for behavior parity rather than "fixing" it.</p>
+</blockquote>
+
+<h3>W9 — <code>ScanAccessTracker</code> (unused-parameter lint)</h3>
+<p>A post-hoc lint that catches channel-name typos: it <strong>consumes</strong> the per-sequence
+<code>accessed</code> tree the Phase-3 <code>DynProps</code> already produces
+(<code>get_accessed</code>), unions it per scan, and once every sequence of a scan is collected,
+warns about any fixed/swept parameter no sequence touched. A param counts as <em>used</em> if
+<em>any</em> sequence in the scan accessed it — so scanning a parameter that disables code in some
+shots doesn't false-positive. It's pure bool-tree arithmetic:</p>
+<table>
+  <thead><tr><th>Helper</th><th>Does</th></tr></thead>
+  <tbody>
+    <tr><td><code>to_bool_struct</code></td><td>params struct → bool tree (every non-struct leaf → <code>True</code>)</td></tr>
+    <tr><td><code>merge_struct</code></td><td>union of two trees (a non-struct on either side wins as <code>True</code>)</td></tr>
+    <tr><td><code>compute_unused</code></td><td>subtract <code>accessed</code> from params → only never-accessed leftovers</td></tr>
+    <tr><td><code>show_unused</code></td><td>render the leftover as the dotted, indented warning</td></tr>
+  </tbody>
+</table>
+<blockquote>
+<p><strong>Porter trap avoided:</strong> MATLAB <code>to_bool_struct</code> "returns" its
+<em>in-place-mutated input</em>; a naive Python port that builds a fresh <code>out</code> but
+forgets to return it yields empty trees. The port builds a fresh dict and returns it
+<strong>explicitly</strong>.</p>
+</blockquote>
+<p>5 of 6 <code>TestScanAccessTracker</code> methods are ported (<code>test_reset</code> is
+MATLAB warn-prefix plumbing). MATLAB compares <code>evalc</code>'d warning text with a
+version-specific prefix; the port instead captures the Python <code>warnings</code> list and
+compares message bodies directly — prefix-free.</p>
+
+<h2>Locked design decisions</h2>
+<ol>
+  <li><strong>No visited tree.</strong> Swept-vs-fixed is structural and decided at
+    <code>.scan()</code>-call time; the brassboard <code>(values, visited, fieldname)</code> triple
+    was declined (doubly wrong, and the access tree is zero bytes).</li>
+  <li><strong>Handle semantics; copy only the data.</strong> <code>ScanGroup</code> is a reference
+    class — <code>deepcopy</code> is applied at exactly four boundaries
+    (<code>getfullscan</code> result, whole-scan assign source, <code>cat_scans</code> merged scans,
+    <code>dump</code>/<code>load</code>) because Python dicts alias where MATLAB structs copy.</li>
+  <li><strong>Scramble is NOT in ScanGroup.</strong> Zero RNG here; the point-permutation is a
+    <code>runp</code> value consumed by the runner (Phase 5). Expansion is the deterministic
+    column-major enum, full stop.</li>
+  <li><strong>Production-first staging.</strong> A YbScans survey showed production uses only
+    single-group, fixed params, 1-D/2-D <code>.scan(dim)</code>, <code>runp</code>, <code>getseq</code>
+    — never <code>g(n)</code>/<code>setbase</code>/<code>usevar</code>/<code>horzcat</code>/<code>toscan</code>.
+    So W1–W6 delivered the production-sufficient milestone first; W7–W9 are the test-only surface
+    for full parity.</li>
+</ol>
+
+<h2>What's pinned</h2>
+<table>
+  <thead><tr><th>Check</th><th>Surface</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>Expansion equality vs MATLAB (field / value / order)</td><td>9-group battery incl. Spectrum399 / ImagingHist / STIRAP-AWG shapes</td><td><span class="ok">identical</span></td></tr>
+    <tr><td>Per-point bytes vs MATLAB</td><td>FreqPushOut399Scan→PushoutSurvival399Seq (5 pts) · imagingScan→PushoutSurvivalSeq (4 pts)</td><td><span class="ok">byte-identical</span></td></tr>
+    <tr><td>Full <code>TestScanGroup</code> parity (dotest / assign / load / usevar / param_size / …)</td><td>hand-translated expected structs</td><td><span class="ok">pass</span></td></tr>
+    <tr><td><code>TestScanAccessTracker</code> (5/6)</td><td>synthetic <code>accessed</code> dicts</td><td><span class="ok">pass</span></td></tr>
+    <tr><td><code>TestEnableScan</code> + <code>MutableRef</code></td><td>context-manager / LIFO-nesting / disable / idempotency</td><td><span class="ok">pass</span></td></tr>
+  </tbody>
+</table>
+<pre><code># the whole Phase-4 suite (safe default: no engine, no hardware)
+pytest pyctrl
+# just the ScanGroup data-model + oracles
+pytest pyctrl/tests/test_scan_group.py pyctrl/tests/test_scan_group_oracle.py \
+       pyctrl/tests/test_scan_point_oracle.py -v</code></pre>
+
+<h2>Status &amp; what's next</h2>
+<ul>
+  <li><strong>Done:</strong> Phase 4 <strong>W1–W9</strong> — ScanGroup complete and committed
+    (<code>670cc0c</code>→<code>a148796</code>). Full suite <span class="ok">391 passed / 13
+    deselected</span>.</li>
+  <li><strong>After Phase 4:</strong> Phase 5 (run loop / abort-pause — the ZMQ
+    <code>ExptServer</code> as source of truth + memmap bridge; <code>scramble</code> lives here),
+    then Phase 6 (full experiment migration).</li>
+</ul>
+
+<footer>
+<strong>See also</strong><br>
+· <code>PYTHON_FRONTEND_PLAN.md</code> §"Phase 4 — ScanGroup" — the plan + byte-format appendix.<br>
+· <code>.claude/memory/project_pyctrl_phase4_scangroup_plan.md</code> — the W1–W9 progress log + locked decisions.<br>
+· <code>.claude/memory/project_pyctrl_scangroup_latent_bugs.md</code> — the latent MATLAB bugs replicated for parity.<br>
+· <code>docs/phase3_walkthrough.html</code> — the previous phase (config &amp; globals).
+</footer>
+
+</body>
+</html>
