@@ -1,10 +1,11 @@
 """scan_group.py -- ScanGroup: an ordered set of N-dimensional parameter scans.
 
 Faithful transliteration of ``matlab_new/lib/ScanGroup.m`` (a ``handle`` class). This file
-is **Phase-4 W2**: the core data model + the authoring DSL only. Materialization/queries
-(``getseq``/``getseq_in_scan``/``nseq``/``scansize``/``scandim``/``axisnum``/``get_*``,
-the ``getfullscan`` base-merge) are W3; ``usevar`` + ``getseq_*_with_var`` are W8;
-``load``/``cat_scans``/``horzcat``/``toscan`` are W7.
+covers **Phase-4 W2** (core data model + authoring DSL) and **W3** (materialization +
+queries): ``getfullscan`` (base-merge + dirty cache), the column-major
+``getseq``/``getseq_in_scan`` expansion, ``nseq``/``scansize``/``scandim``/``axisnum``, and
+``get_fixed``/``get_vars``/``get_scan``/``get_scanaxis``. Still TODO: ``usevar`` +
+``getseq_*_with_var`` (W8); ``load``/``cat_scans``/``horzcat``/``toscan`` (W7).
 
 Data model (mirrors ScanGroup.m's private properties verbatim):
   * ``_scans``  : list of Scan = ``{'baseidx': int, 'params': dict, 'vars': [Scan1D]}``
@@ -28,6 +29,7 @@ copies the source scan, and ``dump`` returns an independent copy.
 import copy
 
 from dyn_props import DynProps
+from scan_info import ScanInfo
 from scan_param import ScanParam
 
 try:                                   # numpy is the array type from Phase 1 onward;
@@ -150,6 +152,148 @@ class ScanGroup:
         }
 
     # ======================================================================= #
+    # W3: materialization + queries
+    # ======================================================================= #
+    def getseq(self, n):
+        # The n-th (1-based) sequence parameter across the whole group.
+        for scani in range(1, self.groupsize() + 1):
+            ss = self.scansize(scani)
+            if n <= ss:
+                return self.getseq_in_scan(scani, n)
+            n = n - ss
+        raise ValueError("Sequence index out of bound.")
+
+    def getseq_in_scan(self, scanidx, seqidx):
+        # The seqidx-th (1-based) point within scan `scanidx`. THE byte-critical path:
+        # a deterministic column-major mixed-radix enumeration -- dimension 1 varies
+        # fastest, dummy (size 0) dimensions skipped (ScanGroup.m:278-294).
+        scan = self._getfullscan(scanidx)          # already an independent copy
+        seq = scan["params"]
+        seqidx = seqidx - 1                         # 0-based from here on
+        for var in scan["vars"]:
+            size = var["size"]
+            if size == 0:
+                continue
+            subidx = seqidx % size                  # 0-based
+            seqidx = (seqidx - subidx) // size
+            for v, path in _foreach_nonstruct(var["params"]):
+                self._setfield(seq, path, v[subidx])    # MATLAB 1-based v(subidx+1)
+        return seq
+
+    def nseq(self):
+        return sum(self.scansize(i) for i in range(1, self.groupsize() + 1))
+
+    def scansize(self, idx):
+        scan = self._getfullscan(idx)
+        res = 1
+        for var in scan["vars"]:
+            sz1d = var["size"]
+            if sz1d != 0:
+                res = res * sz1d
+        return res
+
+    def scandim(self, idx):
+        # Number of scan dimensions, including dummy ones.
+        return len(self._getfullscan(idx)["vars"])
+
+    def axisnum(self, idx=1, dim=1):
+        # Number of scan parameters for scan `idx` along axis `dim` (0 for out-of-bound).
+        scan = self._getfullscan(idx)
+        if dim > len(scan["vars"]) or scan["vars"][dim - 1]["size"] <= 1:
+            return 0
+        return sum(1 for _ in _foreach_nonstruct(scan["vars"][dim - 1]["params"]))
+
+    def get_fixed(self, idx):
+        if idx == 0:
+            raise ValueError("Out of bound scan index.")
+        return self._getfullscan(idx)["params"]
+
+    def get_vars(self, idx, dim=1):
+        # Returns (params, size) for scan `idx` along `dim` (size 0 = dummy dimension).
+        if idx == 0:
+            raise ValueError("Out of bound scan index.")
+        scan = self._getfullscan(idx)
+        var = scan["vars"][dim - 1]
+        return var["params"], var["size"]
+
+    def get_scan(self, idx):
+        if idx == 0:
+            raise ValueError("Out of bound scan index.")
+        return ScanInfo(self, idx)
+
+    def get_scanaxis(self, idx, dim, field=1):
+        # The scan axis (values + dotted path) for scan `idx` along `dim`. `field` selects
+        # the parameter by 1-based index or by dotted-name string. A dummy/out-of-bound
+        # dimension falls back to the fixed parameters (matching the size-1 decay).
+        if idx == 0:
+            raise ValueError("Out of bound scan index.")
+        scan = self._getfullscan(idx)
+        if len(scan["vars"]) < dim or scan["vars"][dim - 1]["size"] == 0:
+            params = scan["params"]                 # deprecated fallback path
+        else:
+            params = scan["vars"][dim - 1]["params"]
+        if isinstance(field, str):
+            for v, path in _foreach_nonstruct(params):
+                if ".".join(path) == field:
+                    return v, field
+            raise ValueError("Cannot find scan field")
+        # numeric: the `field`-th (1-based) non-struct leaf, in traversal order.
+        remaining = int(field)
+        for v, path in _foreach_nonstruct(params):
+            remaining -= 1
+            if remaining == 0:
+                return v, ".".join(path)
+        raise ValueError("Cannot find scan field")
+
+    # ======================================================================= #
+    # ScanInfo-facing implementation (MATLAB methods(Access=?ScanInfo))
+    # ======================================================================= #
+    def _try_getfield(self, idx, path, allow_scan):
+        # Look up `path` for scan `idx`. Returns (value, 0) for a fixed leaf, (value, dim)
+        # for a swept leaf, or (None, -1) when not found as a leaf (ScanGroup.m:1171-1197).
+        if idx == 0:
+            scan = self._base
+        elif len(self._scans) < idx:
+            return None, -1
+        else:
+            scan = self._getfullscan(idx)
+        val, res = _get_leaffield(scan["params"], path)
+        if res:
+            return val, 0
+        if not allow_scan:
+            return None, -1
+        for dim in range(1, len(scan["vars"]) + 1):
+            val, res = _get_leaffield(scan["vars"][dim - 1]["params"], path)
+            if res:
+                return val, dim
+        return None, -1
+
+    def _info_fieldnames(self, idx, path):
+        # Union of field names under `path`, across fixed + every scan-dim params,
+        # first-seen order (ScanGroup.m:711-742).
+        res = []
+
+        def add(params):
+            p = params
+            for name in path:
+                if not isinstance(p, dict):
+                    raise ValueError("Parameter parent overwriten")
+                if name not in p:
+                    return
+                p = p[name]
+            if not isinstance(p, dict):
+                return
+            for name in p:
+                if name not in res:
+                    res.append(name)
+
+        scan = self._getfullscan(idx)
+        add(scan["params"])
+        for var in scan["vars"]:
+            add(var["params"])
+        return res
+
+    # ======================================================================= #
     # ScanParam-facing implementation (MATLAB methods(Access=?ScanParam))
     # ======================================================================= #
     def _param_size(self, idx, dim):
@@ -267,6 +411,59 @@ class ScanGroup:
     def _getbaseidx(self, idx):
         return self._scans[idx - 1]["baseidx"]
 
+    def _check_dirty(self, idx):
+        # Dirty if this scan -- or any scan up its base chain -- has a dirty cache entry.
+        while idx != 0:
+            if self._scanscache[idx - 1]["dirty"]:
+                return True
+            idx = self._scans[idx - 1]["baseidx"]
+        return False
+
+    def _getfullscan(self, idx):
+        # The scan with its base scan merged in. Returns ``{'params', 'vars'}`` as an
+        # INDEPENDENT copy (MATLAB returns a value-copy, so every caller may freely mutate).
+        # Caches the merged result keyed by the per-scan dirty flag (ScanGroup.m:1085-1133).
+        if idx == 0:
+            return {"params": copy.deepcopy(self._base["params"]),
+                    "vars": copy.deepcopy(self._base["vars"])}
+        if not self._check_dirty(idx):
+            c = self._scanscache[idx - 1]
+            return {"params": copy.deepcopy(c["params"]),
+                    "vars": copy.deepcopy(c["vars"])}
+        params = copy.deepcopy(self._scans[idx - 1]["params"])
+        vars_ = copy.deepcopy(self._scans[idx - 1]["vars"])
+        scan = {"params": params, "vars": vars_}
+        base = self._getfullscan(self._getbaseidx(idx))
+        # Merge fixed parameters the child hasn't already set (child wins; dim identity
+        # tracked by find_scan_dim so a base value never lands on a child-owned path).
+        for v, path in _foreach_nonstruct(base["params"]):
+            if _find_scan_dim(scan, path) >= 0:
+                continue
+            self._setfield(params, path, copy.deepcopy(v))
+        # Merge variable parameters, keeping each base axis on its ORIGINAL dimension index.
+        for scanid in range(1, len(base["vars"]) + 1):
+            for v, path in _foreach_nonstruct(base["vars"][scanid - 1]["params"]):
+                if _find_scan_dim(scan, path) >= 0:
+                    continue
+                _ensure_vars(vars_, scanid)
+                self._setfield(vars_[scanid - 1]["params"], path, copy.deepcopy(v))
+        # Recount sizes with a strict length-consistency check.
+        for var in vars_:
+            scansize = 0
+            for v, path in _foreach_nonstruct(var["params"]):
+                nv = _numel(v)
+                if nv == 1:
+                    raise ValueError("Too few elements to scan.")
+                elif scansize == 0:
+                    scansize = nv
+                elif scansize != nv:
+                    raise ValueError("Inconsistent scan size.")
+            var["size"] = scansize
+        self._scanscache[idx - 1]["params"] = params
+        self._scanscache[idx - 1]["vars"] = vars_
+        self._scanscache[idx - 1]["dirty"] = False
+        return {"params": copy.deepcopy(params), "vars": copy.deepcopy(vars_)}
+
     def _set_dirty_all(self):
         for c in self._scanscache:
             c["dirty"] = True
@@ -351,6 +548,52 @@ def _check_field(obj, path):
 def _ensure_vars(vars_, dim):
     while len(vars_) < dim:
         vars_.append(_def_vars())
+
+
+def _foreach_nonstruct(obj):
+    # Yield (value, path) for every non-struct LEAF of a nested params dict, depth-first in
+    # insertion order. Mirrors ScanGroup.foreach_nonstruct: the top must be a (scalar)
+    # struct; an empty sub-struct is skipped (neither descended nor reported); a list/array
+    # (a scan axis) is a leaf. Python dicts preserve insertion order, so traversal order
+    # matches MATLAB fieldnames order (relevant for get_scanaxis index lookup + the oracle).
+    if not isinstance(obj, dict):
+        raise ValueError("Object is not a struct.")
+    yield from _walk_nonstruct(obj, ())
+
+
+def _walk_nonstruct(obj, prefix):
+    for name, v in obj.items():
+        if isinstance(v, dict):
+            if v:                              # non-empty struct -> descend
+                yield from _walk_nonstruct(v, prefix + (name,))
+            # empty struct -> skip (matches MATLAB: not pushed, not reported)
+        else:
+            yield v, prefix + (name,)
+
+
+def _get_leaffield(obj, path):
+    # (value, True) iff `path` resolves to a non-struct LEAF in `obj`; (None, False) if a
+    # name along the path is missing OR the path lands on a (sub-)struct. Raises if a parent
+    # along the path is a non-struct (ScanGroup.get_leaffield "Parameter parent overwriten").
+    for name in path:
+        if not isinstance(obj, dict):
+            raise ValueError("Parameter parent overwriten")
+        if name not in obj:
+            return None, False
+        obj = obj[name]
+    is_leaf = not isinstance(obj, dict)
+    return (obj if is_leaf else None), is_leaf
+
+
+def _find_scan_dim(scan, path):
+    # 0 if `path` is a fixed parameter of `scan`, the 1-based dim if it is a scan parameter,
+    # else -1 (ScanGroup.find_scan_dim).
+    if _check_field(scan["params"], path):
+        return 0
+    for i in range(1, len(scan["vars"]) + 1):
+        if _check_field(scan["vars"][i - 1]["params"], path):
+            return i
+    return -1
 
 
 def _isarray(obj):
