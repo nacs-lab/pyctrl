@@ -125,9 +125,13 @@ class TestRealConfig:
         assert type(v) is float
 
     def test_consts_cross_reference_resolved(self, real_config):
-        # consts.SLM.VServo = consts.Init.VSLMServo (expConfig.m) -> same resolved value
+        # consts.SLM.VServo = consts.Init.VSLMServo (expConfig.m) -> same resolved value.
+        # The cross-reference equality is the version-independent invariant; the literal
+        # below just pins the captured value. VSLMServo is a recalibrated value (expConfig
+        # comment shows past 2.9/3.7/4/6/1.3...), so it tracks the committed snapshot --
+        # bump it when config_reference.json is re-captured (currently 6).
         assert real_config.consts["SLM"]["VServo"] == real_config.consts["Init"]["VSLMServo"]
-        assert real_config.consts["Init"]["VSLMServo"] == 4.0
+        assert real_config.consts["Init"]["VSLMServo"] == 6.0
 
     def test_consts_non_numeric_leaves_preserved(self, real_config):
         assert isinstance(real_config.consts["AWG556"]["resource_address"], str)
