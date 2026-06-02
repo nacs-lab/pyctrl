@@ -610,3 +610,379 @@ class TestGetScan:
         g = ScanGroup()
         with pytest.raises(TypeError, match="read-only"):
             g.get_scan(1).a = 5
+
+
+# =========================================================================== #
+# W7 -- test-only surface for full TestScanGroup parity:
+#   * cat_scans / horzcat / toscan (concat)
+#   * load / load_v0 / load_v1 / validate (the inverse of dump)
+#   * ScanParam value reading (grp(idx).a()) + multi-index addressing
+# All display-only (checked_disp / display) lines from the MATLAB tests are dropped, as for
+# DynProps test_disp. Dict == is order-insensitive, so the field-insertion order the W4
+# oracle pins is not re-checked here (it already is, in test_scan_group_oracle.py).
+# =========================================================================== #
+def uv():
+    """A fresh DEF_USE_VAR dict (def 0, no dims, no fields)."""
+    return {"def": 0, "dims": [], "field": {}}
+
+
+class TestDoTest:
+    """Port of TestScanGroup.dotest -- the mega build/getseq/get_scan/concat/load/assign
+    integration test. Only the semantic asserts are kept (every checked_disp line dropped).
+    getseq_novar is replaced by a plain getseq (its getseq_with_var cross-check is W8)."""
+
+    def test_dotest(self):
+        g = ScanGroup()
+        assert g.groupsize() == 1
+
+        g().a = 1
+        b = g()
+        b.b = 2
+        assert g.nseq() == 1
+
+        b.c.scan(1, [1, 2, 3])
+        assert g.nseq() == 3
+
+        g(1).c = 3                          # scan 1 fixes c -> shadows the base axis
+        assert g.nseq() == 1
+
+        b.d.scan(2, [1, 2])
+        assert g.nseq() == 2
+
+        s2 = g(2)
+        s2.d = 0
+        assert g.groupsize() == 2
+        assert g.scansize(1) == 2
+        assert g.scansize(2) == 3
+        assert g.nseq() == 5
+        assert g.getseq(1) == {"c": 3, "a": 1, "b": 2, "d": 1}
+        assert g.getseq(2) == {"c": 3, "a": 1, "b": 2, "d": 2}
+        assert g.getseq(3) == {"d": 0, "a": 1, "b": 2, "c": 1}
+        assert g.getseq(4) == {"d": 0, "a": 1, "b": 2, "c": 2}
+        assert g.getseq(5) == {"d": 0, "a": 1, "b": 2, "c": 3}
+
+        g(g.end).k.a.b.c = 2
+        assert g.nseq() == 5
+        assert g.getseq(3) == {"d": 0, "k": KSTRUCT, "a": 1, "b": 2, "c": 1}
+
+        x, y = g.get_scan(2).c()
+        assert x == [1, 2, 3]
+        assert y == 1
+
+        # --- concatenation: g2 = [g, g] --------------------------------------- #
+        g2 = ScanGroup.cat_scans(g, g)
+        assert g2.nseq() == 10
+        for i in range(1, 6):
+            assert g.getseq(i) == g2.getseq(i)
+            assert g.getseq(i) == g2.getseq(i + 5)
+        g2dump = g2.dump()
+
+        # g3 = [g2(1), g2(2:end)] -- a scalar param + a multi-index param.
+        g3 = ScanGroup.cat_scans(g2(1), g2(slice(2, g2.end)))
+        assert g3.nseq() == 10
+        for i in range(1, 11):
+            assert g2.getseq(i) == g3.getseq(i)
+
+        # --- setbase: scan 2 now derives from scan 1 -------------------------- #
+        g.setbase(2, 1)
+        assert g.groupsize() == 2
+        assert g.scansize(1) == 2
+        assert g.scansize(2) == 1
+        assert g.nseq() == 3
+        assert g.getseq(1) == {"c": 3, "a": 1, "b": 2, "d": 1}
+        assert g.getseq(2) == {"c": 3, "a": 1, "b": 2, "d": 2}
+        assert g.getseq(3) == {"d": 0, "k": KSTRUCT, "c": 3, "a": 1, "b": 2}
+
+        # g2 is an independent deep copy -- mutating g must not touch it.
+        assert g2.dump() == g2dump
+
+        assert g.get_scan(1).fieldnames() == ["c", "a", "b", "d"]
+        assert g.get_scan(2).fieldnames() == ["d", "k", "c", "a", "b"]
+        assert g.get_scan(2).k.fieldnames() == ["a"]
+
+        g.setbase(2, 1)                     # idempotent
+        assert g.groupsize() == 2
+        assert g.scansize(1) == 2
+        assert g.scansize(2) == 1
+        assert g.nseq() == 3
+        assert g.getseq(1) == {"c": 3, "a": 1, "b": 2, "d": 1}
+        assert g.getseq(2) == {"c": 3, "a": 1, "b": 2, "d": 2}
+        assert g.getseq(3) == {"d": 0, "k": KSTRUCT, "c": 3, "a": 1, "b": 2}
+
+        x, y = g.get_scan(1).c()
+        assert x == 3 and y == 0
+        x, y = g.get_scan(1).d()
+        assert x == [1, 2] and y == 2
+        x, y = g.get_scan(2).k()
+        assert isinstance(x, ScanInfo) and y == -1
+        x, y = g.get_scan(2).e()
+        assert isinstance(x, ScanInfo) and y == -1
+        x, y = g.get_scan(2).e(2)
+        assert x == 2 and y == 0
+        x, y = g.get_scan(2).e()
+        assert isinstance(x, ScanInfo) and y == -1
+
+        # --- the full dump() ------------------------------------------------- #
+        assert g.dump() == {
+            "version": 1,
+            "scans": [
+                {"baseidx": 0, "params": {"c": 3}, "vars": []},
+                {"baseidx": 1, "params": {"d": 0, "k": KSTRUCT}, "vars": []},
+            ],
+            "base": {"params": {"a": 1, "b": 2},
+                     "vars": [{"size": 3, "params": {"c": [1, 2, 3]}},
+                              {"size": 2, "params": {"d": [1, 2]}}]},
+            "runparam": {},
+            "use_var_base": uv(),
+            "use_var_scans": [],
+        }
+
+        # --- load round-trip + whole-scan assignment battery ----------------- #
+        g3 = ScanGroup.load(g.dump())
+        assert g3.nseq() == 3
+        assert g3.getseq(1) == {"c": 3, "a": 1, "b": 2, "d": 1}
+        assert g3.getseq(2) == {"c": 3, "a": 1, "b": 2, "d": 2}
+        assert g3.getseq(3) == {"d": 0, "k": KSTRUCT, "c": 3, "a": 1, "b": 2}
+        assert g3().a() == 1
+        assert g3(slice(None)).b() == 2
+        assert g3(1).c() == 3
+        assert g3(2).d() == 0
+        assert g3(2).k.a.b.c() == 2
+
+        g3(3).assign(g3(1))
+        assert g3.nseq() == 5
+        for i in range(1, 3):
+            assert g3.getseq(i) == g3.getseq(3 + i)
+
+        g3(5).assign(g3(2))
+        assert g3.nseq() == 12
+        assert g3.getseq(12) == g3.getseq(3)
+        i = 1
+        for d in (1, 2):
+            for c in (1, 2, 3):
+                assert g3.getseq(5 + i) == {"a": 1, "b": 2, "c": c, "d": d}
+                i += 1
+
+        g3(slice(None)).name = "a long string"
+        assert g3.nseq() == 12
+        assert g3.getseq(6) == {"a": 1, "b": 2, "c": 1, "d": 1, "name": "a long string"}
+
+        g3(4).assign({"c": 5, "d": 10})
+        assert g3.nseq() == 7
+        assert g3.getseq(6) == {"a": 1, "b": 2, "c": 5, "d": 10, "name": "a long string"}
+
+        # --- runp aliasing (the one shared DynProps handle) ------------------ #
+        rp = g.runp()
+        g.runp().a = 3
+        rp.b = 2
+        assert g.runp().a() == 3
+        assert g.runp().b() == 2
+
+
+class TestParamToscan:
+    """Direct port of TestScanGroup.test_param_toscan."""
+
+    def _group(self):
+        g = ScanGroup()
+        g().A.B = 1
+        g().A.C.scan([2, 3, 4])
+        g(1).C.D = 100
+        g(1).A.B.scan(2, [2, 3, 4, 4, 5])
+        g.runp().A.K = 23
+        return g
+
+    def test_toscan_default(self):
+        g = self._group()
+        g0 = g().toscan()
+        assert g0.dump() == {
+            "version": 1,
+            "scans": [{"baseidx": 0,
+                       "params": {"A": {"B": 1}},
+                       "vars": [{"size": 3, "params": {"A": {"C": [2, 3, 4]}}}]}],
+            "base": {"params": {}, "vars": []},
+            "runparam": {"A": {"K": 23}},
+            "use_var_base": uv(),
+            "use_var_scans": [uv()],
+        }
+
+    def test_toscan_scan1(self):
+        g = self._group()
+        g1 = g(1).toscan()
+        assert g1.dump() == {
+            "version": 1,
+            "scans": [{"baseidx": 0,
+                       "params": {"C": {"D": 100}},
+                       "vars": [{"size": 3, "params": {"A": {"C": [2, 3, 4]}}},
+                                {"size": 5, "params": {"A": {"B": [2, 3, 4, 4, 5]}}}]}],
+            "base": {"params": {}, "vars": []},
+            "runparam": {"A": {"K": 23}},
+            "use_var_base": uv(),
+            "use_var_scans": [uv()],
+        }
+
+
+class TestAssignScan:
+    """Direct port of TestScanGroup.test_assign_scan (the whole-scan assignment battery)."""
+
+    def test_assign_scan(self):
+        g = ScanGroup()
+        g().A.B = 2
+        g().A.C = 34
+        g().C.scan(1, [1, 2, 3])
+        g().D.scan(2, [2, 3])
+        g0dump = {
+            "version": 1,
+            "scans": [{"baseidx": 0, "params": {}, "vars": []}],
+            "base": {"params": {"A": {"B": 2, "C": 34}},
+                     "vars": [{"size": 3, "params": {"C": [1, 2, 3]}},
+                              {"size": 2, "params": {"D": [2, 3]}}]},
+            "runparam": {},
+            "use_var_base": uv(),
+            "use_var_scans": [],
+        }
+        assert g.dump() == g0dump
+        assert g.nseq() == 6
+
+        g(slice(None)).assign(g())          # g(:) = g() -- no-op
+        assert g.dump() == g0dump
+        assert g.nseq() == 6
+
+        g(2).assign(g())                    # g(2) = g()
+        g1dump = {
+            "version": 1,
+            "scans": [
+                {"baseidx": 0, "params": {}, "vars": []},
+                {"baseidx": 0, "params": {"A": {"B": 2, "C": 34}},
+                 "vars": [{"size": 3, "params": {"C": [1, 2, 3]}},
+                          {"size": 2, "params": {"D": [2, 3]}}]},
+            ],
+            "base": {"params": {"A": {"B": 2, "C": 34}},
+                     "vars": [{"size": 3, "params": {"C": [1, 2, 3]}},
+                              {"size": 2, "params": {"D": [2, 3]}}]},
+            "runparam": {},
+            "use_var_base": uv(),
+            "use_var_scans": [uv(), uv()],
+        }
+        assert g.dump() == g1dump
+        assert g.nseq() == 12
+
+        g().K = 100
+        g().Y.scan(1, [12, 13, 42])
+        g().E.scan(3, [1, 2, 3, 4, 5])
+        assert g.nseq() == 60
+        g2dump = {
+            "version": 1,
+            "scans": [
+                {"baseidx": 0, "params": {}, "vars": []},
+                {"baseidx": 0, "params": {"A": {"B": 2, "C": 34}},
+                 "vars": [{"size": 3, "params": {"C": [1, 2, 3]}},
+                          {"size": 2, "params": {"D": [2, 3]}}]},
+            ],
+            "base": {"params": {"A": {"B": 2, "C": 34}, "K": 100},
+                     "vars": [{"size": 3, "params": {"C": [1, 2, 3], "Y": [12, 13, 42]}},
+                              {"size": 2, "params": {"D": [2, 3]}},
+                              {"size": 5, "params": {"E": [1, 2, 3, 4, 5]}}]},
+            "runparam": {},
+            "use_var_base": uv(),
+            "use_var_scans": [uv(), uv()],
+        }
+        assert g.dump() == g2dump
+
+        g(slice(None)).assign(g(2))         # g(:) = g(2)
+        assert g.dump() == g1dump
+        assert g.nseq() == 12
+
+        g(slice(None)).assign(g(1))         # g(:) = g(1)
+        g3dump = {
+            "version": 1,
+            "scans": [
+                {"baseidx": 0, "params": {}, "vars": []},
+                {"baseidx": 0, "params": {"A": {"B": 2, "C": 34}},
+                 "vars": [{"size": 3, "params": {"C": [1, 2, 3]}},
+                          {"size": 2, "params": {"D": [2, 3]}}]},
+            ],
+            "base": {"params": {}, "vars": []},
+            "runparam": {},
+            "use_var_base": uv(),
+            "use_var_scans": [uv(), uv()],
+        }
+        assert g.dump() == g3dump
+        assert g.nseq() == 7
+
+        g(slice(None)).assign({"C": 1, "D": 123})   # g(:) = struct(...)
+        g4dump = {
+            "version": 1,
+            "scans": [
+                {"baseidx": 0, "params": {}, "vars": []},
+                {"baseidx": 0, "params": {"A": {"B": 2, "C": 34}},
+                 "vars": [{"size": 3, "params": {"C": [1, 2, 3]}},
+                          {"size": 2, "params": {"D": [2, 3]}}]},
+            ],
+            "base": {"params": {"C": 1, "D": 123}, "vars": []},
+            "runparam": {},
+            "use_var_base": uv(),
+            "use_var_scans": [uv(), uv()],
+        }
+        assert g.dump() == g4dump
+        assert g.nseq() == 7
+
+
+class TestLoad:
+    """Ports of TestScanGroup.test_load0 (legacy v0) and test_load_no_var (v1 default fill)."""
+
+    def test_load0(self):
+        # linspace(10.1, 11, 10): plain Python list so dict == compares cleanly.
+        B = [10.1 + 0.1 * k for k in range(10)]
+        p0 = [{"A": 1, "B": list(B)}, {"A": 2, "B": []}]   # p0(2).B empty -> falls back
+
+        g4 = ScanGroup.load({"version": 0, "p": p0, "scan": {}})
+        assert g4.nseq() == 20
+        assert g4.get_fixed(1) == {"A": 1}
+        assert g4.get_fixed(2) == {"A": 2}
+        params, _ = g4.get_vars(1)
+        assert params == {"B": B}
+        params, _ = g4.get_vars(1, 1)
+        assert params == {"B": B}
+        params, _ = g4.get_vars(2)
+        assert params == {"B": B}
+        params, _ = g4.get_vars(2, 1)
+        assert params == {"B": B}
+
+        val, path = g4.get_scanaxis(1, 1)
+        assert val == B and path == "B"
+        val, path = g4.get_scanaxis(1, 1, "B")
+        assert val == B and path == "B"
+
+        ary2 = [(k + 1) * 2.5 for k in range(len(B))]
+        g4(2).a.b.c.d.scan(ary2)
+        val, path = g4.get_scanaxis(2, 1, "a.b.c.d")
+        assert val == ary2 and path == "a.b.c.d"
+
+    def test_load_no_var(self):
+        serialized = {
+            "version": 1,
+            "scans": [
+                {"baseidx": 0, "params": {"c": 3}, "vars": []},
+                {"baseidx": 1, "params": {"d": 0, "k": {}}, "vars": []},
+            ],
+            "base": {"params": {"a": 1, "b": 2},
+                     "vars": [{"size": 3, "params": {"c": [1, 2, 3]}},
+                              {"size": 2, "params": {"d": [1, 2]}}]},
+            "runparam": {},
+        }
+        g = ScanGroup.load(serialized)
+
+        # The loader injects the defaults for an old (use_var-less) payload; dump must then
+        # round-trip exactly (ScanGroup.m:1505-1514).
+        expected = dict(serialized)
+        expected["use_var_base"] = uv()
+        expected["use_var_scans"] = []
+        assert g.dump() == expected
+
+    def test_load_missing_version_errors(self):
+        with pytest.raises(ValueError, match="Version missing"):
+            ScanGroup.load({"scans": []})
+
+    def test_load_wrong_version_errors(self):
+        with pytest.raises(ValueError, match="Wrong object version"):
+            ScanGroup.load({"version": 7})

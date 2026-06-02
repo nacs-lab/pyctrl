@@ -23,8 +23,15 @@ PYTHON_FRONTEND_PLAN.md Phase 4):
 
 Because ``scan``/``assign``/``size``/``usevar``/``toscan`` are real methods, a parameter
 literally named one of those is shadowed (unreachable by attribute) -- MATLAB likewise
-special-cases ``scan``/``usevar``. Reading a fixed value (``grp(idx).a()``) is Phase-4 W3
-(materialize/query); ``usevar`` is W8 and ``toscan`` is W7 -- those raise here.
+special-cases ``scan``/``usevar``. Reading a fixed value (``grp(idx).a()``) resolves the
+parameter (Python form of MATLAB ``param_subsref``'s trailing empty ``()``); ``usevar`` is
+W8 and raises here. ``toscan`` (W7) converts the param into a one-scan ``ScanGroup`` via
+``ScanGroup.cat_scans`` -- the same path as MATLAB's ``[g1, g2]``/``horzcat``.
+
+A ``ScanParam`` ``_idx`` is normally a positive int (one scan) or 0 (the default), but the
+multi-index concat form (MATLAB ``g(2:end)`` / ``g([1, 3])``) carries a LIST of indices.
+That list form is consumed only by ``cat_scans`` (display-only in MATLAB); field authoring
+on a multi-index param is not supported, matching MATLAB.
 """
 
 
@@ -47,6 +54,20 @@ class ScanParam:
             return
         # grp(idx).<path>.name = value  -> a single fixed parameter (never a scan axis).
         self._group._addparam(self._idx, self._path + (name,), value)
+
+    # -- resolve a fixed/swept value (Python form of MATLAB `grp(idx).a()`) ------ #
+    def __call__(self, *args):
+        # MATLAB param_subsref only resolves the trailing empty `()`; a default arg
+        # (`grp.a(default)`) is "Invalid parameter access syntax", and so is a bare
+        # `grp(idx)()` with no field path.
+        if args:
+            raise ValueError("Invalid parameter access syntax.")
+        if not self._path:
+            raise ValueError("Invalid parameter access syntax.")
+        val, dim = self._group._try_getfield(self._idx, self._path, True)
+        if dim < 0:
+            raise ValueError("Parameter does not exist yet.")
+        return val
 
     # -- explicit scan-axis authoring (Python form of MATLAB `.scan(dim) = vals`) - #
     def scan(self, *args):
@@ -77,8 +98,10 @@ class ScanParam:
     def usevar(self, *args):
         raise NotImplementedError("ScanParam.usevar is Phase-4 W8.")
 
+    # -- convert this param into a one-scan ScanGroup (MATLAB `toscan`) ---------- #
     def toscan(self):
-        raise NotImplementedError("ScanParam.toscan is Phase-4 W7 (cat_scans).")
+        from scan_group import ScanGroup
+        return ScanGroup.cat_scans(self)
 
     def __repr__(self):
         who = "default" if self._idx == 0 else str(self._idx)

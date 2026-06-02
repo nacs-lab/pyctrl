@@ -1,11 +1,14 @@
 """scan_group.py -- ScanGroup: an ordered set of N-dimensional parameter scans.
 
 Faithful transliteration of ``matlab_new/lib/ScanGroup.m`` (a ``handle`` class). This file
-covers **Phase-4 W2** (core data model + authoring DSL) and **W3** (materialization +
+covers **Phase-4 W2** (core data model + authoring DSL), **W3** (materialization +
 queries): ``getfullscan`` (base-merge + dirty cache), the column-major
 ``getseq``/``getseq_in_scan`` expansion, ``nseq``/``scansize``/``scandim``/``axisnum``, and
-``get_fixed``/``get_vars``/``get_scan``/``get_scanaxis``. Still TODO: ``usevar`` +
-``getseq_*_with_var`` (W8); ``load``/``cat_scans``/``horzcat``/``toscan`` (W7).
+``get_fixed``/``get_vars``/``get_scan``/``get_scanaxis``, and **W7** (test-only surface for
+full TestScanGroup parity): ``cat_scans``/``horzcat``/``toscan`` (concat), ``load``/
+``load_v0``/``load_v1``/``validate`` (the inverse of ``dump``), and a minimal
+``get_full_use_var`` (what ``cat_scans`` needs). Still TODO: ``usevar`` +
+``getseq_*_with_var`` (W8); ``ScanAccessTracker`` (W9).
 
 Data model (mirrors ScanGroup.m's private properties verbatim):
   * ``_scans``  : list of Scan = ``{'baseidx': int, 'params': dict, 'vars': [Scan1D]}``
@@ -71,13 +74,29 @@ class ScanGroup:
     # ======================================================================= #
     def __call__(self, *args):
         # grp() -> fallback (idx 0); grp(n) -> the n-th scan (n >= 1); grp(:) -> fallback.
+        # grp(2:end) / grp([1, 3]) -> a multi-index ScanParam (concat form, see cat_scans);
+        # the MATLAB magic colon `:` maps to the fallback, a bounded range/list does not.
         if len(args) == 0:
             return ScanParam(self, 0)
         if len(args) > 1:
             raise ValueError("Too many scan index")
         idx = args[0]
-        if isinstance(idx, slice) or idx == ":":
+        if idx == ":":
             return ScanParam(self, 0)
+        if isinstance(idx, slice):
+            # A full colon `g(:)` (slice(None, None)) -> the fallback (MATLAB magic colon).
+            if idx.start is None and idx.stop is None:
+                return ScanParam(self, 0)
+            # A bounded slice is a 1-based INCLUSIVE range (MATLAB `start:stop`).
+            step = idx.step if idx.step is not None else 1
+            idxlist = list(range(idx.start, idx.stop + 1, step))
+            if not all(_is_pos_int(i) for i in idxlist):
+                raise ValueError("Scan index must be positive")
+            return ScanParam(self, [int(i) for i in idxlist])
+        if isinstance(idx, (list, tuple)):
+            if not all(_is_pos_int(i) for i in idx):
+                raise ValueError("Scan index must be positive")
+            return ScanParam(self, [int(i) for i in idx])
         if not _is_pos_int(idx):
             # Don't allow implicitly addressing the fallback with 0 (or NaN/negatives).
             raise ValueError("Scan index must be positive")
@@ -244,6 +263,125 @@ class ScanGroup:
             if remaining == 0:
                 return v, ".".join(path)
         raise ValueError("Cannot find scan field")
+
+    # ======================================================================= #
+    # W7: concatenation (cat_scans/horzcat/toscan) + load (inverse of dump)
+    # ======================================================================= #
+    @staticmethod
+    def cat_scans(*items):
+        # MATLAB `[g1, g2]` / `horzcat` / `toscan`: build a NEW group whose scans are the
+        # (base-merged) scans of every input, each with baseidx reset to 0; runparam copied
+        # from the first input (ScanGroup.m:1295-1321). Each item is a ScanGroup (all its
+        # scans) or a ScanParam (its idx, possibly a list / 0=default).
+        res = ScanGroup()
+        res._scans = []                              # MATLAB: res.scans(end) = []
+        res._scanscache = []
+        for item in items:
+            if isinstance(item, ScanGroup):
+                grp = item
+                idxs = range(1, grp.groupsize() + 1)
+            elif isinstance(item, ScanParam):
+                grp = item._group
+                idx = item._idx
+                idxs = idx if isinstance(idx, (list, tuple)) else [idx]
+            else:
+                raise ValueError("Only ScanGroup allowed in concatenation.")
+            for j in idxs:
+                scan = grp._getfullscan(j)           # already an independent copy
+                res._scans.append({"baseidx": 0,
+                                   "params": scan["params"],
+                                   "vars": scan["vars"]})
+                res._use_var_scans.append(copy.deepcopy(grp.get_full_use_var(j)))
+        # runparam comes from the FIRST input (its group, if a ScanParam).
+        src = items[0]
+        if isinstance(src, ScanParam):
+            src = src._group
+        res._scanscache = [_def_scancache() for _ in res._scans]
+        res._runparam = DynProps(copy.deepcopy(src._runparam()))
+        return res
+
+    @staticmethod
+    def horzcat(*items):
+        return ScanGroup.cat_scans(*items)
+
+    def get_full_use_var(self, idx):
+        # The use-var tree for scan `idx` with its base chain merged in
+        # (ScanGroup.m:1253-1264). Minimal W7 surface: with no usevar set, the merge is a
+        # no-op chain down to use_var_base. The full usevar machinery is W8.
+        if idx == 0:
+            return self._use_var_base
+        base = self.get_full_use_var(self._getbaseidx(idx))
+        if idx > len(self._use_var_scans):
+            return base
+        return _merge_use_var(base, self._use_var_scans[idx - 1])
+
+    def validate(self):
+        # Faithful no-op: MATLAB ScanGroup.validate (~:1245-1252) is all comments -- `load`
+        # calls it expecting loop/conflict/size checks that never happen. Replicated as a
+        # no-op for behavior parity (see project_pyctrl_scangroup_latent_bugs #2).
+        pass
+
+    @staticmethod
+    def load(obj):
+        if "version" not in obj:
+            raise ValueError("Version missing.")
+        if obj["version"] == 1:
+            self = ScanGroup._load_v1(obj)
+        elif obj["version"] == 0:
+            self = ScanGroup._load_v0(obj)
+        else:
+            raise ValueError("Wrong object version: %r" % (obj["version"],))
+        self.validate()
+        return self
+
+    @staticmethod
+    def _load_v1(obj):
+        # Inverse of dump(); deep-copies the payload so the loaded group is independent.
+        self = ScanGroup()
+        self._scans = copy.deepcopy(obj["scans"])
+        self._base = copy.deepcopy(obj["base"])
+        self._runparam = DynProps(copy.deepcopy(obj["runparam"]))
+        self._scanscache = [_def_scancache() for _ in self._scans]
+        if "use_var_base" in obj:
+            self._use_var_base = copy.deepcopy(obj["use_var_base"])
+            self._use_var_scans = copy.deepcopy(obj["use_var_scans"])
+        else:
+            # Loading an old payload (no version bump needed -- backward compatible).
+            self._use_var_base = _def_use_var()
+            self._use_var_scans = []
+        return self
+
+    @staticmethod
+    def _load_v0(obj):
+        # Legacy `p`/`scan` struct-array layout (ScanGroup.m:1516-1549). `obj['p']` is a list
+        # of dicts (a MATLAB struct array, uniform fields); a missing/empty value falls back
+        # to the first element. Numeric leaves with >1 element become a single dim-1 axis.
+        self = ScanGroup()
+        self._runparam = DynProps(copy.deepcopy(obj["scan"]))
+        p = obj["p"]
+        fields = list(p[0].keys()) if p else []
+        self._scans = []
+        for i in range(len(p)):
+            scan = _def_scan()
+            vars1d = _def_vars()
+            for name in fields:
+                val = p[i].get(name)
+                if _is_empty(val):
+                    val = p[0].get(name)
+                sz = _numel(val)
+                if sz <= 1:
+                    scan["params"][name] = _copyval(val)
+                    continue
+                if vars1d["size"] == 0:
+                    vars1d["size"] = sz
+                elif vars1d["size"] != sz:
+                    raise ValueError("Scan size mismatch")
+                vars1d["params"][name] = _copyval(val)
+            if vars1d["size"] != 0:
+                scan["vars"] = [vars1d]
+            self._scans.append(scan)
+        self._scanscache = [_def_scancache() for _ in self._scans]
+        return self
 
     # ======================================================================= #
     # ScanInfo-facing implementation (MATLAB methods(Access=?ScanInfo))
@@ -594,6 +732,39 @@ def _find_scan_dim(scan, path):
         if _check_field(scan["vars"][i - 1]["params"], path):
             return i
     return -1
+
+
+def _merge_use_var(base, update):
+    # Merge `base` into `update`, update wins (ScanGroup.m:1579-1600). MATLAB passes structs
+    # by value, so copy `update` before mutating. W7 only exercises the all-default case
+    # (base.field is always empty); the field-recursion branch is ported faithfully but
+    # never fires here (and replicates MATLAB's whole-field overwrite verbatim).
+    update = copy.deepcopy(update)
+    if update["def"] == 0:
+        update["def"] = base["def"]
+    ndims = len(base["dims"])
+    while len(update["dims"]) < ndims:
+        update["dims"].append(0)
+    for i in range(ndims):
+        if update["dims"][i] == 0:
+            update["dims"][i] = base["dims"][i]
+    for fld, val in base["field"].items():
+        if fld not in update["field"]:
+            update["field"][fld] = copy.deepcopy(val)
+        else:
+            update["field"] = _merge_use_var(val, update["field"][fld])
+    return update
+
+
+def _is_empty(v):
+    # MATLAB isempty: [] / '' / 0x0 struct. Python: None or a zero-length list/tuple/str.
+    if v is None:
+        return True
+    if isinstance(v, (list, tuple, str)):
+        return len(v) == 0
+    if _np is not None and isinstance(v, _np.ndarray):
+        return v.size == 0
+    return False
 
 
 def _isarray(obj):
