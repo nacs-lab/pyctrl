@@ -24,9 +24,10 @@ PYTHON_FRONTEND_PLAN.md Phase 4):
 Because ``scan``/``assign``/``size``/``usevar``/``toscan`` are real methods, a parameter
 literally named one of those is shadowed (unreachable by attribute) -- MATLAB likewise
 special-cases ``scan``/``usevar``. Reading a fixed value (``grp(idx).a()``) resolves the
-parameter (Python form of MATLAB ``param_subsref``'s trailing empty ``()``); ``usevar`` is
-W8 and raises here. ``toscan`` (W7) converts the param into a one-scan ``ScanGroup`` via
-``ScanGroup.cat_scans`` -- the same path as MATLAB's ``[g1, g2]``/``horzcat``.
+parameter (Python form of MATLAB ``param_subsref``'s trailing empty ``()``); ``usevar`` (W8)
+marks a parameter (or the whole scan) as a runtime variable; ``toscan`` (W7) converts the
+param into a one-scan ``ScanGroup`` via ``ScanGroup.cat_scans`` -- the same path as MATLAB's
+``[g1, g2]``/``horzcat``.
 
 A ``ScanParam`` ``_idx`` is normally a positive int (one scan) or 0 (the default), but the
 multi-index concat form (MATLAB ``g(2:end)`` / ``g([1, 3])``) carries a LIST of indices.
@@ -95,8 +96,12 @@ class ScanParam:
         return self._group._param_size(self._idx, dim)
 
     # -- deferred surfaces ------------------------------------------------------- #
+    # -- mark a parameter (or this whole scan) as a runtime variable ------------- #
     def usevar(self, *args):
-        raise NotImplementedError("ScanParam.usevar is Phase-4 W8.")
+        # `grp(idx).usevar(val[, dim])` (scan-level) or `grp(idx).a.b.usevar(...)` (per-field)
+        # -- the Python form of MATLAB's `.usevar(...)` (param_subsref). `args` is
+        # ``(val,)`` or ``(val, dim)``.
+        self._group._param_usevar(self._idx, self._path, *args)
 
     # -- convert this param into a one-scan ScanGroup (MATLAB `toscan`) ---------- #
     def toscan(self):

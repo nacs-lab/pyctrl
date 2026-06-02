@@ -110,6 +110,12 @@ class ScanGroup:
     def runp(self):
         return self._runparam
 
+    def usevar(self, *args):
+        # Group-level `g.usevar(val[, dim])` -> set the default/dim flag on use_var_base
+        # (no field path), and invalidate the computed-use-var cache (ScanGroup.m:640-643).
+        self._use_var_base = _set_use_var(self._use_var_base, *args)
+        self._use_var_cache = []
+
     def groupsize(self):
         return len(self._scans)
 
@@ -198,6 +204,78 @@ class ScanGroup:
             for v, path in _foreach_nonstruct(var["params"]):
                 self._setfield(seq, path, v[subidx])    # MATLAB 1-based v(subidx+1)
         return seq
+
+    # ----------------------------------------------------------------------- #
+    # W8: usevar-aware materialization. getseq_with_var splits each scan axis into
+    # either a FIXED expansion (folded into `seq`, contributing to the sequence `id`) or a
+    # VARIABLE (collected into `vars` as (path, value) so the run loop injects it as a
+    # global) -- so seqs that differ only in usevar dims share one compiled `id`.
+    # ----------------------------------------------------------------------- #
+    def getseq_with_var(self, n):
+        count = 0
+        for scani in range(1, self.groupsize() + 1):
+            ss = self.scansize(scani)
+            if n <= ss:
+                id_, seq, vars_ = self.getseq_in_scan_with_var(scani, n)
+                return id_ + count, seq, vars_
+            n = n - ss
+            count = count + ss
+        raise ValueError("Sequence index out of bound.")
+
+    def getseq_in_scan_with_var(self, scanidx, seqidx):
+        # Mirrors ScanGroup.m:335-365. Column-major as getseq_in_scan, but a usevar dim's
+        # leaves go to `vars` (path + selected value) instead of `seq`, and only NON-usevar
+        # dims advance the mixed-radix `id`.
+        scan = self._getfullscan(scanidx)
+        use_var = self.computed_use_var(scanidx)
+        seq = scan["params"]
+        seqidx = seqidx - 1                         # 0-based from here on
+        vars_ = []
+        id_ = 0
+        scale = 1
+        for i in range(1, len(scan["vars"]) + 1):
+            var = scan["vars"][i - 1]
+            size = var["size"]
+            if size == 0:
+                continue
+            subidx = seqidx % size                  # 0-based
+            seqidx = (seqidx - subidx) // size
+            if use_var[i - 1]:
+                for v, path in _foreach_nonstruct(var["params"]):
+                    vars_.append((path, v[subidx]))
+            else:
+                for v, path in _foreach_nonstruct(var["params"]):
+                    self._setfield(seq, path, v[subidx])
+                id_ = id_ + scale * subidx
+            scale = scale * size
+        return id_ + 1, seq, vars_
+
+    def computed_use_var(self, idx):
+        # The per-dimension use-var booleans for every scan (cached). A dim is a variable
+        # iff EVERY leaf under it resolves (via the merged use_var tree) to exactly +1
+        # (ScanGroup.m:1265-1292). LATENT BUG replicated: the cache is keyed ONLY by
+        # length(scans), so base-index churn that keeps the length can return stale data
+        # (see project_pyctrl_scangroup_latent_bugs #1). Mutators clear it, masking it.
+        if len(self._use_var_cache) == len(self._scans):
+            return self._use_var_cache[idx - 1]
+        cache = []
+        for scani in range(1, self.groupsize() + 1):
+            scan = self._getfullscan(scani)
+            use_var = self.get_full_use_var(scani)
+            ndims = len(scan["vars"])
+            computed = [False] * ndims
+            for i in range(1, ndims + 1):
+                var = scan["vars"][i - 1]
+                if var["size"] == 0:
+                    continue
+                val = True
+                for v, path in _foreach_nonstruct(var["params"]):
+                    if val:
+                        val = _check_use_var(use_var, list(path), i) == 1
+                computed[i - 1] = val
+            cache.append(computed)
+        self._use_var_cache = cache
+        return cache[idx - 1]
 
     def nseq(self):
         return sum(self.scansize(i) for i in range(1, self.groupsize() + 1))
@@ -448,6 +526,21 @@ class ScanGroup:
         if sz <= 0:
             sz = 1
         return sz
+
+    def _param_usevar(self, idx, path, *args):
+        # `grp(idx).<path>.usevar(val[, dim])` -> set the use-var flag on use_var_base (idx 0)
+        # or use_var_scans(idx), under the dotted `path` (ScanGroup.m:802-821). Empty path =
+        # the scan-level default. Invalidates the computed-use-var cache.
+        self._use_var_cache = []
+        if idx == 0:
+            self._use_var_base = _set_sub_use_var(self._use_var_base, list(path), *args)
+            return
+        if idx > len(self._scans):
+            raise ValueError("Scan %d does not exist." % idx)
+        while len(self._use_var_scans) < idx:
+            self._use_var_scans.append(_def_use_var())
+        self._use_var_scans[idx - 1] = _set_sub_use_var(self._use_var_scans[idx - 1],
+                                                        list(path), *args)
 
     def _addparam(self, idx, path, val):
         self._check_noconflict(idx, path, 0)
@@ -754,6 +847,60 @@ def _merge_use_var(base, update):
         else:
             update["field"] = _merge_use_var(val, update["field"][fld])
     return update
+
+
+def _set_use_var(use_var, val, dim=0):
+    # Set the default (dim 0) or a per-dimension flag on a use_var node, normalizing the
+    # truthy value to +1 / -1 (ScanGroup.m:1550-1564). Returns a fresh node (MATLAB value
+    # semantics); MATLAB auto-grows `dims` with 0s up to `dim`.
+    out = copy.deepcopy(use_var)
+    v = 1 if val != 0 else -1
+    if dim == 0:
+        out["def"] = v
+    else:
+        while len(out["dims"]) < dim:
+            out["dims"].append(0)
+        out["dims"][dim - 1] = v
+    return out
+
+
+def _set_sub_use_var(use_var, path, *args):
+    # Descend `path` (creating DEF_USE_VAR nodes as needed) and apply set_use_var at the leaf
+    # (ScanGroup.m:1565-1578). Empty path -> set on this node directly.
+    out = copy.deepcopy(use_var)
+    if not path:
+        return _set_use_var(out, *args)
+    field = path[0]
+    fieldval = out["field"].get(field, _def_use_var())
+    out["field"][field] = _set_sub_use_var(fieldval, path[1:], *args)
+    return out
+
+
+def _check_use_var_single(use_var, dim):
+    # The flag for `dim` at one node: the per-dim override if set (nonzero), else the default
+    # (ScanGroup.m:1601-1609).
+    res = use_var["def"]
+    if dim <= len(use_var["dims"]):
+        dim_res = use_var["dims"][dim - 1]
+        if dim_res != 0:
+            res = dim_res
+    return res
+
+
+def _check_use_var(use_var, path, dim):
+    # Resolve the use-var flag for a leaf at `path`, dimension `dim`: the root node's flag,
+    # overridden by the LEAF field node's flag if that is nonzero (intermediate nodes along
+    # the path are not consulted -- faithful to ScanGroup.m:1610-1623). A missing path
+    # segment falls back to the root flag.
+    res = _check_use_var_single(use_var, dim)
+    for name in path:
+        if name not in use_var["field"]:
+            return res
+        use_var = use_var["field"][name]
+    field_res = _check_use_var_single(use_var, dim)
+    if field_res != 0:
+        res = field_res
+    return res
 
 
 def _is_empty(v):

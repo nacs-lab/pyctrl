@@ -20,6 +20,8 @@ The Python DSL diverges from MATLAB syntax only where Python lacks an equivalent
 whole-scan ``g(i) = rhs`` becomes ``g(i).assign(rhs)`` (see scan_param.py).
 """
 
+import copy
+
 import pytest
 
 from scan_group import ScanGroup
@@ -986,3 +988,272 @@ class TestLoad:
     def test_load_wrong_version_errors(self):
         with pytest.raises(ValueError, match="Wrong object version"):
             ScanGroup.load({"version": 7})
+
+
+# =========================================================================== #
+# W8 -- usevar: marking scan axes as runtime VARIABLES (injected as globals per shot
+# rather than expanded into distinct sequences). getseq_with_var splits each axis into a
+# fixed expansion (folded into seq, advancing the sequence id) or a variable (collected in
+# `vars`), so seqs differing only in usevar dims share one compiled id. Direct port of
+# TestScanGroup.test_usevar. NO-HARDWARE: pure data-model math.
+# =========================================================================== #
+def uvn(d=0, dims=None, field=None):
+    """A use_var tree node: {def, dims, field}."""
+    return {"def": d, "dims": list(dims) if dims else [], "field": field or {}}
+
+
+# The scans/base never change across test_usevar -- only the use_var trees do.
+def _scans_uv():
+    return [
+        {"baseidx": 0, "params": {},
+         "vars": [{"size": 0, "params": {}}, {"size": 0, "params": {}},
+                  {"size": 2, "params": {"B": {"K": [1, 2]}}}]},
+        {"baseidx": 0, "params": {},
+         "vars": [{"size": 0, "params": {}},
+                  {"size": 3, "params": {"C": {"L": [2, 3, 4]}}}]},
+    ]
+
+
+def _dump_uv(use_var_base, use_var_scans):
+    return {
+        "version": 1,
+        "scans": _scans_uv(),
+        "base": {"params": {},
+                 "vars": [{"size": 5, "params": {"A": {"C": [2, 3, 4, 5, 6]}}},
+                          {"size": 3, "params": {"A": {"B": [1, 2, 3]}}}]},
+        "runparam": {},
+        "use_var_base": use_var_base,
+        "use_var_scans": use_var_scans,
+    }
+
+
+def _set_nested(d, path, val):
+    cur = d
+    for name in path[:-1]:
+        cur = cur.setdefault(name, {})
+    cur[path[-1]] = val
+
+
+class TestUseVar:
+    """Direct port of TestScanGroup.test_usevar (the full usevar mutate/dump/getseq battery)."""
+
+    @staticmethod
+    def _build():
+        g = ScanGroup()
+        g().A.B.scan(2, [1, 2, 3])
+        g().A.C.scan([2, 3, 4, 5, 6])
+        g(1).B.K.scan(3, [1, 2])
+        g(2).C.L.scan(2, [2, 3, 4])
+        return g
+
+    @staticmethod
+    def _withvar(g, n):
+        # Mirror of TestScanGroup.getseq_withvar: plain getseq must equal getseq_with_var's
+        # seq with every collected variable written back in; the id is stable.
+        seq1 = g.getseq(n)
+        id_, seq2, vars_ = g.getseq_with_var(n)
+        assert id_ <= n
+        rebuilt = copy.deepcopy(seq2)
+        for path, val in vars_:
+            _set_nested(rebuilt, path, val)
+        assert rebuilt == seq1
+        id3, seq3, vars3 = g.getseq_with_var(id_)
+        assert id3 == id_
+        assert seq3 == seq2
+        assert len(vars3) == len(vars_)
+        return id_, seq2, vars_
+
+    @staticmethod
+    def _novar(g, n):
+        # Mirror of TestScanGroup.getseq_novar: no variables, id == n, seq matches getseq.
+        seq1 = g.getseq(n)
+        id_, seq2, vars_ = g.getseq_with_var(n)
+        assert id_ == n
+        assert seq2 == seq1
+        assert vars_ == []
+        return seq1
+
+    def test_usevar(self):
+        wv = self._withvar
+        nv = self._novar
+
+        g = self._build()
+
+        # --- State A: g.usevar(true) -- everything is a variable ------------- #
+        g.usevar(True)
+        gdump = _dump_uv(uvn(1), [])
+        assert g.dump() == gdump
+        assert g.nseq() == 45
+
+        for getter in (g,):                         # also re-run after a load round-trip
+            self._assert_state_A(getter)
+
+        # --- reload from the dump, re-check ---------------------------------- #
+        g = ScanGroup.load(gdump)
+        assert g.nseq() == 45
+        self._assert_state_A(g)
+
+        # --- State B: usevar(false) then usevar(true, 3) --------------------- #
+        g.usevar(False)
+        g.usevar(True, 3)
+        assert g.dump() == _dump_uv(uvn(-1, [0, 0, 1]), [])
+
+        id_, seq, vars_ = wv(g, 1)
+        assert id_ == 1 and seq == {"A": {"C": 2, "B": 1}} and vars_ == [(("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 2)
+        assert id_ == 2 and seq == {"A": {"C": 3, "B": 1}} and vars_ == [(("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 6)
+        assert id_ == 6 and seq == {"A": {"C": 2, "B": 2}} and vars_ == [(("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 16)
+        assert id_ == 1 and seq == {"A": {"C": 2, "B": 1}} and vars_ == [(("B", "K"), 2)]
+        id_, seq, vars_ = wv(g, 17)
+        assert id_ == 2 and seq == {"A": {"C": 3, "B": 1}} and vars_ == [(("B", "K"), 2)]
+        id_, seq, vars_ = wv(g, 21)
+        assert id_ == 6 and seq == {"A": {"C": 2, "B": 2}} and vars_ == [(("B", "K"), 2)]
+
+        assert nv(g, 31) == {"A": {"C": 2, "B": 1}, "C": {"L": 2}}
+        assert nv(g, 32) == {"A": {"C": 3, "B": 1}, "C": {"L": 2}}
+        assert nv(g, 36) == {"A": {"C": 2, "B": 2}, "C": {"L": 3}}
+
+        # --- State C: g(1).usevar(false) ------------------------------------- #
+        g(1).usevar(False)
+        assert g.dump() == _dump_uv(uvn(-1, [0, 0, 1]), [uvn(-1)])
+        # Behavior identical to State B (scan 1 was already all-fixed via the base default).
+        id_, seq, vars_ = wv(g, 1)
+        assert id_ == 1 and seq == {"A": {"C": 2, "B": 1}} and vars_ == [(("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 16)
+        assert id_ == 1 and seq == {"A": {"C": 2, "B": 1}} and vars_ == [(("B", "K"), 2)]
+        assert nv(g, 31) == {"A": {"C": 2, "B": 1}, "C": {"L": 2}}
+
+        # --- State D: g(1).usevar(true) -- scan 1 all-variable again --------- #
+        g(1).usevar(True)
+        assert g.dump() == _dump_uv(uvn(-1, [0, 0, 1]), [uvn(1)])
+        id_, seq, vars_ = wv(g, 1)
+        assert id_ == 1 and seq == {} and vars_ == [(("A", "C"), 2), (("A", "B"), 1),
+                                                    (("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 6)
+        assert id_ == 1 and seq == {} and vars_ == [(("A", "C"), 2), (("A", "B"), 2),
+                                                    (("B", "K"), 1)]
+        assert nv(g, 31) == {"A": {"C": 2, "B": 1}, "C": {"L": 2}}
+
+        # --- State E: reload, usevar(false), g(2).usevar(true, 2) ------------ #
+        g = ScanGroup.load(gdump)
+        g.usevar(False)
+        g(2).usevar(True, 2)
+        assert g.dump() == _dump_uv(uvn(-1), [uvn(0), uvn(0, [0, 1])])
+
+        assert nv(g, 1) == {"A": {"C": 2, "B": 1}, "B": {"K": 1}}
+        assert nv(g, 2) == {"A": {"C": 3, "B": 1}, "B": {"K": 1}}
+        id_, seq, vars_ = wv(g, 31)
+        assert id_ == 31 and seq == {"A": {"C": 2}} and vars_ == [(("C", "L"), 2),
+                                                                  (("A", "B"), 1)]
+        id_, seq, vars_ = wv(g, 32)
+        assert id_ == 32 and seq == {"A": {"C": 3}} and vars_ == [(("C", "L"), 2),
+                                                                  (("A", "B"), 1)]
+        id_, seq, vars_ = wv(g, 36)
+        assert id_ == 31 and seq == {"A": {"C": 2}} and vars_ == [(("C", "L"), 3),
+                                                                  (("A", "B"), 2)]
+
+        # --- State F: g().usevar(true, 1); g().usevar(true, 3) --------------- #
+        g().usevar(True, 1)
+        g().usevar(True, 3)
+        assert g.dump() == _dump_uv(uvn(-1, [1, 0, 1]), [uvn(0), uvn(0, [0, 1])])
+        id_, seq, vars_ = wv(g, 1)
+        assert id_ == 1 and seq == {"A": {"B": 1}} and vars_ == [(("A", "C"), 2),
+                                                                 (("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 6)
+        assert id_ == 6 and seq == {"A": {"B": 2}} and vars_ == [(("A", "C"), 2),
+                                                                 (("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 16)
+        assert id_ == 1 and seq == {"A": {"B": 1}} and vars_ == [(("A", "C"), 2),
+                                                                 (("B", "K"), 2)]
+        id_, seq, vars_ = wv(g, 31)
+        assert id_ == 31 and seq == {} and vars_ == [(("A", "C"), 2), (("C", "L"), 2),
+                                                     (("A", "B"), 1)]
+        id_, seq, vars_ = wv(g, 36)
+        assert id_ == 31 and seq == {} and vars_ == [(("A", "C"), 2), (("C", "L"), 3),
+                                                     (("A", "B"), 2)]
+
+        # --- State G: g(1).usevar(false, 1) ---------------------------------- #
+        g(1).usevar(False, 1)
+        assert g.dump() == _dump_uv(uvn(-1, [1, 0, 1]), [uvn(0, [-1]), uvn(0, [0, 1])])
+        id_, seq, vars_ = wv(g, 1)
+        assert id_ == 1 and seq == {"A": {"C": 2, "B": 1}} and vars_ == [(("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 6)
+        assert id_ == 6 and seq == {"A": {"C": 2, "B": 2}} and vars_ == [(("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 31)
+        assert id_ == 31 and seq == {} and vars_ == [(("A", "C"), 2), (("C", "L"), 2),
+                                                     (("A", "B"), 1)]
+
+        # --- State H: per-field usevar on the default ----------------------- #
+        g().A.C.usevar(True)
+        g().B.K.usevar(False, 3)
+        g().C.L.usevar(False)
+        uvb_H = uvn(-1, [1, 0, 1], field={
+            "A": uvn(0, field={"C": uvn(1)}),
+            "B": uvn(0, field={"K": uvn(0, [0, 0, -1])}),
+            "C": uvn(0, field={"L": uvn(-1)}),
+        })
+        assert g.dump() == _dump_uv(uvb_H, [uvn(0, [-1]), uvn(0, [0, 1])])
+        id_, seq, vars_ = wv(g, 1)
+        assert id_ == 1 and seq == {"A": {"B": 1}, "B": {"K": 1}} and vars_ == [(("A", "C"), 2)]
+        id_, seq, vars_ = wv(g, 6)
+        assert id_ == 6 and seq == {"A": {"B": 2}, "B": {"K": 1}} and vars_ == [(("A", "C"), 2)]
+        id_, seq, vars_ = wv(g, 16)
+        assert id_ == 16 and seq == {"A": {"B": 1}, "B": {"K": 2}} and vars_ == [(("A", "C"), 2)]
+        id_, seq, vars_ = wv(g, 31)
+        assert id_ == 31 and seq == {"C": {"L": 2}, "A": {"B": 1}} and vars_ == [(("A", "C"), 2)]
+        id_, seq, vars_ = wv(g, 36)
+        assert id_ == 36 and seq == {"C": {"L": 3}, "A": {"B": 2}} and vars_ == [(("A", "C"), 2)]
+
+        # --- State I: per-field usevar on individual scans ------------------- #
+        g(1).A.C.usevar(False)
+        g(1).B.K.usevar(True)
+        g(2).C.L.usevar(True, 1)
+        uvs_I = [
+            uvn(0, [-1], field={"A": uvn(0, field={"C": uvn(-1)}),
+                                "B": uvn(0, field={"K": uvn(1)})}),
+            uvn(0, [0, 1], field={"C": uvn(0, field={"L": uvn(0, [1])})}),
+        ]
+        assert g.dump() == _dump_uv(uvb_H, uvs_I)
+        assert nv(g, 1) == {"A": {"C": 2, "B": 1}, "B": {"K": 1}}
+        assert nv(g, 2) == {"A": {"C": 3, "B": 1}, "B": {"K": 1}}
+        assert nv(g, 6) == {"A": {"C": 2, "B": 2}, "B": {"K": 1}}
+        assert nv(g, 16) == {"A": {"C": 2, "B": 1}, "B": {"K": 2}}
+        id_, seq, vars_ = wv(g, 31)
+        assert id_ == 31 and seq == {} and vars_ == [(("A", "C"), 2), (("C", "L"), 2),
+                                                     (("A", "B"), 1)]
+        id_, seq, vars_ = wv(g, 32)
+        assert id_ == 31 and seq == {} and vars_ == [(("A", "C"), 3), (("C", "L"), 2),
+                                                     (("A", "B"), 1)]
+        id_, seq, vars_ = wv(g, 36)
+        assert id_ == 31 and seq == {} and vars_ == [(("A", "C"), 2), (("C", "L"), 3),
+                                                     (("A", "B"), 2)]
+
+    def _assert_state_A(self, g):
+        # All dims are variables: seq is empty, every axis is collected into vars.
+        wv = self._withvar
+        id_, seq, vars_ = wv(g, 1)
+        assert id_ == 1 and seq == {} and vars_ == [(("A", "C"), 2), (("A", "B"), 1),
+                                                    (("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 2)
+        assert id_ == 1 and seq == {} and vars_ == [(("A", "C"), 3), (("A", "B"), 1),
+                                                    (("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 3)
+        assert id_ == 1 and seq == {} and vars_ == [(("A", "C"), 4), (("A", "B"), 1),
+                                                    (("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 6)
+        assert id_ == 1 and seq == {} and vars_ == [(("A", "C"), 2), (("A", "B"), 2),
+                                                    (("B", "K"), 1)]
+        id_, seq, vars_ = wv(g, 16)
+        assert id_ == 1 and seq == {} and vars_ == [(("A", "C"), 2), (("A", "B"), 1),
+                                                    (("B", "K"), 2)]
+        id_, seq, vars_ = wv(g, 31)
+        assert id_ == 31 and seq == {} and vars_ == [(("A", "C"), 2), (("C", "L"), 2),
+                                                     (("A", "B"), 1)]
+        id_, seq, vars_ = wv(g, 32)
+        assert id_ == 31 and seq == {} and vars_ == [(("A", "C"), 3), (("C", "L"), 2),
+                                                     (("A", "B"), 1)]
+        id_, seq, vars_ = wv(g, 36)
+        assert id_ == 31 and seq == {} and vars_ == [(("A", "C"), 2), (("C", "L"), 3),
+                                                     (("A", "B"), 2)]
