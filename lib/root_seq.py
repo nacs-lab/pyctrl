@@ -141,8 +141,18 @@ class RootSeq(ExpSeqBase):
         measures_parts = []
         for i in range(nmeasures):
             measure = measures[i]
-            cid = cid_map.get(measure['chn'], 0)
-            if cid == 0:
+            # MATLAB indexes cid_map(measure.chn) directly; cid_map keys every valid
+            # channel id 1..nchns (0 = disabled, a legitimate skip below). A chn that
+            # is absent from the map is genuinely out of range -- exactly where MATLAB
+            # array indexing errors -- so fail loud instead of skipping silently.
+            chn = measure['chn']
+            if chn not in cid_map:
+                raise ValueError(
+                    'RootSeq.serialize_bseq: measured channel id %r is out of range '
+                    '(valid channel ids are 1..%d); the channel map has no such '
+                    'entry.' % (chn, len(cid_map)))
+            cid = cid_map[chn]
+            if cid == 0:        # channel present but disabled: intended skip
                 continue
             measures_parts.append(struct.pack(
                 '<3I', measure['id'] & 0xFFFFFFFF,

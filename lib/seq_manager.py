@@ -42,6 +42,14 @@ def engine_available():
         return False
 
 
+def new_run():
+    """Reset the engine for a fresh run. Mirrors ``SeqManager.new_run`` (SeqManager.m:56,
+    ``new_run(SeqManager.get())``). Engine call -- only invoked on the live run path (the
+    run loop wires it as ``run_scan_group``'s ``new_run`` seam); never in NO-HARDWARE tests.
+    """
+    get().new_run()
+
+
 def load_config_string(config):
     get().load_config_string(config)
 

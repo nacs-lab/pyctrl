@@ -12,8 +12,9 @@ dev = ["pytest>=7", "numpy>=1.20"]
 [tool.pytest.ini_options]
 # Flat-on-path imports mirror the codebase convention (`from exp_seq import ExpSeq`).
 # YbSteps/YbSeqs mirror matlab_new/ layout (the step cone + experiment sequences),
-# imported flat the same way (`from init_step import init_step`).
-pythonpath = ["lib", "YbSteps", "YbSeqs", "tools", "."]
+# imported flat the same way (`from init_step import init_step`). YbExptCtrl mirrors
+# matlab_new/YbExptCtrl/ (the device runtime: dispatch_descriptor, run-loop glue).
+pythonpath = ["lib", "YbSteps", "YbSeqs", "YbExptCtrl", "tools", "."]
 testpaths = ["tests"]
 # Default run is fully safe on the shared lab PC: no engine load, no hardware.
 # Run engine checks explicitly with:  pytest -m needs_engine   (compile-only)

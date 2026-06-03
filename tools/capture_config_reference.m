@@ -40,8 +40,8 @@ function capture_config_reference(out_json)
     % WITHOUT the load_config_file branch, so the engine is never loaded.
     channelAlias        = containers.Map();                              %#ok<NASGU>
     defaultVals         = containers.Map();                              %#ok<NASGU>
-    niClocks            = containers.Map();                              %#ok<NASGU>
-    niStart             = containers.Map();                              %#ok<NASGU>
+    niClocks            = containers.Map();
+    niStart             = containers.Map();
     m_disabledChannels  = containers.Map('KeyType','char','ValueType','double');
     disableChannel      = @(chn) m_disabledChannels(chn);  %#ok<NASGU>  % never called by expConfig
     consts              = struct();                                      %#ok<NASGU>
@@ -69,6 +69,10 @@ function capture_config_reference(out_json)
     out.default_vals_keys  = keys(defaultVals);  % cell of alias names (RAW, untranslated)
     out.default_vals_vals  = values(defaultVals);% cell of doubles
     out.consts             = consts;             % resolved nested struct
+    out.ni_clocks_keys     = keys(niClocks);     % NI external-clock source per device (PFI)
+    out.ni_clocks_vals     = values(niClocks);
+    out.ni_start_keys      = keys(niStart);      % NI external start-trigger per device (PFI)
+    out.ni_start_vals      = values(niStart);
 
     json = jsonencode(out);
     fid = fopen(out_json, 'w');

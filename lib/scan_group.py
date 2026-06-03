@@ -443,9 +443,20 @@ class ScanGroup:
             scan = _def_scan()
             vars1d = _def_vars()
             for name in fields:
-                val = p[i].get(name)
+                # MATLAB struct-array access p(i).(name) requires every element to
+                # carry the same fields; a missing field means a non-uniform (corrupt)
+                # struct array, which MATLAB would hard-error on. Fail loud rather than
+                # silently substituting element 0's value.
+                if name not in p[i]:
+                    raise ValueError(
+                        'ScanGroup.load_v0: scan element %d is missing field "%s" '
+                        'present in element 0 -- the loaded scan struct array is not '
+                        'uniform (corrupt v0 scan data).' % (i, name))
+                val = p[i][name]
+                # A field that IS present but empty legitimately inherits element 0
+                # (the documented v0 fallback), distinct from the missing-field error.
                 if _is_empty(val):
-                    val = p[0].get(name)
+                    val = p[0][name]
                 sz = _numel(val)
                 if sz <= 1:
                     scan["params"][name] = _copyval(val)

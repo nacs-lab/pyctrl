@@ -81,11 +81,21 @@ class SeqConfig:
             self.channel_alias = {}
             self.consts = {}
             self.default_vals = {}
+            self.ni_clocks = {}        # no NI in the empty test config
+            self.ni_start = {}
         else:
             # channel_alias values are already trailing-slash-trimmed at capture
-            # (SeqConfig.m:82-85).
-            self.channel_alias = dict(zip(raw["channel_alias_keys"],
-                                          raw["channel_alias_vals"]))
+            # (SeqConfig.m:82-85). Alias KEYS must not contain '/' (SeqConfig.m:78)
+            # -- fail loud on a malformed expConfig.m rather than mis-translating.
+            self.channel_alias = {}
+            for key, val in zip(raw["channel_alias_keys"],
+                                raw["channel_alias_vals"]):
+                if '/' in key:
+                    raise ValueError(
+                        'SeqConfig: channel alias name "%s" must not contain "/" '
+                        '(matches SeqConfig.m:78). Fix this alias key in '
+                        'expConfig.m and re-capture config_reference.json.' % key)
+                self.channel_alias[key] = val
             self.consts = _coerce_floats(raw["consts"])
             # default_vals captured RAW (alias keys); re-key by TRANSLATED backend
             # name (SeqConfig.m:89-97), float-coerced, with MATLAB's conflict check.
@@ -97,6 +107,14 @@ class SeqConfig:
                     raise ValueError(
                         'Conflict default values for channel "%s" (%s).' % (k, name))
                 self.default_vals[name] = v
+            # NI DAQ external clock/trigger maps for the run-loop NI arm (SeqConfig.m
+            # niClocks/niStart, omitted from the byte path). Loaded from the snapshot when
+            # present; else the documented expConfig.m wiring (FPGA clock -> NI PFI0;
+            # FPGA TTL0 -> NI PFI1; device Dev1). NEEDS-HARDWARE consumer only.
+            self.ni_clocks = (dict(zip(raw.get("ni_clocks_keys", []),
+                                       raw.get("ni_clocks_vals", []))) or {"Dev1": "PFI0"})
+            self.ni_start = (dict(zip(raw.get("ni_start_keys", []),
+                                      raw.get("ni_start_vals", []))) or {"Dev1": "PFI1"})
         self.G = DynProps({})      # shared global context (ExpSeqBase.G)
 
     def translate_channel(self, name):

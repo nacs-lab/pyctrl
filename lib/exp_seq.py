@@ -65,6 +65,11 @@ class ExpSeq(RootSeq):
         self.before_start_cbs = []
         self.after_end_cbs = []
 
+        # Engine run state (Phase 5). None until generate() compiles the bytes into the
+        # libnacs engine handle; ni_channels is then populated from the compiled seq.
+        self.pyseq = None
+        self.ni_channels = []
+
         self._init_root()
         self.bseq_id = 1
         self.zero_time = SeqTime.zero(self)
@@ -140,6 +145,56 @@ class ExpSeq(RootSeq):
         g, id_ = self.seq_ctx.new_global(type_)
         self.globals.append({'id': id_, 'persist': persist,
                              'init_val': float(init_val)})
+        return g
+
+    # -- engine run wiring (Phase 5; transliterates ExpSeq.m:335-367) -------- #
+    # generate()/reset_globals are COMPILE-ONLY (create_sequence + set_global on the
+    # compiled handle); they drive NO hardware. init_run/start/wait/post_run (run_seq2.py)
+    # are the run -- NEEDS-HARDWARE.
+    def generate(self, preserve=False):
+        """Compile the serialized bytes into the libnacs engine handle (``pyseq``).
+
+        Mirrors ``ExpSeq.generate`` (ExpSeq.m:335-350): create_sequence -> pyseq, populate
+        ``ni_channels`` from ``get_nidaq_channel_info``, then ``reset_globals(first=True)``.
+        Idempotent (a no-op once compiled), matching MATLAB's ``isempty(self.pyseq)`` guard.
+        ``releaseGeneration`` (the build-tree free) is omitted -- a memory optimization,
+        not needed for correctness (Python GC). Compile-only: NO device motion.
+        """
+        if self.pyseq is None:
+            self.pyseq = seq_manager.create_sequence(self.serialize())
+            info = self.pyseq.get_nidaq_channel_info('NiDAQ')  # [(id, name), ...] or None
+            self.ni_channels = [{'chn': int(x[0]), 'dev': str(x[1])} for x in (info or [])]
+            self.reset_globals(True)
+        return self
+
+    def reset_globals(self, first):
+        """Reset engine globals to their init values (ExpSeq.m:991-999).
+
+        ``persist`` globals are NOT reset except on the FIRST call (at generate()), so a
+        value injected between shots survives; non-persist globals reset every shot.
+        """
+        if self.pyseq is None:
+            raise RuntimeError('Sequence must be generated before resetting globals.')
+        for g in self.globals:
+            if g['persist'] and not first:
+                continue
+            self.pyseq.set_global(int(g['id']), float(g['init_val']))
+
+    def get_global(self, g):
+        if self.pyseq is None:
+            raise RuntimeError('Sequence must be generated before accessing globals.')
+        return self.pyseq.get_global(int(self._global_idx(g)))
+
+    def set_global(self, g, val):
+        if self.pyseq is None:
+            raise RuntimeError('Sequence must be generated before accessing globals.')
+        self.pyseq.set_global(int(self._global_idx(g)), float(val))
+
+    @staticmethod
+    def _global_idx(g):
+        # Accept a global SeqVal (head H_GLOBAL, args=[id]) or a raw integer index.
+        if isinstance(g, SeqVal) and g.head == SeqVal.H_GLOBAL:
+            return g.args[0]
         return g
 
     # -- serialize ----------------------------------------------------------- #
