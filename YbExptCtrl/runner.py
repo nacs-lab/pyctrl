@@ -50,6 +50,8 @@ MAX_DESC_PER_ITER = 32
 # Seconds to wait for the camera-init command before compiling/serving (mirror the
 # MATLAB 15 s camera-init wait); the monitor sends camera_init on startup.
 CAMERA_INIT_WAIT_S = 15.0
+# Repo root (…/pyctrl/YbExptCtrl/runner.py -> …/pyctrl -> repo) for locating config.yml.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # =========================================================================== #
@@ -300,19 +302,100 @@ def open_camera(roi=None, exposure=None, log=None):
 # =========================================================================== #
 # Live engine wiring (NEEDS-HARDWARE)
 # =========================================================================== #
-def engine_run(seq, scangroup, **kw):
-    """The live ``run`` seam handed to :func:`sequence_runner.run_job`.
+def load_configs(log=None):
+    """Load BOTH configs the live run needs, before compiling any sequence.
 
-    Wraps ``run_scan_group`` with the engine reset (``seq_manager.new_run`` -- run_seq.py's
-    ``new_run`` seam, "wired to the engine in the runner"). ``compile_point`` / ``run_real``
-    keep their engine defaults (build+generate / run_seq2.run_real). ``config_teardown`` is
-    deliberately NOT overridden: pyctrl's ``SeqConfig.reset()`` rebuilds an EMPTY config (it
-    does not re-read expConfig.m), so resetting between shots would wipe config -- per-job
-    config reload is a separate long-lived-runner concern (references/runtime-design.md).
+    (1) ``SeqConfig.load_real()`` -- activate the captured real expConfig snapshot
+    (channel aliases / defaults) as the SeqConfig singleton, so builds produce correct bytes.
+    (2) ``seq_manager.load_config_string(config.yml)`` -- load the engine's channel + timing
+    config, WITHOUT which ``tick_per_sec`` / ``generate`` raise "Sequence time unit not
+    initialized". Both are required; serve() calls this once at startup.
+    """
+    log = log or _noop_log
+    import seq_manager
+    from seq_config import SeqConfig
+    SeqConfig.load_real()
+    cfg = os.path.join(REPO_ROOT, "matlab_new", "config.yml")
+    with open(cfg) as f:
+        seq_manager.load_config_string(f.read())
+    log("config loaded (expConfig snapshot + engine config.yml=%s)" % cfg)
+
+
+def make_engine_run(server, camera, seq_config):
+    """Build the live ``run`` seam handed to :func:`sequence_runner.run_job`.
+
+    Wraps ``run_scan_group`` with: the engine reset (``seq_manager.new_run``), per-scan camera
+    arming (external rising-edge trigger; the seq's Imag399 step pulses ``TTLOrcaTrig``), and a
+    per-shot capture ``post_cb`` (:func:`frame_capture.make_capture_post_cb`) that reads
+    ``NumImages`` frames and publishes them via ``server.store_imgs`` / ``seq_finish``. The
+    scan id (for frame routing) is recorded from ``control.begin_scan`` via
+    :class:`_ScanIdRecorder`; the seq id comes from ``seq_config.G.seq_id``.
+
+    ``compile_point`` / ``run_real`` keep their engine defaults. ``config_teardown`` is NOT
+    overridden (pyctrl ``SeqConfig.reset()`` would wipe the real config between shots).
     """
     import seq_manager
     from run_seq import run_scan_group
-    return run_scan_group(seq, scangroup, new_run=seq_manager.new_run, **kw)
+
+    def run(seq, scangroup, control=None, **opts):
+        num_images = _num_images(scangroup)
+        post = list(opts.pop("post_cb", []) or [])
+        scan_box = {"id": -1}
+        if control is not None:
+            control = _ScanIdRecorder(control, scan_box)
+
+        armed = False
+        if camera is not None and num_images > 0:
+            try:
+                camera.flush()                                   # drop stale frames (MATLAB flushdata)
+                camera.start_video(external=True, nframes=max(num_images * 4, 16))
+                armed = True
+                from frame_capture import make_capture_post_cb
+                post.append(make_capture_post_cb(
+                    camera, server, num_images, lambda: scan_box["id"], seq_config))
+            except Exception:  # noqa: BLE001 - camera arm failure must not crash the job pre-run
+                armed = False
+        try:
+            return run_scan_group(seq, scangroup, control=control, post_cb=post,
+                                  new_run=seq_manager.new_run, **opts)
+        finally:
+            if armed:
+                try:
+                    camera.stop_video()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    return run
+
+
+def _num_images(scangroup):
+    """NumImages for the scan (descriptor runp), default 1; bad/absent -> 0 (no capture)."""
+    try:
+        return int(scangroup.runp().NumImages(1))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+class _ScanIdRecorder:
+    """Wrap a ControlChannel to capture the ``scan_id`` that ``begin_scan`` produces.
+
+    ``run_scan_group`` only calls ``begin_scan`` / ``check_pause_abort`` on the control; this
+    forwards both and stashes the (non-None) scan id into ``box['id']`` so the capture post_cb
+    can stamp frames with it (MATLAB routes frames by scan_id; a negative id = display-only).
+    """
+
+    def __init__(self, inner, box):
+        self._inner = inner
+        self._box = box
+
+    def begin_scan(self):
+        sid = self._inner.begin_scan()
+        if sid is not None:
+            self._box["id"] = sid
+        return sid
+
+    def check_pause_abort(self):
+        return self._inner.check_pause_abort()
 
 
 def make_idle(server, dummy_seq=None, run_real=None):
@@ -358,6 +441,9 @@ def serve(url, *, server_factory=None, with_camera=True, with_idle=True, log=pri
     idle DummySeq). Only start it on a confirmed-safe hardware state.
     """
     assert_single_backend(url)
+    load_configs(log=lambda m: log("[runner] %s" % m))      # expConfig snapshot + engine config.yml
+    from seq_config import SeqConfig
+    seq_config = SeqConfig.get()                            # the real config activated above
     if server_factory is None:
         from ExptServer import ExptServer as server_factory
     server = server_factory(url)
@@ -382,13 +468,14 @@ def serve(url, *, server_factory=None, with_camera=True, with_idle=True, log=pri
                 log("[runner] DummySeq compiled -- idle keep-alive enabled")
             except Exception as e:  # noqa: BLE001 - idle is optional; loop still serves jobs
                 log("[runner] DummySeq compile failed (%s) -- idle disabled" % e)
+        run = make_engine_run(server, camera, seq_config)   # engine + camera-arm + capture
         consume_loop(
             server,
             should_stop=lambda: stop["flag"],
             handle_camera=handle_camera_cmd if with_camera else None,
             camera=camera,
             idle=idle,
-            run_kwargs={"run": engine_run},
+            run_kwargs={"run": run},
             log=lambda m: log("[runner] %s" % m),
         )
     finally:

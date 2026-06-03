@@ -28,13 +28,20 @@ Execution details a naive port misses (finding D):
     re-arms implicitly): per-shot ``stop -> write -> start -> (wait later)``.
   * **AO-channel ADD ORDER must equal the reshape column order** (channel ``i`` of the data
     is AO channel ``i``).
-  * ``rate = 500e3`` is a deliberate over-estimate of the real ~400 kHz (under-estimate ->
-    the card stops clocking before the sequence ends).
+  * ``rate = 400e3`` = the real ~400 kHz FPGA PFI0 clock. (NOT 500e3: the 6738 rejects
+    >400 kHz at 14 channels -- DaqError -200332. The clock is external, so FINITE mode
+    completes after ``samps_per_chan`` edges regardless; the rate only needs to be <= the
+    device max and match the FPGA clock. Found on the first physical pyctrl run, 2026-06-02.)
 
 Design inspired by the MATLAB original; no brassboard-seq code.
 """
 
-_RATE = 500e3          # NI session rate (Hz). Over-estimate of the ~400 kHz FPGA clock.
+_RATE = 400e3          # NI sample-clock rate (Hz) = the FPGA PFI0 clock.
+# ⚠ Was 500e3 ("over-estimate"), but the PCIe-6738 REJECTS >400 kHz with 14 channels
+# (DaqError -200332, "Specified sample rate is higher than the fastest rate supported";
+# device max = 400 kHz at 14 chn). The clock is EXTERNAL (PFI0), so FINITE mode completes
+# after `samps_per_chan` edges regardless -- this rate just has to be <= the device max and
+# match the real ~400 kHz FPGA clock. Verified live 2026-06-02 (first physical pyctrl run).
 
 
 class NiDAQRunner:
