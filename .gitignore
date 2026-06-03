@@ -17,3 +17,6 @@ tests/reference_engine/*.params.json
 # Throwaway capture artifacts from tools/run_lacscan_once.py (regenerable images).
 tools/last_lacscan.*
 tools/last_lacscan_gray.*
+
+# Pretty-printed (derived) copies of committed JSON references.
+tests/reference/*.pretty.json

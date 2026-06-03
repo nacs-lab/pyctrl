@@ -35,14 +35,64 @@ Design inspired by the MATLAB original; no brassboard-seq code.
 # Full-frame default ROI for the C15550-20UP (4096 wide x 2304 tall): [x, y, w, h].
 DEFAULT_ROI = [0, 0, 4096, 2304]
 
-# DCAM SENSOR COOLER numeric values (fallback when pylablib won't take the string label).
-_COOLER_NUM = {"off": 1, "on": 2, "max": 4}
+# DCAM enum NUMERIC values -- pylablib ``set_attribute_value`` takes the numeric, NOT the label
+# string (it does ``float(value)``; passing "MAX" raises). Verified live against the labels dict.
+_COOLER = {"OFF": 1, "ON": 2, "MAX": 4}
+_COOLER_LABEL = {1: "off", 2: "on", 4: "max"}     # numeric -> label (for status display)
+_FAN = {"OFF": 1, "ON": 2}
+_POL_POSITIVE = 2                          # trigger_polarity POSITIVE (rising edge)
+_OUT_KIND = {"PROGRAMABLE": 3, "TRIGGER READY": 4, "ANYROW EXPOSURE": 6}
+_OUT_SOURCE = {"VSYNC": 3}
 
 
 def _open_dcam(index=0):
     """Open DCAM camera ``index`` via pylablib (lazy import; needs the runtime DLL)."""
     from pylablib.devices import DCAM
     return DCAM.DCAMCamera(idx=index)
+
+
+def _cooler_label(value):
+    """Render a ``sensor_cooler`` value as ``off``/``on``/``max``.
+
+    pylablib may report the cooler as a label string or as the DCAM numeric (1/2/4); the
+    monitor's camera card wants a stable label, so normalize both forms."""
+    if isinstance(value, str):
+        return value.lower()
+    try:
+        return _COOLER_LABEL.get(int(value), str(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def orca_config_defaults(seq_config):
+    """``(roi, exposure)`` from ``consts.Orca`` (expConfig), or ``(DEFAULT_ROI, None)``.
+
+    ``consts.Orca.ROI`` is ``[Xoff, Yoff, W, H]`` (== the wrapper's ``[x, y, w, h]``).
+    """
+    try:
+        orca = (seq_config.consts or {}).get("Orca", {}) if seq_config is not None else {}
+        roi = [int(round(v)) for v in orca.get("ROI", DEFAULT_ROI)]
+        exp = orca.get("ExposureTime")
+        return roi, (float(exp) if exp else None)
+    except Exception:  # noqa: BLE001
+        return list(DEFAULT_ROI), None
+
+
+def open_orca_from_config(seq_config, *, index=0, cam=None, open_cam=None, cooling="MAX",
+                          log=None):
+    """Open the Orca and apply the expConfig defaults -- the Python port of ``OrcaInit.m``.
+
+    Reads ``consts.Orca.ROI`` / ``ExposureTime`` from ``seq_config`` and configures the camera
+    via :meth:`OrcaCamera.init_orca` (cooling, exposure, ROI, external rising-edge trigger, the
+    3 output triggers). Returns the configured :class:`OrcaCamera` (NOT yet acquiring -- the run
+    loop arms per scan via :meth:`OrcaCamera.start_video`).
+    """
+    log = log or (lambda _m: None)
+    roi, exposure = orca_config_defaults(seq_config)
+    c = OrcaCamera(index=index, cam=cam, open_cam=open_cam)
+    c.init_orca(roi=roi, exposure=exposure, cooling=cooling)
+    log("Orca init: ROI=%s exposure=%s cooling=%s" % (roi, exposure, cooling))
+    return c
 
 
 class OrcaCamera:
@@ -132,6 +182,43 @@ class OrcaCamera:
             cam.close()
 
     # ----------------------------------------------------------------------- #
+    # OrcaInit.m port -- one-time configuration from expConfig defaults
+    # ----------------------------------------------------------------------- #
+    def init_orca(self, roi=None, exposure=None, cooling="MAX"):
+        """Configure the camera like MATLAB ``OrcaInit.m`` (does NOT start acquisition).
+
+        Sets: sensor cooler (+ fan), exposure, ROI, EXTERNAL input trigger with POSITIVE
+        (rising-edge) polarity, and the three OUTPUT triggers (Opt1 vsync/programable, Opt2
+        anyrow-exposure, Opt3 trigger-ready -- all positive), mirroring OrcaInit. DCAM enum
+        labels verified live (e.g. ``sensor_cooler`` OFF/ON/MAX). The run loop arms continuous
+        acquisition per scan (:meth:`start_video`), the analog of OrcaInit's ``start(vid)`` +
+        ``TriggerRepeat=Inf`` / ``FramesPerTrigger=1``.
+        """
+        self._set_attr("sensor_cooler", _COOLER.get(str(cooling).upper(), _COOLER["MAX"]))
+        if str(cooling).upper() in ("MAX", "ON"):
+            try:
+                self._set_attr("sensor_cooler_fan", _FAN["ON"])
+            except Exception:  # noqa: BLE001 - some models lack a controllable fan
+                pass
+        if exposure is not None:
+            self.set_exposure(exposure)
+        if roi is not None:
+            self.set_roi(roi)
+        self.set_trigger_external()                      # external + rising-edge polarity
+        for idx, (kind, src) in enumerate((
+                ("PROGRAMABLE", "VSYNC"),       # Opt1
+                ("ANYROW EXPOSURE", None),      # Opt2
+                ("TRIGGER READY", None))):      # Opt3
+            try:
+                self._set_attr("output_trigger_kind[%d]" % idx, _OUT_KIND[kind])
+                if src is not None:
+                    self._set_attr("output_trigger_source[%d]" % idx, _OUT_SOURCE[src])
+                self._set_attr("output_trigger_polarity[%d]" % idx, _POL_POSITIVE)
+            except Exception:  # noqa: BLE001 - output triggers are non-essential to capture
+                pass
+        return self
+
+    # ----------------------------------------------------------------------- #
     # cooler / temperature (read-only -- safe to probe live)
     # ----------------------------------------------------------------------- #
     def get_temperature(self):
@@ -157,10 +244,8 @@ class OrcaCamera:
         target temperature), so this selects the level rather than a setpoint. Returns the
         read-back mode. (Exact accepted labels confirmed live -- see the wrapper notes.)
         """
-        try:
-            self._set_attr("sensor_cooler", mode)
-        except Exception:  # noqa: BLE001 - label not accepted -> try the DCAM numeric
-            self._set_attr("sensor_cooler", _COOLER_NUM.get(str(mode).lower(), mode))
+        val = _COOLER.get(str(mode).upper(), mode) if isinstance(mode, str) else mode
+        self._set_attr("sensor_cooler", val)             # numeric (pylablib set wants numeric)
         return self.get_cooler()
 
     # ----------------------------------------------------------------------- #
@@ -193,19 +278,30 @@ class OrcaCamera:
         """Internal/software trigger -- a standalone snap with NO FPGA (safe for testing)."""
         self._cam.set_trigger_mode("int")
 
-    def set_trigger_external(self, polarity="positive"):
-        """External trigger -- each frame waits on an EDGE of :attr:`trigger_ttl`.
+    def set_trigger_external(self):
+        """External trigger -- each frame waits on a RISING edge of :attr:`trigger_ttl`.
 
         ⚠ pylablib's ``set_trigger_mode("ext")`` leaves DCAM ``trigger_polarity`` at NEGATIVE
         (falling edge); the Orca is wired RISING-edge (user-confirmed 2026-06-02), so we force
-        ``trigger_polarity = positive``. Without this a rising-edge TTL pulse is silently
-        ignored (verified live: a TTL54 0->1 produced no frame until polarity was set positive).
+        ``trigger_polarity = POSITIVE`` (the NUMERIC ``2`` -- pylablib's set takes the numeric,
+        not the label). Without this a rising-edge TTL pulse is silently ignored (verified live:
+        a TTL54 0->1 produced no frame until polarity was set positive).
         """
         self._cam.set_trigger_mode("ext")
-        try:
-            self._cam.set_attribute_value("trigger_polarity", polarity)
-        except Exception:  # noqa: BLE001 - fall back to the DCAM numeric (POSITIVE == 2)
-            self._cam.set_attribute_value("trigger_polarity", 2)
+        self._set_attr("trigger_polarity", _POL_POSITIVE)
+
+    def get_trigger_mode(self):
+        """Human-readable trigger state, e.g. ``"external (rising)"`` / ``"internal"``.
+
+        Reads the live DCAM trigger mode (pylablib ``get_trigger_mode`` -> ``"int"``/``"ext"``).
+        The wrapper always arms EXTERNAL with POSITIVE (rising-edge) polarity (see
+        :meth:`set_trigger_external`), so an ``ext`` mode is reported as rising-edge."""
+        mode = str(self._cam.get_trigger_mode())
+        if mode.startswith("ext"):
+            return "external (rising)"
+        if mode.startswith("int"):
+            return "internal"
+        return mode
 
     def snap(self):
         """Grab ONE frame on the internal trigger (standalone, no FPGA). Returns an ndarray."""
@@ -270,6 +366,38 @@ class OrcaCamera:
         if self._acquiring:
             self._cam.stop_acquisition()
             self._acquiring = False
+
+    # ----------------------------------------------------------------------- #
+    # aggregate status (for the monitor + web camera card)
+    # ----------------------------------------------------------------------- #
+    def status(self):
+        """Full camera state for the monitor/dashboard Camera card.
+
+        Returns ``{connected, roi, exposure_time, trigger, cooler, cooler_status,
+        temperature}``. Every field is probed defensively: a read that raises (attribute
+        absent on this firmware, or the camera is mid-reconfig) degrades to ``None``/``""``
+        rather than failing the whole status. Returns a disconnected stub when the handle is
+        closed (``self._cam is None``)."""
+        if self._cam is None:
+            return {"connected": False, "roi": [0, 0, 0, 0], "exposure_time": None,
+                    "trigger": "", "cooler": "", "cooler_status": "", "temperature": None}
+        return {
+            "connected": True,
+            "roi": self._safe(self.get_roi, [0, 0, 0, 0]),
+            "exposure_time": self._safe(self.get_exposure, None),
+            "trigger": self._safe(self.get_trigger_mode, ""),
+            "cooler": self._safe(lambda: _cooler_label(self.get_cooler()), ""),
+            "cooler_status": self._safe(self.get_cooler_status, ""),
+            "temperature": self._safe(self.get_temperature, None),
+        }
+
+    @staticmethod
+    def _safe(fn, default):
+        """Call ``fn()`` and return its result, or ``default`` if it raises (status probing)."""
+        try:
+            return fn()
+        except Exception:  # noqa: BLE001 - a single failed probe must not sink the whole status
+            return default
 
     # ----------------------------------------------------------------------- #
     # helpers

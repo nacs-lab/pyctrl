@@ -7,6 +7,7 @@ bound socket, no camera. The live ``serve()`` wiring (real ExptServer + engine +
 is the NEEDS-HARDWARE entry and is not run here.
 """
 
+import os
 import signal
 
 import pytest
@@ -14,6 +15,12 @@ import pytest
 import runner
 
 pytestmark = pytest.mark.no_hardware
+
+
+@pytest.fixture(autouse=True)
+def _isolate_data_prefix(tmp_path, monkeypatch):
+    """Redirect scan-prep writes to a temp dir so tests NEVER touch the real OneDrive data dir."""
+    monkeypatch.setenv("YB_DATA_PREFIX", str(tmp_path))
 
 
 # --------------------------------------------------------------------------- #
@@ -305,6 +312,9 @@ class _ArmCam:
         f, self._frames = self._frames, []
         return f
 
+    def current_roi(self):
+        return [0, 0, 256, 256]
+
 
 class _StoreServer:
     def __init__(self):
@@ -364,8 +374,6 @@ class TestMakeEngineRun:
 
         def fake_rsg(seq, scangroup, control=None, post_cb=(), new_run=None, **kw):
             captured["new_run"] = new_run
-            sid = control.begin_scan()              # exercises _ScanIdRecorder
-            captured["scan_id_seen"] = sid
             for cb in post_cb:                      # fire the per-shot capture hook once
                 cb(0, 1)
             return {"status": "ok", "nseq": 1}
@@ -380,9 +388,9 @@ class TestMakeEngineRun:
         assert res["status"] == "ok"
         assert cam.flushed and cam.started == (True, 16) and cam.stopped     # armed + disarmed
         assert captured["new_run"] is seq_manager.new_run                     # engine reset wired
-        # 2 frames published, stamped with scan_id 555 (from begin_scan) + seq_id 4
+        # 2 frames published with seq_id 4 + a 14-digit YYYYMMDDHHMMSS scan_id (NOT epoch-ms)
         assert len(srv.stored) == 2 and srv.finished == 1
-        assert all(s == 555 and q == 4 for _, s, q in srv.stored)
+        assert all(q == 4 and len(str(s)) == 14 for _, s, q in srv.stored)
 
     def test_no_capture_when_num_images_zero(self, monkeypatch):
         import run_seq
@@ -407,29 +415,72 @@ class TestMakeEngineRun:
         assert srv.stored == []
 
 
-class TestScanIdRecorderAndNumImages:
-    def test_recorder_forwards_and_records(self):
-        box = {"id": -1}
-        rec = runner._ScanIdRecorder(_Ctrl(scan_id=77), box)
-        assert rec.begin_scan() == 77 and box["id"] == 77
-        assert rec.check_pause_abort() is False
+class TestScanPrep:
+    def test_writes_json_config(self, tmp_path):
+        import json
+        import scan_prep
+        sid = 20260603001055
+        p = scan_prep.write_scan_config(sid, (2100, 1800), 1, is_init=1, num_per_group=500,
+                                        prefix=str(tmp_path))
+        assert os.path.exists(p) and p.endswith("data_20260603_001055.json")
+        cfg = json.loads(open(p).read())
+        assert cfg["frameSize"] == [2100, 1800] and cfg["NumImages"] == 1 and cfg["isInit"] == 1
+        assert cfg["source"] == "pyctrl"
 
-    def test_recorder_keeps_default_on_none(self):
-        box = {"id": -1}
+    def test_write_scan_prep_uses_camera_roi(self):
+        # _write_scan_prep pulls frameSize from the camera ROI [x,y,w,h] -> (w,h).
+        import scan_prep
+        cam = _ArmCam()                                  # current_roi -> [0,0,256,256]
+        runner._write_scan_prep(20260603001055, _NumImagesSG(1), cam, 1, log=lambda m: None)
+        p = scan_prep.scan_config_path(20260603001055)   # uses YB_DATA_PREFIX (tmp via fixture)
+        import json
+        assert json.loads(open(p).read())["frameSize"] == [256, 256]
 
-        class _NoneCtrl:
-            def begin_scan(self):
-                return None
 
-            def check_pause_abort(self):
-                return False
-
-        rec = runner._ScanIdRecorder(_NoneCtrl(), box)
-        assert rec.begin_scan() is None and box["id"] == -1     # abort-pending -> unchanged
+class TestScanIdAndNumImages:
+    def test_new_scan_id_is_14_digits(self):
+        sid = runner._new_scan_id()
+        assert isinstance(sid, int) and len(str(sid)) == 14     # YYYYMMDDHHMMSS
 
     def test_num_images(self):
         assert runner._num_images(_NumImagesSG(3)) == 3
         assert runner._num_images(object()) == 0                # bad scangroup -> 0
+
+
+class TestIdleResilience:
+    def test_dummy_failure_does_not_crash_backend(self):
+        """A keep-alive run that throws must be caught (logged + backed off), not propagated."""
+        logs, slept = [], []
+
+        def boom(seq):
+            raise RuntimeError("nidaqmx missing")
+
+        class _Srv:
+            def dummy_mode(self):
+                return "default"
+
+        sched = runner.make_idle(_Srv(), dummy_seq="DUM", run_real=boom,
+                                 sleep=lambda dt: slept.append(dt), log=logs.append)
+        sched.step(sleep=lambda dt: None)        # default -> run_dummy -> boom (must be caught)
+        assert any("dummy run failed" in m for m in logs)
+        assert slept == [1.0]                    # 1 s back-off so it doesn't hot-spin
+
+
+class TestForceDummyOff:
+    def test_sets_mode_off(self):
+        import threading
+
+        class _Srv:
+            def __init__(self):
+                setattr(self, "_ExptServer__dummy_mode", "last")
+                setattr(self, "_ExptServer__dummy_lock", threading.Lock())
+
+        srv = _Srv()
+        runner._force_dummy_off(srv, log=lambda m: None)
+        assert getattr(srv, "_ExptServer__dummy_mode") == "off"
+
+    def test_tolerates_missing_attr(self):
+        runner._force_dummy_off(object(), log=lambda m: None)   # no raise
 
 
 def test_open_camera_none_when_wrapper_absent():

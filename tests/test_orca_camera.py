@@ -24,7 +24,7 @@ class FakeDCAM:
         self._exposure = 0.03
         self._roi = (0, 4096, 0, 2304)          # (hstart, hend, vstart, vend)
         self._attrs = {"sensor_temperature": -20.0, "sensor_cooler_status": "ready",
-                       "sensor_cooler": "max", "trigger_polarity": "negative"}
+                       "sensor_cooler": 4, "trigger_polarity": 1}   # DCAM numerics (MAX, NEGATIVE)
         self.trigger = None
         self.acquiring = False
         self.closed = False
@@ -57,6 +57,9 @@ class FakeDCAM:
 
     def set_trigger_mode(self, mode):
         self.trigger = mode
+
+    def get_trigger_mode(self):
+        return self.trigger or "int"
 
     def snap(self):
         return self._snap_frame
@@ -138,6 +141,43 @@ class TestSettings:
 
 
 # --------------------------------------------------------------------------- #
+# OrcaInit.m port -- init_orca + open_orca_from_config + config defaults
+# --------------------------------------------------------------------------- #
+class _SeqCfg:
+    def __init__(self, orca):
+        self.consts = {"Orca": orca}
+
+
+class TestOrcaInit:
+    def test_config_defaults(self):
+        from orca_camera import DEFAULT_ROI, orca_config_defaults
+        roi, exp = orca_config_defaults(_SeqCfg({"ROI": [1000.0, 100.0, 2100.0, 2100.0],
+                                                 "ExposureTime": 0.050004}))
+        assert roi == [1000, 100, 2100, 2100] and exp == 0.050004
+        assert orca_config_defaults(None) == (DEFAULT_ROI, None)
+
+    def test_init_orca_configures_like_matlab(self):
+        cam, fake = _cam()
+        cam.init_orca(roi=[1000, 100, 2100, 2100], exposure=0.05, cooling="MAX")
+        a = fake._attrs
+        assert a["sensor_cooler"] == 4 and a["sensor_cooler_fan"] == 2     # MAX, fan ON (numeric)
+        assert fake.trigger == "ext" and a["trigger_polarity"] == 2        # external, POSITIVE
+        assert cam.get_roi() == [1000, 100, 2100, 2100] and cam.get_exposure() == 0.05
+        # the three output triggers (Opt1 vsync/programable, Opt2 anyrow, Opt3 trigger-ready)
+        assert a["output_trigger_kind[0]"] == 3 and a["output_trigger_source[0]"] == 3  # PROGRAMABLE, VSYNC
+        assert a["output_trigger_kind[1]"] == 6      # ANYROW EXPOSURE
+        assert a["output_trigger_kind[2]"] == 4      # TRIGGER READY
+
+    def test_open_orca_from_config(self):
+        from orca_camera import open_orca_from_config
+        fake = FakeDCAM()
+        cam = open_orca_from_config(_SeqCfg({"ROI": [1000, 100, 512, 512], "ExposureTime": 0.02}),
+                                    cam=fake)
+        assert cam.get_roi() == [1000, 100, 512, 512] and cam.get_exposure() == 0.02
+        assert fake._attrs["sensor_cooler"] == 4     # MAX
+
+
+# --------------------------------------------------------------------------- #
 # trigger + capture + close
 # --------------------------------------------------------------------------- #
 class TestCapture:
@@ -151,7 +191,7 @@ class TestCapture:
         cam, fake = _cam()
         cam.start_acquisition(nframes=2)
         assert fake.trigger == "ext" and fake.acquiring is True
-        assert fake.trigger_polarity == "positive"      # rising-edge forced (pylablib defaults negative)
+        assert fake.trigger_polarity == 2                # POSITIVE (rising); pylablib defaults negative
         frames = cam.read_frames()
         assert len(frames) == 2
         cam.stop_acquisition()
@@ -183,7 +223,7 @@ class TestVideoArmStop:
     def test_start_video_external_sets_polarity_and_runs(self):
         cam, fake = _cam()
         cam.start_video(nframes=64)
-        assert fake.trigger == "ext" and fake.trigger_polarity == "positive"
+        assert fake.trigger == "ext" and fake.trigger_polarity == 2
         assert fake.setup_mode == "sequence" and fake._nframes == 64
         assert cam.is_running() is True
 
@@ -229,12 +269,12 @@ class TestDisconnectReconnect:
 class TestCooling:
     def test_get_cooler(self):
         cam, _ = _cam()
-        assert cam.get_cooler() == "max"
+        assert cam.get_cooler() == 4                     # MAX (numeric)
 
     def test_set_cooler(self):
         cam, fake = _cam()
-        assert cam.set_cooler("on") == "on"
-        assert fake.get_attribute_value("sensor_cooler") == "on"
+        assert cam.set_cooler("on") == 2                 # ON -> numeric 2
+        assert fake.get_attribute_value("sensor_cooler") == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -268,6 +308,7 @@ class _CmdServer:
     def __init__(self, cmd):
         self._cmd = cmd
         self.results = []
+        self.statuses = []          # set_camera_status() pushes (the extended telemetry)
 
     def get_camera_cmd(self):
         c, self._cmd = self._cmd, None
@@ -275,6 +316,9 @@ class _CmdServer:
 
     def set_camera_result(self, connected, roi, error="", exposure_time=None):
         self.results.append((connected, list(roi), error, exposure_time))
+
+    def set_camera_status(self, status):
+        self.statuses.append(status)
 
 
 class TestRunnerIntegration:
@@ -290,3 +334,55 @@ class TestRunnerIntegration:
         runner.handle_camera_cmd(srv, cam)
         assert fake.closed is True
         assert srv.results == [(False, [0, 0, 0, 0], "", None)]
+
+    def test_init_pushes_extended_status(self):
+        cam, _ = _cam()
+        srv = _CmdServer({"cmd": "init", "roi": [0, 0, 256, 256], "exposure_time": 0.02})
+        runner.handle_camera_cmd(srv, cam)
+        # The full telemetry is also pushed so the monitor/dashboard card is live.
+        assert srv.statuses and srv.statuses[-1]["connected"] is True
+        assert srv.statuses[-1]["temperature"] == -20.0
+
+    def test_init_reconnects_a_closed_handle(self):
+        # Connect after a Disconnect/handoff: the handle is released, and init must
+        # REOPEN it (mirror SequenceRunner.m OrcaInit) rather than crash on the dead handle.
+        cam, fake = _cam()
+        cam.close()
+        assert cam.connected is False
+        srv = _CmdServer({"cmd": "init", "roi": [0, 0, 128, 128], "exposure_time": 0.01})
+        runner.handle_camera_cmd(srv, cam)
+        assert cam.connected is True                  # reopened
+        assert srv.results[-1][0] is True             # reported connected
+        assert srv.results[-1][1] == [0, 0, 128, 128]
+
+    def test_init_on_closed_handle_does_not_raise_on_unavailable(self):
+        # A None camera (pylablib absent) stays a clean disconnected report, not a crash.
+        srv = _CmdServer({"cmd": "init", "roi": [0, 0, 64, 64], "exposure_time": 0.01})
+        runner.handle_camera_cmd(srv, None)
+        assert srv.results[-1][0] is False
+
+
+# --------------------------------------------------------------------------- #
+# status() aggregate -- the monitor/dashboard camera card
+# --------------------------------------------------------------------------- #
+class TestStatus:
+    def test_status_full_when_connected(self):
+        cam, fake = _cam()
+        fake._roi = (0, 256, 0, 256)
+        cam.set_exposure(0.02)
+        cam.set_trigger_external()
+        st = cam.status()
+        assert st["connected"] is True
+        assert st["roi"] == [0, 0, 256, 256]
+        assert st["exposure_time"] == 0.02
+        assert st["trigger"] == "external (rising)"
+        assert st["cooler"] == "max"                  # numeric 4 -> label
+        assert st["cooler_status"] == "ready"
+        assert st["temperature"] == -20.0
+
+    def test_status_disconnected_stub(self):
+        cam, _ = _cam()
+        cam.close()
+        st = cam.status()
+        assert st["connected"] is False
+        assert st["temperature"] is None and st["roi"] == [0, 0, 0, 0]

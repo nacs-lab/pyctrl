@@ -134,6 +134,12 @@ class ExptServer(object):
             'roi': [0, 0, 4096, 2304],
             'exposure_time': 0.1,
             'error': '',
+            # Extended Orca telemetry (pyctrl backend; MATLAB leaves these at defaults).
+            # Surfaced on the monitor + web Camera card. set_camera_status() refreshes them.
+            'trigger': '',          # 'external (rising)' / 'internal'
+            'cooler': '',           # cooler mode: off / on / max
+            'cooler_status': '',    # cooler state readout (e.g. 'ready')
+            'temperature': None,    # sensor temperature, degrees C
         }
         self._camera_pending = None  # {'cmd': str, 'roi': list, 'exposure_time': float} or None
 
@@ -932,6 +938,26 @@ class ExptServer(object):
                     self._camera['exposure_time'] = float(exposure_time)
                 except (TypeError, ValueError):
                     pass
+
+    def set_camera_status(self, status):
+        """Merge a full camera-status dict into ``_camera`` (pyctrl run loop).
+
+        Complements :meth:`set_camera_result` (which the MATLAB SequenceRunner calls with the
+        connect/roi/error/exposure quartet): the pyctrl runner additionally pushes the extended
+        Orca telemetry (trigger / cooler / cooler_status / temperature) so the monitor + web
+        Camera card show a live, truthful state. Only the keys present in ``status`` are
+        updated; unknown keys are ignored. ``error`` is cleared when not supplied (a healthy
+        status push implies no error). Best-effort: a non-dict argument is ignored."""
+        if not isinstance(status, dict):
+            return
+        allowed = ('connected', 'roi', 'exposure_time', 'error',
+                   'trigger', 'cooler', 'cooler_status', 'temperature')
+        with self.__camera_lock:
+            for key in allowed:
+                if key in status:
+                    self._camera[key] = status[key]
+            if 'connected' in status and 'error' not in status:
+                self._camera['error'] = ''
 
     def dummy_enabled(self) -> bool:
         """Backward-compat wrapper: True iff mode is not 'off'."""
