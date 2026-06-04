@@ -86,7 +86,9 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
     seq_config.G.seq_id = 1             # 1-based; advanced after each successful shot
     _publish(on_seq_num, 0)
 
-    # Start-of-scan single clear-point + abort-sticky: refuse to start if an abort is pending.
+    # Start-of-scan single clear-point (clear-at-job-start): begin_scan clears stale Pause/Abort
+    # and marks Running. A None return is the generic "source refused to start" signal (no longer
+    # produced by a stale abort -- that is cleared here -- but still honored as an aborted start).
     if control is not None:
         if control.begin_scan() is None:
             config_teardown()
@@ -141,9 +143,9 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
         return {"status": "aborted" if aborted else "ok", "nseq": counter["cur_seq_num"]}
     finally:
         # End-of-run reset (CurrentSeqNum -> 0). Abort/Pause are NOT cleared here -- the
-        # single-clear-point/abort-sticky policy clears them at the next begin_scan, so a
-        # between-scan abort is not clobbered (control_channel.py). Config bracket teardown
-        # fires here too (abort/error path included).
+        # single-clear-point (clear-at-job-start) policy clears them at the next begin_scan, so
+        # a stale flag is cured by the next job, not by end-of-run (control_channel.py). Config
+        # bracket teardown fires here too (abort/error path included).
         _publish(on_seq_num, 0)
         config_teardown()
 

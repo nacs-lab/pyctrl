@@ -2,8 +2,8 @@
 
 NO-HARDWARE: a REAL ScanGroup drives ``getseq_with_var`` (Phase 4), while ``compile_point``,
 ``run_real``, and the control channel are injected fakes -- so the orchestration (three
-memos, gate placement, dual counters, retry, rep/random loops, abort-sticky, config bracket)
-is verified with the engine never loaded.
+memos, gate placement, dual counters, retry, rep/random loops, clear-at-job-start, config
+bracket) is verified with the engine never loaded.
 """
 
 import pytest
