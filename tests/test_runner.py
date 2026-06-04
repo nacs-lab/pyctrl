@@ -64,6 +64,7 @@ class FakeQueueServer:
         self._jobs = list(jobs)                 # each {'id','payload'}
         self._next_job_id = 100
         self.submitted = []                     # [(job_id, payload), ...]
+        self.submitted_summaries = []           # [summary_or_None, ...] (parallel to submitted)
         self.linked = []                        # [(desc_id, job_id), ...]
         self.desc_finished = []                 # [(desc_id, status, msg), ...]
         self.dummy_running = []                 # [flag, ...]
@@ -72,12 +73,13 @@ class FakeQueueServer:
     def pop_next_descriptor(self):
         return self._descs.pop(0) if self._descs else None
 
-    def submit_job(self, payload):
+    def submit_job(self, payload, summary=None):
         if self.submit_should_raise:
             raise RuntimeError("submit boom")
         jid = self._next_job_id
         self._next_job_id += 1
         self.submitted.append((jid, payload))
+        self.submitted_summaries.append(summary)
         return jid
 
     def link_descriptor_to_job(self, desc_id, job_id):
@@ -115,6 +117,19 @@ class TestHandleDescriptorPop:
         srv = FakeQueueServer()
         assert runner.handle_descriptor_pop(srv) == 0
         assert srv.submitted == []
+
+    def test_attaches_queue_summary_to_built_job(self):
+        # The descriptor's sweep + label become the job row's summary (queue-panel axes/name).
+        desc = ('{"seq":"TweezerLoadingSeq","label":"LACScan",'
+                '"params":{"GreenMOT.BiasCoilCurrent.Y":{"scan":1,"values":[0.24,0.28,0.32]}},'
+                '"runp":{"NumPerGroup":500,"NumImages":1}}')
+        srv = FakeQueueServer(descriptors=[{"id": 1, "descriptor": desc}])
+        assert runner.handle_descriptor_pop(srv) == 1
+        s = srv.submitted_summaries[0]
+        assert s is not None
+        assert s["scan_name"] == "LACScan"
+        assert s["axes"][0]["name"] == "GreenMOT.BiasCoilCurrent.Y"
+        assert s["axes"][0]["npts"] == 3 and s["axes"][0]["dim"] == 1
 
     def test_bad_descriptor_marked_error_and_keeps_draining(self):
         srv = FakeQueueServer(descriptors=[
@@ -402,6 +417,28 @@ class TestMakeEngineRun:
         run = runner.make_engine_run(srv, cam, _SeqCfg(2))
         run(lambda s: s, _NumImagesSG(0), control=_Ctrl(1))
         assert cam.started is False and srv.stored == []   # NumImages 0 -> no arm/capture
+
+    def test_threads_run_order_into_params(self, monkeypatch):
+        # The pre-built run order (indices) is persisted as the scan-config's Scan.Params (the
+        # seq_id->point map the live scan curve buckets on); NumPerGroup written = len(order).
+        import run_seq
+        import scan_prep
+        import seq_manager
+        monkeypatch.setattr(run_seq, "run_scan_group",
+                            lambda *a, **k: {"status": "ok", "nseq": 6})
+        monkeypatch.setattr(seq_manager, "new_run", lambda: None)
+        cap = {}
+
+        def fake_write(scan_id, frame_wh, num_images, *, params=None, num_per_group=0, **kw):
+            cap["params"], cap["num_per_group"] = params, num_per_group
+            return "captured.json"
+
+        monkeypatch.setattr(scan_prep, "write_scan_config", fake_write)
+        run = runner.make_engine_run(_StoreServer(), None, _SeqCfg(seq_id=1))
+        order = [1, 2, 3, 1, 2, 3]
+        run(lambda s: s, _NumImagesSG(0), control=_Ctrl(1),
+            indices=order, rep=1, is_random=False)
+        assert cap["params"] == order and cap["num_per_group"] == 6
 
     def test_camera_none_skips_capture(self, monkeypatch):
         import run_seq

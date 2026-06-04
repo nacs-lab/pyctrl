@@ -25,7 +25,18 @@ Example scan file (``YbScans``-style)::
         g().Cooling.Detuning = 25e6                       # fixed param (fallback)
         g(1).Pushout.Green.Freq.scan(linspace(105e6, 107e6, 23))   # 1-D sweep (dim 1)
         g.runp().NumPerGroup = 200
+        g.runp().Scramble = 1                             # per-pass scramble (default off)
         return ybStartScan(Spectrum556Seq, g, rep=5)      # submits; returns the descriptor id
+
+**Scan run order / scramble live in the runp, not the opts.** The runner builds the realized
+run order (ybBuildScanJob's ``Scan.Params``: ``StackNum`` passes over the sweep) in the prep
+layer from the ScanGroup's ``runp``:
+  * ``g.runp().NumPerGroup`` -> ``StackNum = max(ceil(NumPerGroup / nseqs), 2)`` passes (unless
+    an explicit ``rep`` opt overrides the pass count; ``rep=0`` = run forever).
+  * ``g.runp().Scramble`` -> per-pass scramble (``scrambleGroups``: shuffle WITHIN each pass).
+    **Defaults OFF**; set ``g.runp().Scramble = 1`` in the scan file to enable it. The ``random``
+    opt does NOT control this -- it only selects runSeq2's legacy global-shuffle on the
+    ``rep=0`` forever path.
 
 Design inspired by the MATLAB original; no brassboard-seq code.
 """
@@ -46,8 +57,11 @@ def ybStartScan(seq, scangroup, *, url=None, label=None, submit=None, **opts):
         label: queue-UI label (defaults to the seq name).
         submit: optional ``(desc_json, label) -> id`` override (injected in tests so no
             socket is bound). Default: :func:`submit_descriptor` over a one-shot REQ socket.
-        **opts: run options forwarded as descriptor ``opts`` (``rep`` / ``random`` /
-            ``tstartwait`` / ``pre_cb`` / ``post_cb``); callables become ``{"@": name}``.
+        **opts: run options forwarded as descriptor ``opts`` (``rep`` = explicit pass count,
+            ``0`` = forever / ``random`` = forever-path global shuffle / ``tstartwait`` /
+            ``pre_cb`` / ``post_cb``); callables become ``{"@": name}``. NOTE: per-pass scramble
+            is ``g.runp().Scramble`` (default off), NOT the ``random`` opt -- see the module
+            docstring.
     """
     desc = scangroup_to_descriptor(scangroup, seq, opts=opts or None, label=label)
     desc_json = json.dumps(desc, ensure_ascii=False)

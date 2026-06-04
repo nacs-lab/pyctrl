@@ -799,6 +799,7 @@ class ExptServer(object):
             # Best-effort label / seqName extraction so the queue UI shows
             # a meaningful name without forcing the caller to set `label`.
             seq_name = ''
+            parsed = None
             try:
                 parsed = json.loads(descriptor_json)
                 if isinstance(parsed, dict):
@@ -811,6 +812,16 @@ class ExptServer(object):
                         label = str(parsed.get('label', '')) or ''
             except Exception:
                 pass
+            # Build the ybScanSummary-shaped dict (axes / set_params / reps / scan_name) the
+            # dashboard queue panel reads. Best-effort: a malformed descriptor leaves it None
+            # and the queue UI degrades gracefully.
+            summary = None
+            if isinstance(parsed, dict):
+                try:
+                    from scan_summary import build_descriptor_summary
+                    summary = build_descriptor_summary(parsed)
+                except Exception:
+                    summary = None
             entry = {
                 'id': did,
                 'kind': 'descriptor',
@@ -824,7 +835,7 @@ class ExptServer(object):
                 'status': None,
                 'built_job_id': None,
                 'error_message': None,
-                'summary': None,
+                'summary': summary,
                 'payload_size': 0,
             }
             self.__queue.append(entry)

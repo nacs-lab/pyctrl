@@ -149,9 +149,13 @@ def handle_descriptor_pop(server, max_per_iter=MAX_DESC_PER_ITER, log=None):
         desc_id = desc["id"]
         try:
             payload = desc["descriptor"]
+            # Carry the queue summary onto the built JOB row so the dashboard's queue panel
+            # shows axes/reps/scan_name while the scan RUNS (link_descriptor_to_job archives
+            # the descriptor row; the job row takes over visibility). Best-effort.
+            summary = _build_summary(payload)
             if isinstance(payload, str):
                 payload = payload.encode("utf-8")
-            job_id = server.submit_job(payload)
+            job_id = server.submit_job(payload, summary=summary)
             server.link_descriptor_to_job(desc_id, job_id)
             dispatched += 1
         except Exception as e:  # noqa: BLE001 - bad descriptor: mark error, keep draining
@@ -409,14 +413,18 @@ def make_engine_run(server, camera, seq_config, log=None):
     from run_seq import run_scan_group
     log = log or _noop_log
 
-    def run(seq, scangroup, control=None, **opts):
+    def run(seq, scangroup, control=None, scan_name=None, **opts):
         num_images = _num_images(scangroup)
         post = list(opts.pop("post_cb", []) or [])
         scan_id = _new_scan_id()        # 14-digit YYYYMMDDHHMMSS (the monitor/MATLAB convention)
+        # The pre-built run order (sequence_runner._build_run_kwargs) IS ybBuildScanJob's
+        # Scan.Params -- persist it so the monitor's scan curve can bucket each shot's result.
+        params_order = opts.get("indices")
 
         # Scan-prep: write the Scan-config .mat the monitor's DataManager reads (best-effort;
         # without it the monitor errors "Cannot load <path>" and its _process_once dies).
-        _write_scan_prep(scan_id, scangroup, camera, num_images, log)
+        _write_scan_prep(scan_id, scangroup, camera, num_images, log,
+                         scan_name=scan_name, seq_config=seq_config, params=params_order)
 
         armed = False
         if camera is not None and num_images > 0:
@@ -458,24 +466,58 @@ def _runp_num(runp, name, default=0):
         return default
 
 
-def _write_scan_prep(scan_id, scangroup, camera, num_images, log):
+def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
+                     scan_name=None, seq_config=None, params=None):
     """Write the scan-config the monitor's DataManager reads (best-effort; never crash a job).
 
-    frameSize = the camera ROI (W, H); the rest from the descriptor runp. A write failure is
-    logged but does not fail the run (the monitor will warn until a config exists)."""
+    frameSize = the camera ROI (W, H); the rest from the descriptor runp. ``params`` is the
+    realized run order (ybBuildScanJob's ``Scan.Params``: shot -> scan-point index) -- persisted
+    as ``config['Params']`` so the live scan curve can bucket each shot; when given, the written
+    ``NumPerGroup`` is its length (the MATLAB ``Scan.NumPerGroup = length(Scan.Params)``).
+    ``scan_meta`` adds the swept axes (``ScanGroup.base.vars``), the fixed/``g()``-override
+    params, the scan title (``ScanName``), ``PlotScale`` and the baseline ``expConfig`` snapshot
+    (``seq_config.consts``) so the dashboard's live scan-info panel + scan curve populate. A
+    write failure is logged but does not fail the run (the monitor will warn until a config
+    exists)."""
     try:
         from scan_prep import write_scan_config
         roi = camera.current_roi() if camera is not None else [0, 0, 0, 0]
         rp = scangroup.runp()
+        scan_meta = _scan_meta(scangroup, scan_name, seq_config, log)
+        num_per_group = len(params) if params is not None else int(_runp_num(rp, "NumPerGroup", 0))
         path = write_scan_config(
             scan_id, (roi[2], roi[3]), num_images,
             is_init=int(_runp_num(rp, "isInit", 0)),
             is_hc=int(_runp_num(rp, "isHC", 0)),
             is_grid2=int(_runp_num(rp, "isGrid2", 0)),
-            num_per_group=int(_runp_num(rp, "NumPerGroup", 0)))
+            num_per_group=num_per_group,
+            params=params,
+            scan_meta=scan_meta)
         log("scan config written: %s" % path)
     except Exception as e:  # noqa: BLE001
         log("scan-config write failed: %s" % e)
+
+
+def _scan_meta(scangroup, scan_name, seq_config, log):
+    """Build the DataManager scan-info fields (ScanGroup/ScanName/PlotScale/expConfig) from the
+    dispatched ScanGroup. Best-effort -> ``None`` (frame-metadata-only config) on any failure."""
+    try:
+        from scan_summary import scangroup_scan_config
+        consts = getattr(seq_config, "consts", None) if seq_config is not None else None
+        return scangroup_scan_config(scangroup, scan_name=scan_name, expconfig=consts)
+    except Exception as e:  # noqa: BLE001
+        log("scan-meta build skipped: %s" % e)
+        return None
+
+
+def _build_summary(descriptor):
+    """The ybScanSummary-shaped queue dict from a descriptor (JSON str/bytes/dict). Best-effort
+    -> ``None`` (queue UI degrades) on any failure. Used to stamp the built job row."""
+    try:
+        from scan_summary import build_descriptor_summary
+        return build_descriptor_summary(descriptor)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _new_scan_id():

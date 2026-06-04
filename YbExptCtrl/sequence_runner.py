@@ -30,6 +30,7 @@ need the real engine + camera + a bound socket; this module is their pure orches
 Design inspired by the MATLAB original; no brassboard-seq code.
 """
 
+import math
 from collections import namedtuple
 
 from dispatch_descriptor import NotMigratedError, dispatch_descriptor
@@ -40,7 +41,7 @@ JobResult = namedtuple("JobResult", ["status", "seq_name"])
 
 
 def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
-            control_factory=None, on_prep=None):
+            control_factory=None, on_prep=None, rng=None):
     """Run one queued descriptor end to end; return :class:`JobResult`.
 
     Args:
@@ -53,6 +54,8 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
         control_factory: ``server -> control`` (default :class:`ControlChannel`).
         on_prep: optional NEEDS-HARDWARE hook ``on_prep(DispatchResult)`` for AWG/ROI/camera
             prep; raising it fails the job with ``prep error`` (the runner stays up).
+        rng: ``random.Random`` used to scramble the run order (default a fresh PRNG); pass a
+            seeded one for reproducibility / tests.
     """
     if dispatch is None:
         dispatch = dispatch_descriptor
@@ -81,7 +84,13 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
     # --- 3. run the scan (compile-per-point + per-seq gate live inside run_scan_group). ---
     control = control_factory(server) if server is not None else None
     try:
-        result = run(disp.seq, disp.scangroup, control=control, **_opts_to_run_kwargs(disp.opts))
+        # scan_name (the descriptor label, e.g. "LACScan") rides to the engine run so scan-prep
+        # can stamp ScanName for the dashboard. The default run seam (run_scan_group) is only
+        # used in tests, which inject a **kw-tolerant stub; the live engine run accepts it.
+        # _build_run_kwargs hands run_scan_group a pre-built, pre-scrambled run order
+        # (ybBuildScanJob's Scan.Params), so the scan loop just RUNS the order it is given.
+        result = run(disp.seq, disp.scangroup, control=control, scan_name=disp.label,
+                     **_build_run_kwargs(disp, rng))
     except Exception as e:  # noqa: BLE001 - a compile/run failure fails THIS job only
         return _fail(server, job_id, "run error: %s" % e, disp.seq_name)
 
@@ -145,6 +154,69 @@ class IdleScheduler:
 # =========================================================================== #
 # helpers
 # =========================================================================== #
+def _build_run_kwargs(disp, rng):
+    """Map descriptor opts -> run_scan_group kwargs, then (production model) replace the
+    rep/random knobs with a pre-built, pre-scrambled run ORDER (ybBuildScanJob: ``stack`` +
+    ``scramble_groups`` -> ``Scan.Params``), run once (``rep=1, is_random=False``).
+
+    The scramble lives HERE in the prep layer (like ``ybBuildScanJob.m``), NOT in runSeq2's own
+    ``is_random`` branch -- ``run_scan_group`` just runs the order it is handed. Two cases fall
+    through to the plain opts mapping (no pre-built order):
+      * ``rep == 0`` (a run-forever continuous monitor) -- cannot pre-stack an infinite order;
+        ``run_scan_group``'s loop runs forever, honoring the ``random`` flag.
+      * a ScanGroup that can't be queried (a test stub) -- keep the opts-derived kwargs.
+    """
+    kw = _opts_to_run_kwargs(disp.opts)
+    rep = kw.get("rep")
+    if rep is not None and rep <= 0:
+        # rep==0: run_scan_group's run-forever loop (continuous monitor). rep<0: leave it for
+        # run_scan_group's "Cannot run by negative times" ValueError (do NOT swallow it).
+        return kw
+    order = _build_scan_order(disp.scangroup, rep, rng)
+    if order is None:                            # un-queryable group -> plain opts mapping
+        return kw
+    kw["indices"] = order
+    kw["rep"] = 1
+    kw["is_random"] = False
+    return kw
+
+
+def _build_scan_order(scangroup, rep, rng):
+    """Build ybBuildScanJob's ``Scan.Params`` from the ScanGroup; ``None`` if unqueryable.
+
+    Number of passes = the explicit ``rep`` opt if given (>=1), else ``max(ceil(NumPerGroup /
+    nseqs), 2)`` (MATLAB ``StackNum``, NumPerGroup default 200). An explicit ``rep`` is a
+    deliberate pyctrl pass-count override (it bypasses the NumPerGroup formula AND the >=2
+    floor, so ``rep=1`` is a single pass -- something MATLAB's ybBuildScanJob never produces).
+    Scramble is driven SOLELY by
+    the scan file's ``runp.Scramble`` and defaults to **0 (OFF)** -- per-pass scrambling happens
+    only when the scan file sets ``g.runp().Scramble = 1`` (consistent with the ScanGroup runp
+    default, which shadows ybBuildScanJob's ``scanp.Scramble(1)`` inline fallback)."""
+    try:
+        nseqs = int(scangroup.nseq())
+        rp = scangroup.runp()
+    except Exception:  # noqa: BLE001 - a test stub / non-ScanGroup -> fall through
+        return None
+    if nseqs <= 0:
+        return None
+    if rep is not None and rep >= 1:
+        stack_num = int(rep)
+    else:
+        npg = _runp_scalar(rp, "NumPerGroup", 200)
+        stack_num = max(math.ceil(npg / nseqs), 2)
+    scramble = bool(_runp_scalar(rp, "Scramble", 0))     # default OFF; runp opt-in only
+    from scan_prep import build_scan_order
+    return build_scan_order(nseqs, stack_num=stack_num, scramble=scramble, rng=rng)
+
+
+def _runp_scalar(rp, name, default):
+    """Read a runp leaf (``rp.<name>(default)``), tolerant of absence."""
+    try:
+        return getattr(rp, name)(default)
+    except Exception:  # noqa: BLE001
+        return default
+
+
 def _opts_to_run_kwargs(opts):
     """Map descriptor opts ``[(key, val), ...]`` to run_scan_group kwargs.
 

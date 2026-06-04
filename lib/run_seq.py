@@ -149,7 +149,14 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
 
 
 def _scan_loop(run_one, nseq, rep, is_random, rng):
-    """The rep / random scheduling (port of runSeq2.m:346-412). Returns True if aborted."""
+    """The rep / random scheduling (port of runSeq2.m:346-412). Returns True if aborted.
+
+    Faithful to runSeq2: ``is_random`` here is runSeq2's OWN global ``randperm``. In the
+    production path this branch is NOT used -- ``sequence_runner._build_run_kwargs`` hands a
+    pre-built, pre-scrambled order in ``indices`` with ``rep=1, is_random=False`` (the
+    randomization lives in the prep layer, ybBuildScanJob's ``scramble_groups`` + ``stack``),
+    so this loop just walks that order. The global-shuffle / forever branches remain for the
+    rep=0 continuous monitor and for fidelity to runSeq2's varargin behavior."""
     if is_random:
         if rep == 0:
             idx = rng.randint(1, nseq)

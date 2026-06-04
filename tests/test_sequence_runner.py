@@ -6,6 +6,8 @@ last_fallback_logged) is exercised with fake dummy/last runners. The live ZMQ/ca
 hosting loop + entry point are deferred to the hardware/integration step.
 """
 
+import random
+
 import pytest
 
 from dispatch_descriptor import DispatchResult, NotMigratedError
@@ -47,11 +49,40 @@ class FakeRun:
         return {"status": self.status, "nseq": 5}
 
 
-def _disp(seq_name="MySeq", opts=()):
+def _disp(seq_name="MySeq", opts=(), scangroup="SG"):
     def make(_desc):
-        return DispatchResult(scangroup="SG", seq=(lambda s: s),
+        return DispatchResult(scangroup=scangroup, seq=(lambda s: s),
                               seq_name=seq_name, opts=list(opts), label=seq_name)
     return make
+
+
+class _FakeRunp:
+    """Mimics a runp DynProps: ``rp.<Field>(default)`` returns the set value or the default."""
+
+    def __init__(self, **fields):
+        object.__setattr__(self, "_f", fields)
+
+    def __getattr__(self, name):
+        fields = object.__getattribute__(self, "_f")
+
+        def getter(default=None):
+            v = fields.get(name)
+            return v if v is not None else default
+        return getter
+
+
+class _FakeSG:
+    """A ScanGroup stub exposing the run-order query surface (nseq + runp)."""
+
+    def __init__(self, nseqs, **runp_fields):
+        self._n = nseqs
+        self._rp = _FakeRunp(**runp_fields)
+
+    def nseq(self):
+        return self._n
+
+    def runp(self):
+        return self._rp
 
 
 # --------------------------------------------------------------------------- #
@@ -141,6 +172,75 @@ class TestRunJobWiring:
         run = FakeRun()
         run_job(srv, "{}", dispatch=_disp(), run=run, control_factory=lambda s: ("CTL", s))
         assert run.calls[0]["control"] == ("CTL", srv)
+
+
+# --------------------------------------------------------------------------- #
+# run_job: production run-order (ybBuildScanJob -> Scan.Params), handed to run_scan_group
+# as a pre-built/pre-scrambled `indices` list with rep=1, is_random=False.
+# --------------------------------------------------------------------------- #
+class TestRunOrder:
+    def _run(self, sg, opts=(), rng=None):
+        srv, run = FakeServer(), FakeRun()
+        run_job(srv, "{}", dispatch=_disp(opts=opts, scangroup=sg), run=run,
+                control_factory=lambda s: None, rng=rng)
+        return run.calls[0]["kw"]
+
+    def test_explicit_rep_builds_stacked_order(self):
+        kw = self._run(_FakeSG(3, Scramble=0), opts=[("rep", 2)])
+        assert kw["indices"] == [1, 2, 3, 1, 2, 3]       # 2 unscrambled passes
+        assert kw["rep"] == 1 and kw["is_random"] is False
+
+    def test_num_per_group_derives_stacknum(self):
+        # No explicit rep -> StackNum = max(ceil(NumPerGroup / nseqs), 2) = max(ceil(10/3),2) = 4.
+        kw = self._run(_FakeSG(3, Scramble=0, NumPerGroup=10))
+        assert kw["indices"] == [1, 2, 3] * 4 and kw["rep"] == 1
+
+    def test_stacknum_floor_is_two(self):
+        # NumPerGroup small -> StackNum floored at 2 (MATLAB max(...,2)).
+        kw = self._run(_FakeSG(5, Scramble=0, NumPerGroup=1))
+        assert kw["indices"] == [1, 2, 3, 4, 5] * 2
+
+    def test_scramble_off_by_default(self):
+        # Scramble unset -> OFF; only the scan file's runp turns it on. Deterministic order.
+        kw = self._run(_FakeSG(2, NumPerGroup=4))        # StackNum = max(ceil(4/2),2) = 2
+        assert kw["indices"] == [1, 2, 1, 2] and kw["is_random"] is False
+
+    def test_runp_scramble_on_scrambles_per_block(self):
+        # runp Scramble=1 (set in the scan file) -> each pass independently shuffled, block
+        # boundaries intact, and the realized order actually differs from the plain stack.
+        kw = self._run(_FakeSG(5, NumPerGroup=10, Scramble=1), rng=random.Random(0))
+        order = kw["indices"]
+        assert len(order) == 10 and kw["is_random"] is False    # StackNum = max(ceil(10/5),2)=2
+        assert sorted(order[0:5]) == [1, 2, 3, 4, 5]            # ...each pass is a full sweep
+        assert sorted(order[5:10]) == [1, 2, 3, 4, 5]
+        assert order != [1, 2, 3, 4, 5, 1, 2, 3, 4, 5]         # scramble actually reordered
+
+    def test_bare_default_path_derives_stacknum_from_200(self):
+        # The common production config: no rep, NumPerGroup unset -> default 200.
+        # StackNum = max(ceil(200/17), 2) = 12 -> 12 passes over 17 points = 204 shots.
+        kw = self._run(_FakeSG(17))
+        assert kw["indices"] == list(range(1, 18)) * 12 and len(kw["indices"]) == 204
+        assert kw["rep"] == 1 and kw["is_random"] is False
+
+    def test_explicit_rep_one_is_a_single_pass(self):
+        # An explicit rep=1 is honored as a single pass (pyctrl override; no >=2 floor).
+        kw = self._run(_FakeSG(3, Scramble=0), opts=[("rep", 1)])
+        assert kw["indices"] == [1, 2, 3] and kw["rep"] == 1
+
+    def test_forever_falls_through_to_loop(self):
+        # rep=0 (continuous monitor) can't be pre-stacked -> run_scan_group's forever loop.
+        kw = self._run(_FakeSG(3, Scramble=0), opts=[("rep", 0)])
+        assert kw.get("rep") == 0 and "indices" not in kw
+
+    def test_negative_rep_left_for_run_scan_group_guard(self):
+        # rep<0 is NOT swallowed into the NumPerGroup fallback -> run_scan_group raises later.
+        kw = self._run(_FakeSG(3, Scramble=0), opts=[("rep", -1)])
+        assert "indices" not in kw and kw["rep"] == -1
+
+    def test_unqueryable_group_falls_through(self):
+        # A non-ScanGroup stub -> plain opts mapping preserved (no order build).
+        kw = self._run("SG", opts=[("rep", 3), ("random", True)])
+        assert "indices" not in kw and kw["rep"] == 3 and kw["is_random"] is True
 
 
 # --------------------------------------------------------------------------- #
