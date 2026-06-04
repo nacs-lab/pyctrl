@@ -182,6 +182,35 @@ class TestRunJobWiring:
         run_job(srv, "{}", dispatch=_disp(), run=run, control_factory=lambda s: ("CTL", s))
         assert run.calls[0]["control"] == ("CTL", srv)
 
+    def test_reload_modules_runs_before_dispatch(self):
+        # The hot-reload hook must fire BEFORE the dispatcher resolves the seq, else the resolver
+        # imports stale (cached) experiment modules.
+        order = []
+        srv = FakeServer()
+
+        def reloader():
+            order.append("reload")
+
+        def disp(_desc):
+            order.append("dispatch")
+            return _disp()(_desc)
+
+        run_job(srv, "{}", dispatch=disp, run=FakeRun(), control_factory=lambda s: None,
+                reload_modules=reloader)
+        assert order == ["reload", "dispatch"]
+
+    def test_reload_failure_does_not_kill_the_job(self):
+        # A reload that raises is swallowed (stale modules == pre-reload behavior); the job runs.
+        srv = FakeServer()
+        run = FakeRun(status="ok")
+
+        def boom():
+            raise RuntimeError("reload boom")
+
+        res = run_job(srv, "{}", dispatch=_disp(), run=run, control_factory=lambda s: None,
+                      reload_modules=boom)
+        assert res.status == "ok" and len(run.calls) == 1
+
 
 # --------------------------------------------------------------------------- #
 # run_job: production run-order (ybBuildScanJob -> Scan.Params), handed to run_scan_group

@@ -42,7 +42,7 @@ JobResult = namedtuple("JobResult", ["status", "seq_name"])
 
 
 def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
-            control_factory=None, on_prep=None, rng=None):
+            control_factory=None, on_prep=None, rng=None, reload_modules=None):
     """Run one queued descriptor end to end; return :class:`JobResult`.
 
     Args:
@@ -57,6 +57,10 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
             prep; raising it fails the job with ``prep error`` (the runner stays up).
         rng: ``random.Random`` used to scramble the run order (default a fresh PRNG); pass a
             seeded one for reproducibility / tests.
+        reload_modules: optional ``() -> None`` hook (``seq_reload.reload_experiment_modules``)
+            run BEFORE dispatch so edits to ported seq/step files take effect on the next job
+            without a runner restart (rehash()+str2func analog). The live runner injects it;
+            tests/pure-orchestration omit it (None disables, so cached modules are used).
     """
     if dispatch is None:
         dispatch = dispatch_descriptor
@@ -64,6 +68,13 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
         from run_seq import run_scan_group as run
     if control_factory is None:
         from control_channel import ControlChannel as control_factory
+
+    # --- 0. hot-reload ported seq/step modules so live edits take effect (before resolution). ---
+    if reload_modules is not None:
+        try:
+            reload_modules()
+        except Exception:  # noqa: BLE001 - stale modules == pre-reload behavior; never kill a job
+            pass
 
     # --- 1. descriptor -> (ScanGroup, seq, opts). Bad descriptor / un-ported seq fail loud. ---
     try:

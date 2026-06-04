@@ -41,6 +41,7 @@ import signal
 import sys
 import time
 
+from seq_reload import reload_experiment_modules
 from sequence_runner import IdleScheduler, run_job
 
 # ZMQ-bind retry fallback URL (mirrors SequenceRunner.m's last-resort default).
@@ -623,7 +624,11 @@ def serve(url, *, server_factory=None, with_camera=True, with_idle=True, log=pri
             handle_camera=make_camera_pump() if with_camera else None,
             camera=camera,
             idle=idle,
-            run_kwargs={"run": run},
+            # Hot-reload ported seq/step modules each job so live edits take effect without a
+            # restart (rehash()+str2func analog; lib/ + expConfig still need a restart).
+            run_kwargs={"run": run,
+                        "reload_modules": lambda: reload_experiment_modules(
+                            log=lambda m: log("[runner] %s" % m))},
             log=lambda m: log("[runner] %s" % m),
         )
     finally:

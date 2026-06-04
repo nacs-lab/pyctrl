@@ -71,8 +71,8 @@ class NotMigratedError(Exception):
 
 # The dispatcher's product, consumed by the pyctrl run loop. ``seq`` is the resolved
 # callable (a YbSeqs function), ``seq_name`` the name it was resolved from (for logging /
-# importlib.reload in the long-lived runner), ``opts`` the decoded varargin pairs, and
-# ``label`` the queue-UI label (falls back to the seq name).
+# the queue label), ``opts`` the decoded varargin pairs, and ``label`` the queue-UI label
+# (falls back to the seq name).
 DispatchResult = namedtuple(
     "DispatchResult", ["scangroup", "seq", "seq_name", "opts", "label"])
 
@@ -318,6 +318,12 @@ def _import_by_convention(name):
     The pyctrl analog of ``str2func`` (references/runtime-design.md): flat ``sys.path`` +
     verbatim naming make ``module name == attr name`` the convention. Anything not ported
     raises :class:`NotMigratedError`.
+
+    Live edits: ``import_module`` returns the CACHED module, so the long-lived runner drops
+    ported experiment modules from ``sys.modules`` once per job (``seq_reload`` via ``run_job``)
+    BEFORE resolving -- this re-import then re-reads edited seq/step files from disk (the
+    ``rehash()`` + ``str2func`` analog; transitive over imported steps). Edits to ``lib/`` (the
+    framework) still need a runner restart.
     """
     try:
         mod = importlib.import_module(name)
