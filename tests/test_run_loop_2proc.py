@@ -205,14 +205,18 @@ def test_pause_then_resume_completes_full_scan(server):
     try:
         assert _wait(lambda: srv.get_status() == "Sequence is running")
         p = _writer(url, "0.2:pause_seq,0.5:start_seq")
-        # While parked the server reports paused (request-vs-reached: coarse v1, accepted).
-        assert _wait(lambda: srv.get_status() == "Sequence is paused"), "pause never parked the loop"
+        # Coarse get_status reflects the pause REQUEST immediately...
+        assert _wait(lambda: srv.get_status() == "Sequence is paused"), "pause request never landed"
+        # ...while is_paused() (reached-paused ack) becomes True only once the run loop truly parks
+        # at the gate (request-vs-reached must-fix #2).
+        assert _wait(lambda: srv.is_paused() is True), "run loop never acked reached-paused"
         p.wait(timeout=5)
         t.join(timeout=10)
         res = holder["res"]
         assert res["status"] == "ok"
         assert res["nseq"] == _MED                    # resumed and finished every shot
         assert srv.check_request() == SeqRequest.NoRequest
+        assert srv.is_paused() is False               # reached-paused ack reset on resume
     finally:
         t.join(timeout=5)
 
@@ -292,10 +296,34 @@ def test_run_job_records_aborted_status(server):
 
 
 # --------------------------------------------------------------------------- #
-# 5. clear-at-job-start: a STALE abort does not wedge the next scan (the wedge regression).
-#    Reproduces bug-runjob-stale-abortrunseq / bug-pyctrl-stale-abort-wedge at the run-loop level
-#    against the real server: an Abort left over from a prior scan must be cleared by begin_scan,
-#    so a fresh scan runs to full completion instead of returning 0 iterations forever.
+# 5. request-vs-reached ack: is_paused() (reached) is distinct from get_status (requested).
+# --------------------------------------------------------------------------- #
+def test_ack_paused_tracks_reached_state(server):
+    """Request-vs-reached ack (must-fix #2), at the server contract level. The coarse get_status
+    flips to 'paused' on the bare pause REQUEST (a lie mid-shot); is_paused() is the reached truth
+    the runner acks only once it has actually parked."""
+    srv, _url = server
+    assert srv.is_paused() is False
+    srv.start_scan()                                  # Running
+    srv.pause_seq()                                   # request Pause
+    assert srv.get_status() == "Sequence is paused"   # coarse: reflects the REQUEST...
+    assert srv.is_paused() is False                   # ...but the runner has not parked yet
+    srv.ack_paused(True)                              # runner reaches the gate and parks
+    assert srv.is_paused() is True
+    srv.start_seq_serv()                              # resume
+    assert srv.is_paused() is False                   # reached-paused ack reset on resume
+    # abort also un-parks the reached ack
+    srv.start_scan(); srv.pause_seq(); srv.ack_paused(True)
+    assert srv.is_paused() is True
+    srv.abort_seq()
+    assert srv.is_paused() is False
+
+
+# --------------------------------------------------------------------------- #
+# 6. clear-at-job-start: a STALE abort does not wedge the next scan (the wedge regression).
+#    Reproduces bug-runjob-stale-abortrunseq / bug-pyctrl-stale-abort-wedge at the run-loop level:
+#    an Abort left over from a prior scan must be cleared by begin_scan, so a fresh scan runs to
+#    full completion instead of returning 0 iterations forever.
 # --------------------------------------------------------------------------- #
 def test_stale_abort_cleared_by_next_scan(server):
     srv, _url = server

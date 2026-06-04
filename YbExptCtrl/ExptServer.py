@@ -124,6 +124,10 @@ class ExptServer(object):
         # status of seq
         with self.__seq_lock:
             self.__seq_req = self.SeqRequest.NoRequest
+            # reached-paused ack (pyctrl backend; mirrors runSeq2's IsPausedRunSeq). The coarse
+            # get_status reflects the pause REQUEST; this flag is the run loop's report that it
+            # has actually parked. See ack_paused / is_paused.
+            self.__is_paused = False
         with self.__data_lock:
             self.seq_status = self.State.Init
 
@@ -195,6 +199,7 @@ class ExptServer(object):
             self.nseq_imgs = 0
         with self.__seq_lock:
             self.__seq_req = self.SeqRequest.NoRequest
+            self.__is_paused = False
         with self.__data_lock:
             self.seq_status = self.State.Init
         self.start_worker()
@@ -467,6 +472,7 @@ class ExptServer(object):
                 self.seq_status = self.State.Paused
                 with self.__seq_lock:
                     self.__seq_req = self.SeqRequest.Pause
+                    self.__is_paused = False    # requested, not yet reached (runner acks on park)
                 res = "Sequence Paused"
             else:
                 res = "Sequence is not running"
@@ -478,6 +484,7 @@ class ExptServer(object):
                 self.seq_status = self.State.Init
                 with self.__seq_lock:
                     self.__seq_req = self.SeqRequest.Abort
+                    self.__is_paused = False    # abort un-parks
                 res = "Sequence Aborted"
             else:
                 res = "Sequence is not running"
@@ -552,6 +559,7 @@ class ExptServer(object):
             if self.seq_status == self.State.Paused:
                 with self.__seq_lock:
                     self.__seq_req = self.SeqRequest.NoRequest
+                    self.__is_paused = False    # resume un-parks
                 self.seq_status = self.State.Running
                 res = "Sequence should now be running"
             else:
@@ -563,6 +571,37 @@ class ExptServer(object):
         with self.__seq_lock:
             res = self.__seq_req.value  # get value for Matlab
         return res
+
+    def ack_paused(self, parked):
+        """Record whether the run loop has ACTUALLY parked at the per-sequence gate (pyctrl
+        backend; reached-paused ack).
+
+        Request-vs-reached: :meth:`pause_seq` flips the coarse State to Paused on the bare pause
+        REQUEST (before the in-flight FPGA shot finishes -- a lie mid-shot). This ack is set True
+        by the runner only once it truly parks in the pause spin, and False when it resumes or
+        aborts (``control_channel.check_pause_abort`` calls it). It is the reached-paused truth
+        ``runSeq2`` keeps as ``IsPausedRunSeq`` -- consumed by the run-loop coherency tests and the
+        deferred ``get_status_rich`` verb. The MATLAB hub never calls it (the coarse path stands)."""
+        with self.__seq_lock:
+            self.__is_paused = bool(parked)
+
+    def is_paused(self):
+        """True iff the run loop has reported (via :meth:`ack_paused`) that it is actually parked
+        at the gate -- distinct from :meth:`get_status`, which reflects the pause REQUEST."""
+        with self.__seq_lock:
+            return self.__is_paused
+
+    def clear_seq_request(self):
+        """Reset the seq request to NoRequest without touching ``seq_status`` (pyctrl backend).
+
+        Used by the idle/keep-alive loop to CONSUME an abort that arrived while no scan was
+        running: there is nothing to abort during idle, so the request is cleared (the keep-alive
+        is silenced for that iteration by the IdleScheduler abort gate) instead of lingering and
+        suppressing the dummy keep-alive indefinitely. Real scans still clear at job start via
+        :meth:`start_scan` (clear-at-job-start); this is the idle-only consumer."""
+        with self.__seq_lock:
+            self.__seq_req = self.SeqRequest.NoRequest
+            self.__is_paused = False
 
     def start_scan(self):
         with self.__data_lock:

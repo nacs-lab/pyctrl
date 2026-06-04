@@ -33,6 +33,7 @@ Design inspired by the MATLAB original; no brassboard-seq code.
 import math
 from collections import namedtuple
 
+from control_channel import SeqRequest
 from dispatch_descriptor import NotMigratedError, dispatch_descriptor
 
 
@@ -109,12 +110,19 @@ class IdleScheduler:
     and clears the server-side fallback flag exactly once).
     """
 
-    def __init__(self, server, run_dummy, run_last):
+    def __init__(self, server, run_dummy, run_last, is_aborting=None, clear_request=None):
         self._server = server
         self._run_dummy = run_dummy      # () -> run the canonical DummySeq once
         self._run_last = run_last        # (last_seq) -> replay it once (scan_id/seq_id = -1)
         self.last_seq = None
         self.last_fallback_logged = False
+        # Abort-gate seams (default: derive from the server's ZMQ control surface). Injectable so
+        # the state machine stays NO-HARDWARE-testable with a fake server. An abort pending during
+        # idle silences the keep-alive and is consumed here -- there is no scan to abort, and a
+        # sticky abort would otherwise suppress the dummy keep-alive indefinitely (no ZMQ verb
+        # clears a bare Abort outside a scan's begin_scan). Real scans clear flags at job start.
+        self._is_aborting = is_aborting or (lambda: _server_aborting(server))
+        self._clear_request = clear_request or (lambda: _server_clear_request(server))
 
     def cache_last_seq(self, seq):
         """Record the last successful real seq (do NOT touch ``last_fallback_logged``)."""
@@ -123,6 +131,13 @@ class IdleScheduler:
 
     def step(self, sleep):
         """One idle iteration; returns the action taken (for logging / tests)."""
+        # Abort gate (precedes the mode logic): silence the keep-alive (no DummySeq on the FPGA)
+        # and consume the abort, since idle has nothing to abort (must-fix #4).
+        if self._is_aborting():
+            self._clear_request()
+            sleep(0.1)
+            return "aborted"
+
         mode = _safe_ret(self._server, "dummy_mode", default="default")
         mode = str(mode) if mode is not None else "default"
 
@@ -252,6 +267,28 @@ def _finish(server, job_id, status):
 def _fail(server, job_id, status, seq_name):
     _finish(server, job_id, status)
     return JobResult(status, seq_name)
+
+
+def _server_aborting(server):
+    """True iff the server's control surface reports a pending Abort (idle abort-gate default)."""
+    fn = getattr(server, "check_request", None)
+    if fn is None:
+        return False
+    try:
+        return int(fn()) == int(SeqRequest.Abort)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _server_clear_request(server):
+    """Consume the seq request on the server (idle abort-gate default); no-op if unsupported."""
+    fn = getattr(server, "clear_seq_request", None)
+    if fn is None:
+        return
+    try:
+        fn()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _safe(server, method, *args):

@@ -17,11 +17,13 @@ pytestmark = pytest.mark.no_hardware
 
 
 class FakeServer:
-    def __init__(self, mode="default"):
+    def __init__(self, mode="default", seq_req=0):
         self.mode = mode
         self.seq_names = []
         self.finished = []
         self.fallback_calls = []
+        self.seq_req = seq_req          # 0 NoRequest / 1 Pause / 2 Abort (idle abort-gate)
+        self.cleared = 0
 
     def dummy_mode(self):
         return self.mode
@@ -34,6 +36,13 @@ class FakeServer:
 
     def set_last_fallback_direct(self, on):
         self.fallback_calls.append(bool(on))
+
+    def check_request(self):
+        return self.seq_req
+
+    def clear_seq_request(self):
+        self.seq_req = 0
+        self.cleared += 1
 
 
 class FakeRun:
@@ -247,8 +256,8 @@ class TestRunOrder:
 # IdleScheduler: dummy-mode state machine
 # --------------------------------------------------------------------------- #
 class TestIdleScheduler:
-    def _sched(self, mode):
-        srv = FakeServer(mode=mode)
+    def _sched(self, mode, seq_req=0):
+        srv = FakeServer(mode=mode, seq_req=seq_req)
         dummies, lasts = [], []
         sched = IdleScheduler(srv, run_dummy=lambda: dummies.append(1),
                               run_last=lambda s: lasts.append(s))
@@ -292,6 +301,29 @@ class TestIdleScheduler:
         sched.step(sleep=_noop)                       # default clears the fallback flag
         assert sched.last_fallback_logged is False
         assert srv.fallback_calls == [True, False]
+
+    # --- abort gate (must-fix #4): abort during idle silences + consumes the keep-alive --- #
+    def test_abort_silences_keepalive_and_consumes_request(self):
+        # mode 'default' would fire the DummySeq, but a pending Abort (seq_req=2) suppresses it.
+        srv, sched, dummies, lasts = self._sched("default", seq_req=2)
+        slept = []
+        assert sched.step(sleep=lambda dt: slept.append(dt)) == "aborted"
+        assert dummies == [] and lasts == []          # no FPGA keep-alive fired
+        assert srv.cleared == 1 and srv.seq_req == 0   # abort consumed (idle has nothing to abort)
+        assert slept == [0.1]
+
+    def test_abort_gate_precedes_last_mode(self):
+        # The gate wins over every mode, including 'last' (no cached-seq replay while aborting).
+        srv, sched, dummies, lasts = self._sched("last", seq_req=2)
+        sched.cache_last_seq("SEQ")
+        assert sched.step(sleep=_noop) == "aborted"
+        assert lasts == [] and dummies == [] and srv.cleared == 1
+
+    def test_no_abort_runs_normally(self):
+        # seq_req=0 (NoRequest) -> the gate is transparent; normal mode logic runs.
+        srv, sched, dummies, lasts = self._sched("default", seq_req=0)
+        assert sched.step(sleep=_noop) == "default"
+        assert dummies == [1] and srv.cleared == 0
 
 
 def _noop(_dt):
