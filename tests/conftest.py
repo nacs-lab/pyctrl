@@ -19,7 +19,8 @@ REPO_ROOT = os.path.dirname(_PYCTRL_DIR)
 
 # Make the flat lib/ + tools/ + the matlab_new-mirroring YbSteps/ YbSeqs/ importable
 # (mirrors pyproject pythonpath, so the suite also runs without an editable install).
-for _p in (os.path.join(_PYCTRL_DIR, "lib"), os.path.join(_PYCTRL_DIR, "tools"),
+for _p in (_PYCTRL_DIR,        # carries expConfig.py (executable config, mirrors matlab_new/expConfig.m)
+           os.path.join(_PYCTRL_DIR, "lib"), os.path.join(_PYCTRL_DIR, "tools"),
            os.path.join(_PYCTRL_DIR, "YbSteps"), os.path.join(_PYCTRL_DIR, "YbSeqs")):
     if _p not in sys.path:
         sys.path.insert(0, _p)

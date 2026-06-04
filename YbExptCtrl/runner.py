@@ -618,17 +618,22 @@ def serve(url, *, server_factory=None, with_camera=True, with_idle=True, log=pri
                 log("[runner] DummySeq compile failed (%s) -- idle disabled" % e)
         run = make_engine_run(server, camera, seq_config,    # engine + camera-arm + capture
                               log=lambda m: log("[runner] %s" % m))
+
+        def _pre_job_reload():
+            # Per-job hot-reload so live edits take effect without a restart: ported seq/step
+            # modules (rehash()+str2func analog) AND the executable expConfig.py (in place, so
+            # SeqConfig identity + runtime globals are preserved). lib/ still needs a restart.
+            reload_experiment_modules(log=lambda m: log("[runner] %s" % m))
+            from seq_config import SeqConfig
+            SeqConfig.load_real(reload=True)
+
         consume_loop(
             server,
             should_stop=lambda: stop["flag"],
             handle_camera=make_camera_pump() if with_camera else None,
             camera=camera,
             idle=idle,
-            # Hot-reload ported seq/step modules each job so live edits take effect without a
-            # restart (rehash()+str2func analog; lib/ + expConfig still need a restart).
-            run_kwargs={"run": run,
-                        "reload_modules": lambda: reload_experiment_modules(
-                            log=lambda m: log("[runner] %s" % m))},
+            run_kwargs={"run": run, "reload_modules": _pre_job_reload},
             log=lambda m: log("[runner] %s" % m),
         )
     finally:

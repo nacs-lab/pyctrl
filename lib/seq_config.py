@@ -35,6 +35,19 @@ _CONFIG_JSON = os.path.join(
     "..", "tests", "reference", "config_reference.json")
 
 
+def _load_exec_config(reload=False):
+    """Build the raw config dict from the executable ``expConfig.py`` (pyctrl's config source).
+
+    ``reload`` drops the cached module first so a live edit takes effect (per-job hot-reload);
+    Python's source-mtime invalidation then recompiles on the re-import.
+    """
+    import sys
+    if reload:
+        sys.modules.pop("expConfig", None)
+    import expConfig
+    return expConfig.build_config()
+
+
 def _coerce_floats(x):
     # MATLAB stores all numeric config as double -> force float so value nodes
     # serialize as ARG_CONST_FLOAT64. Guard bool first (bool is a subclass of int);
@@ -66,14 +79,38 @@ class SeqConfig:
         SeqConfig._singleton = None
 
     @staticmethod
-    def load_real(config_path=None):
-        """Activate the captured real expConfig as the singleton (real-seq builds)."""
-        with open(config_path or _CONFIG_JSON) as f:
-            raw = json.load(f)
-        SeqConfig._singleton = SeqConfig(raw)
+    def load_real(config_path=None, reload=False):
+        """Activate the real expConfig as the singleton (real-seq builds).
+
+        Source: the executable ``expConfig.py`` (pyctrl's production config) by default; pass
+        ``config_path`` to load a JSON snapshot instead (the drift oracle / back-compat).
+        ``reload=True`` drops the cached ``expConfig`` module first so a live edit is picked up
+        (per-job hot-reload). When a singleton already exists it is updated IN PLACE -- preserving
+        runtime globals (``SeqConfig.G``) and object identity, so callers holding the singleton
+        see the fresh config.
+        """
+        if config_path is not None:
+            with open(config_path) as f:
+                raw = json.load(f)
+        else:
+            raw = _load_exec_config(reload=reload)
+        cur = SeqConfig._singleton
+        if cur is None:
+            SeqConfig._singleton = SeqConfig(raw)
+        else:
+            cur._apply_raw(raw)        # in place: keep G + identity, reset alias memo
         return SeqConfig._singleton
 
     def __init__(self, raw=None):
+        self.G = DynProps({})      # shared global context (ExpSeqBase.G); preserved across reload
+        self._apply_raw(raw)
+
+    def _apply_raw(self, raw):
+        """(Re)load the alias/const/default/NI tables from a raw config dict (or empty if None).
+
+        Resets the translate_channel memo; does NOT touch ``self.G`` so a hot-reload keeps runtime
+        globals. Used by both ``__init__`` and the in-place ``load_real(reload=True)`` path.
+        """
         self._name_map = {}        # translate_channel memo + alias-loop sentinel
         if raw is None:
             # Empty test config (matches lib/test/config/expConfig.m): no aliases
@@ -115,7 +152,8 @@ class SeqConfig:
                                        raw.get("ni_clocks_vals", []))) or {"Dev1": "PFI0"})
             self.ni_start = (dict(zip(raw.get("ni_start_keys", []),
                                       raw.get("ni_start_vals", []))) or {"Dev1": "PFI1"})
-        self.G = DynProps({})      # shared global context (ExpSeqBase.G)
+        # NOTE: self.G is set in __init__ and deliberately NOT reset here, so a hot-reload
+        # (load_real(reload=True) -> _apply_raw) preserves sequence-internal runtime globals.
 
     def translate_channel(self, name):
         # Recursive alias expansion: only the FIRST '/'-component is aliased, then
