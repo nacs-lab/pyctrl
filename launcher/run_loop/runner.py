@@ -1,4 +1,4 @@
-"""ybctrl.run_loop.runner -- the ``python -m ybctrl.run_loop.runner <url>`` entry point.
+"""launcher.run_loop.runner -- the ``python -m launcher.run_loop.runner <url>`` entry point.
 
 This is the module ``PyctrlLauncher`` spawns (``yb_analysis/config.py`` ``PYCTRL_MODULE``).
 It is a THIN shim: ``-m`` puts only the pyctrl package root on ``sys.path``, but the run loop
@@ -19,10 +19,11 @@ import sys
 
 def _bootstrap_path():
     """Prepend the flat pyctrl source dirs to ``sys.path`` (mirror pyproject pythonpath)."""
-    # __file__ = <pyctrl>/ybctrl/run_loop/runner.py  ->  pyctrl root is three dirs up.
+    # __file__ = <pyctrl>/launcher/run_loop/runner.py  ->  pyctrl root is three dirs up.
     pyctrl_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    for name in ("lib", "YbSteps", "YbSeqs", "YbExptCtrl", "tools"):
-        p = os.path.join(pyctrl_root, name)
+    # pyctrl_root itself carries expConfig.py (the executable config, mirroring matlab_new/expConfig.m).
+    for p in [pyctrl_root] + [os.path.join(pyctrl_root, name)
+                              for name in ("lib", "YbSteps", "YbSeqs", "YbExptCtrl", "tools")]:
         if p not in sys.path:
             sys.path.insert(0, p)
 

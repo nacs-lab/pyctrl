@@ -80,7 +80,7 @@ def test_live_matlab_differential():
     seed = int(os.environ.get("FUZZ_SEED", str(random.randrange(1 << 31))))
     programs = fuzz_programs.generate_programs(seed=seed, n=n)
 
-    with tempfile.TemporaryDirectory(prefix="ybctrl_fuzz_") as workdir:
+    with tempfile.TemporaryDirectory(prefix="pyctrl_fuzz_") as workdir:
         reference = _run_matlab_capture(programs, workdir)
 
     assert len(reference) == len(programs), (

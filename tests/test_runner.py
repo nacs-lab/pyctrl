@@ -560,10 +560,10 @@ def test_install_signal_handlers_registers_sigint():
 
 
 # --------------------------------------------------------------------------- #
-# launch shim -- ybctrl.run_loop.runner bootstraps path + delegates
+# launch shim -- launcher.run_loop.runner bootstraps path + delegates
 # --------------------------------------------------------------------------- #
 def test_launch_shim_importable_and_delegates(monkeypatch):
-    import ybctrl.run_loop.runner as shim
+    import launcher.run_loop.runner as shim
 
     shim._bootstrap_path()                                    # idempotent; dirs now on path
     import runner as host

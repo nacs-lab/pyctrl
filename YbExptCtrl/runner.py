@@ -4,7 +4,7 @@ This is the long-lived backend process the new monitor drives in **scenario 3** 
 monitor + pyctrl, MATLAB off). It hosts the shared :class:`ExptServer` ZMQ hub, drains the
 queue, and runs each scan through the engine -- the Python counterpart of the MATLAB
 ``SequenceRunner(url)`` function (``matlab_new/YbExptCtrl/SequenceRunner.m``). It is launched
-as ``python -m ybctrl.run_loop.runner <url>`` (see ``ybctrl/run_loop/runner.py``, which only
+as ``python -m launcher.run_loop.runner <url>`` (see ``launcher/run_loop/runner.py``, which only
 bootstraps ``sys.path`` and calls :func:`main` here).
 
 Submission paths (verified with the user 2026-06-02): today a scan is started either by a

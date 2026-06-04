@@ -68,7 +68,7 @@ def test_real_ybseqs_round_trip_live():
     if _matlab_exe() is None:
         pytest.skip("no MATLAB on PATH and $MATLAB_EXE unset")
 
-    with tempfile.TemporaryDirectory(prefix="ybctrl_ybseqs_") as workdir:
+    with tempfile.TemporaryDirectory(prefix="pyctrl_ybseqs_") as workdir:
         entries = _run_capture(workdir)
 
     built = [e for e in entries if e["status"] == "ok"]

@@ -1,5 +1,5 @@
 [project]
-name = "ybctrl"
+name = "launcher"
 version = "0.0.0"
 description = "Python front-end for the Yb experiment control system (parallel to matlab_new/)"
 requires-python = ">=3.8"
