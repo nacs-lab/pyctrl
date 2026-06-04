@@ -642,15 +642,35 @@ class ExptServer(object):
 
     # -------- Job queue (NEW) --------
 
-    def submit_job(self, payload, summary=None):
+    def submit_job(self, payload, summary=None, job_id=None):
         """Append a new job to the queue. `payload` is the MATLAB
         getByteStreamFromArray(...) blob the runner will decode with
         getArrayFromByteStream. `summary` is an optional dict produced by
         ybScanSummary (axes, set_params, default_params, num_per_group,
-        num_images, etc.) that the GUI uses to show scan details."""
+        num_images, etc.) that the GUI uses to show scan details.
+
+        `job_id` (pyctrl id-reuse): when given, the job takes that EXACT id
+        instead of minting a fresh one, and the id counter is advanced past it so
+        no future job collides. The pyctrl run loop passes the originating
+        descriptor's id here so a scan carries a SINGLE id -- the one
+        submit_scan_descriptor returned (and the .py scan script printed) --
+        instead of a descriptor id plus a separate job id. link_descriptor_to_job
+        then drops the now-redundant descriptor row (its same-id branch). Left
+        None on the MATLAB ".m run-button" submit_job path, which has no
+        descriptor -> unchanged fresh-id behavior. DIVERGENCE from
+        matlab_new/YbExptCtrl/ExptServer.py (which always mints a fresh id and
+        archives a distinct-id descriptor): pyctrl is both producer and consumer
+        with an identity payload, so the second id was vestigial."""
         with self.__queue_lock:
-            jid = self.__next_job_id
-            self.__next_job_id += 1
+            if job_id is None:
+                jid = self.__next_job_id
+                self.__next_job_id += 1
+            else:
+                jid = int(job_id)
+                # Keep the counter strictly ahead of any reused id so a later
+                # freshly-minted job can never collide with it.
+                if jid >= self.__next_job_id:
+                    self.__next_job_id = jid + 1
             entry = {
                 'id': jid,
                 'kind': 'job',                  # NEW: explicit discriminator
@@ -915,6 +935,18 @@ class ExptServer(object):
                 if (e.get('kind') == 'descriptor'
                         and e['id'] == desc_id
                         and e['state'] == 'building'):
+                    if desc_id == job_id:
+                        # pyctrl id-reuse: the job took over this EXACT id
+                        # (submit_job was called with job_id=desc_id). A separate
+                        # 'built' descriptor row would just duplicate the id, so
+                        # drop the descriptor entirely -- the job of the same id
+                        # is the scan's single record. (DIVERGENCE from
+                        # matlab_new, which archives a distinct-id descriptor;
+                        # only reachable when the caller reuses the id, i.e. the
+                        # pyctrl run loop -- never the MATLAB path.)
+                        self.__queue.pop(i)
+                        self.__save_queue_locked()
+                        return True
                     e['state'] = 'built'
                     e['built_job_id'] = job_id
                     e['finish_ts'] = time.time()

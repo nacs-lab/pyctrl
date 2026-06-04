@@ -73,11 +73,16 @@ class FakeQueueServer:
     def pop_next_descriptor(self):
         return self._descs.pop(0) if self._descs else None
 
-    def submit_job(self, payload, summary=None):
+    def submit_job(self, payload, summary=None, job_id=None):
         if self.submit_should_raise:
             raise RuntimeError("submit boom")
-        jid = self._next_job_id
-        self._next_job_id += 1
+        # Mirror the real ExptServer: a given job_id is reused verbatim (pyctrl
+        # id-reuse, runner passes job_id=desc_id); otherwise mint from the counter.
+        if job_id is None:
+            jid = self._next_job_id
+            self._next_job_id += 1
+        else:
+            jid = int(job_id)
         self.submitted.append((jid, payload))
         self.submitted_summaries.append(summary)
         return jid
@@ -108,9 +113,10 @@ class TestHandleDescriptorPop:
         ])
         n = runner.handle_descriptor_pop(srv)
         assert n == 2
-        # JSON string is utf-8 encoded; bytes are forwarded as-is.
-        assert srv.submitted == [(100, b'{"seq":"A"}'), (101, b'{"seq":"B"}')]
-        assert srv.linked == [(1, 100), (2, 101)]
+        # JSON string is utf-8 encoded; bytes are forwarded as-is. The job REUSES
+        # the descriptor's id (id-reuse), so submitted/linked ids match the desc ids.
+        assert srv.submitted == [(1, b'{"seq":"A"}'), (2, b'{"seq":"B"}')]
+        assert srv.linked == [(1, 1), (2, 2)]
         assert srv.desc_finished == []
 
     def test_empty_queue_returns_zero(self):

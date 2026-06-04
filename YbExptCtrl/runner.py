@@ -132,8 +132,11 @@ def handle_descriptor_pop(server, max_per_iter=MAX_DESC_PER_ITER, log=None):
     """Drain queued descriptors into JSON jobs; cap at ``max_per_iter`` per call.
 
     For each queued descriptor: submit its JSON body as a job payload (pyctrl is producer +
-    consumer, so the payload IS the descriptor JSON -- no MATLAB byte stream) and link the
-    descriptor row to the new job id (queue-UI linkage). A bad descriptor is reported via
+    consumer, so the payload IS the descriptor JSON -- no MATLAB byte stream), REUSING the
+    descriptor's id for the job (``submit_job(job_id=desc_id)``) so the scan carries a single
+    id -- the one ``submit_scan_descriptor`` returned and the .py scan script printed.
+    ``link_descriptor_to_job`` then drops the now-redundant descriptor row instead of
+    archiving a duplicate (its same-id branch). A bad descriptor is reported via
     ``finish_descriptor(id, 'error', msg)`` and must NEVER tear down the runner -- the loop
     keeps draining. A ``pop_next_descriptor`` failure aborts this call (next iteration
     retries). Returns the number of descriptors dispatched.
@@ -151,13 +154,15 @@ def handle_descriptor_pop(server, max_per_iter=MAX_DESC_PER_ITER, log=None):
         desc_id = desc["id"]
         try:
             payload = desc["descriptor"]
-            # Carry the queue summary onto the built JOB row so the dashboard's queue panel
-            # shows axes/reps/scan_name while the scan RUNS (link_descriptor_to_job archives
-            # the descriptor row; the job row takes over visibility). Best-effort.
+            # Carry the queue summary onto the JOB row so the dashboard's queue panel shows
+            # axes/reps/scan_name while the scan RUNS. Best-effort.
             summary = _build_summary(payload)
             if isinstance(payload, str):
                 payload = payload.encode("utf-8")
-            job_id = server.submit_job(payload, summary=summary)
+            # Reuse the descriptor's id for the job so the scan has a SINGLE id (the one the
+            # .py script printed); link_descriptor_to_job then drops the descriptor row (its
+            # same-id branch) instead of archiving a redundant second row.
+            job_id = server.submit_job(payload, summary=summary, job_id=desc_id)
             server.link_descriptor_to_job(desc_id, job_id)
             dispatched += 1
         except Exception as e:  # noqa: BLE001 - bad descriptor: mark error, keep draining
