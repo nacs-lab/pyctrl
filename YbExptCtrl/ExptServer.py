@@ -29,7 +29,13 @@ from enum import Enum
 import array
 
 QUEUE_PATH = os.path.join(tempfile.gettempdir(), 'nacsctl', 'runner_queue.json')
-HISTORY_CAP = 50
+# Max history rows retained (the dashboard "Recent history" list). pyctrl reuses
+# the descriptor id for its job and drops the descriptor row, so this is one row
+# PER SCAN -- 500 comfortably holds a full day's scans. (The matlab backend still
+# archives descriptor+job separately, but that cap lives in its own ExptServer.)
+# History is NOT cleared on a new day (see __load_queue), so this rolling window
+# is the only thing that evicts old scans -- it now spans across days.
+HISTORY_CAP = 500
 
 
 def _ensure_dir(path):
@@ -1164,10 +1170,15 @@ class ExptServer(object):
     def __load_queue(self):
         """Called from __init__ under __queue_lock. Rehydrates queue from
         disk; any entry stuck in 'running' is demoted to 'queued'.
-        If the saved date differs from today, reset the ID counter and
-        clear history (queued jobs are kept)."""
+
+        History persists ACROSS days -- there is no new-day reset. Job IDs grow
+        monotonically (``next_job_id`` only ever increases on load), so rows
+        from different days never collide, and the rolling ``HISTORY_CAP``
+        window is the only thing that evicts old scans. The saved ``date`` is
+        still written (diagnostics) but no longer triggers a clear: a
+        same-machine restart reloads the full history whether or not it crosses
+        midnight."""
         import base64
-        import datetime
         if not os.path.exists(QUEUE_PATH):
             return
         try:
@@ -1175,37 +1186,6 @@ class ExptServer(object):
                 data = json.load(f)
         except Exception as ex:
             print(f"[ExptServer] warning: could not load {QUEUE_PATH}: {ex}")
-            return
-
-        saved_date = data.get('date', '')
-        today = datetime.date.today().isoformat()
-        if saved_date != today:
-            # New day — reset counter, discard history, keep queued jobs
-            print(f"[ExptServer] new day ({saved_date} -> {today}): "
-                  f"resetting job IDs, clearing history")
-            self.__next_job_id = 1
-            self.__history = []
-            # Still reload any queued jobs (unlikely overnight but be safe).
-            # Descriptors lose their built_job_id linkage across days (the
-            # job IDs are renumbered), which is acceptable — by definition
-            # they haven't been dispatched yet so no link exists.
-            for raw in data.get('queue', []):
-                e = dict(raw)
-                kind = e.get('kind', 'job')
-                if kind not in ('job', 'descriptor'):
-                    continue   # skip unknown kinds on downgrade
-                if 'payload' in e and isinstance(e['payload'], str):
-                    try:
-                        e['payload'] = base64.b64decode(e['payload'])
-                    except Exception:
-                        e['payload'] = b''
-                e['state'] = 'queued'
-                e['start_ts'] = None
-                e['built_job_id'] = None   # any prior link is stale
-                e['id'] = self.__next_job_id
-                self.__next_job_id += 1
-                self.__queue.append(e)
-            self.__save_queue_locked()
             return
 
         self.__next_job_id = max(int(data.get('next_job_id', 1)), 1)
