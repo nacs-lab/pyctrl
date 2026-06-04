@@ -28,6 +28,9 @@ for _p in (_PYCTRL_DIR,        # carries expConfig.py (executable config, mirror
 MATLAB_REF_DIR = os.path.join(REPO_ROOT, "matlab_new", "lib", "test")
 PYCTRL_REF_DIR = os.path.join(_TESTS_DIR, "reference")
 ENGINE_REF_DIR = os.path.join(_TESTS_DIR, "reference_engine")
+# Engine config now lives inside the pyctrl submodule (a copy of matlab_new/config.yml),
+# so the suite is self-contained and doesn't reach into the superproject's matlab_new/.
+CONFIG_PATH = os.path.join(_PYCTRL_DIR, "config.yml")
 
 
 def matlab_reference_files():
@@ -109,9 +112,9 @@ def pytest_sessionfinish(session, exitstatus):
 def engine(request):
     """A Manager-shaped object: real libnacs if --real-engine, else the dummy.
 
-    Config from matlab_new/config.yml is loaded into whichever is returned.
+    Config from pyctrl/config.yml is loaded into whichever is returned.
     """
-    config_path = os.path.join(REPO_ROOT, "matlab_new", "config.yml")
+    config_path = CONFIG_PATH
     if request.config.getoption("--real-engine"):
         import seq_manager
         if not seq_manager.engine_available():

@@ -55,8 +55,9 @@ CAMERA_INIT_WAIT_S = 15.0
 # The loop iterates ~10 Hz when idle; reading DCAM attributes that often is wasteful, and the
 # monitor's camera pane only polls every ~2 s, so refresh status at most this often.
 CAMERA_STATUS_REFRESH_S = 2.0
-# Repo root (…/pyctrl/YbExptCtrl/runner.py -> …/pyctrl -> repo) for locating config.yml.
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# pyctrl package root (…/pyctrl/YbExptCtrl/runner.py -> …/pyctrl) for locating config.yml,
+# which now lives inside the submodule (a copy of matlab_new/config.yml) so pyctrl is self-contained.
+PYCTRL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # =========================================================================== #
@@ -390,7 +391,7 @@ def load_configs(log=None):
     import seq_manager
     from seq_config import SeqConfig
     SeqConfig.load_real()
-    cfg = os.path.join(REPO_ROOT, "matlab_new", "config.yml")
+    cfg = os.path.join(PYCTRL_ROOT, "config.yml")
     with open(cfg) as f:
         seq_manager.load_config_string(f.read())
     log("config loaded (expConfig snapshot + engine config.yml=%s)" % cfg)

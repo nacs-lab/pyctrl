@@ -1,0 +1,32 @@
+tick_per_sec: 1000000000000 # 1ps
+max_length_sec: 1000
+
+# device specification. Order of run calls follows this order
+devices:
+  NiDAQ:
+    backend: nidaq
+    config:
+      step_size: 2500000 # 2.5us
+      clock_device: FPGA1
+  FPGA1:
+    backend: zynq
+    config:
+      start_ttl_chn: 0 # channel for start trigger
+      seq_delay_ms: 0 # delay in ms, match with AWG delay
+      url: tcp://192.168.0.174:7777
+      max_ttl_chn: 55
+      #override_ignore: # specify list of channels for override warnings to be ignored
+        #- DDS1/AMP
+        #- DDS9/FREQ
+        #- DDS9/AMP
+        #- DDS11/FREQ
+  AWG1:
+    backend: awg
+    config:
+     url: tcp://192.168.0.173:8888
+     trig_device: FPGA1
+  #AWG2:
+  #  backend: awg
+  #  config:
+  #    url: tcp://192.168.0.152:8888
+  #    trig_device: FPGA1

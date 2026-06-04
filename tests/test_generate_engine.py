@@ -11,12 +11,11 @@ Run in a maintenance window (MATLAB off):
 """
 
 import inspect
-import os
 
 import pytest
 
 import seq_manager
-from conftest import REPO_ROOT
+from conftest import CONFIG_PATH
 from exp_seq import ExpSeq
 from seq_config import SeqConfig
 
@@ -46,7 +45,7 @@ def engine_cfg():
     if not seq_manager.engine_available():
         pytest.skip("libnacs engine not importable in this interpreter")
     mgr = seq_manager.get()
-    cfg = os.path.join(REPO_ROOT, "matlab_new", "config.yml")
+    cfg = CONFIG_PATH
     with open(cfg) as f:
         mgr.load_config_string(f.read())
     mgr.enable_dump(True)

@@ -39,7 +39,7 @@ import pytest
 
 import compare_bytes
 import seq_manager
-from conftest import REPO_ROOT, ENGINE_REF_DIR
+from conftest import CONFIG_PATH, ENGINE_REF_DIR
 
 pytestmark = pytest.mark.needs_engine
 
@@ -49,7 +49,7 @@ def manager():
     if not seq_manager.engine_available():
         pytest.skip("libnacs engine not importable in this interpreter")
     mgr = seq_manager.get()
-    config_path = os.path.join(REPO_ROOT, "matlab_new", "config.yml")
+    config_path = CONFIG_PATH
     with open(config_path, "r") as f:
         mgr.load_config_string(f.read())
     mgr.enable_dump(True)
