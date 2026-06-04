@@ -23,10 +23,15 @@ The control source is duck-typed (the hosted ExptServer in production, a fake in
 
 Must-fix policies folded in (NO-HARDWARE-unit-testable here; the live two-process coherency
 test is item-7 territory, see PYTHON_FRONTEND_PLAN.md Phase 5):
-  * **single clear-point + abort-sticky** -- control flags clear at START-OF-SCAN only, and
-    a pending ``Abort`` survives the queue boundary: :meth:`begin_scan` refuses to start a
-    job while an abort is pending (so ``start_scan`` cannot clobber a between-scan abort),
-    rather than clearing-then-running.
+  * **single clear-point (clear-at-job-start)** -- ALL control flags (Pause AND Abort) clear
+    at START-OF-SCAN: :meth:`begin_scan` calls ``start_scan``, which resets the request to
+    NoRequest and marks Running. An abort stops the CURRENT scan via the per-sequence gate
+    (:meth:`check_pause_abort`), but a newly-popped job is fresh intent to run, so a stale
+    ``Abort``/``Pause`` left from the previous scan must NOT block it. This is the
+    runtime-design "clear all control flags at start-of-job" must-fix and the cure for the
+    stale-abort wedge (bug-runjob-stale-abortrunseq): the earlier "abort-sticky" begin_scan
+    refused to start while an abort was pending, which permanently wedged every future scan
+    at 0 iterations because no ZMQ verb clears a stale ``Abort`` from the ``Init`` state.
 
 Design inspired by the MATLAB original; no brassboard-seq code.
 """
@@ -90,15 +95,20 @@ class ControlChannel:
     # scan-boundary control (single clear-point + abort-sticky)
     # ----------------------------------------------------------------------- #
     def begin_scan(self):
-        """Start-of-scan single clear-point. Returns the new ``scan_id``, or ``None`` if an
-        abort is pending (abort-sticky: a between-scan abort is honored by refusing to
-        start, NOT clobbered by ``start_scan``'s reset).
+        """Start-of-scan single clear-point: clear ALL stale control flags (Pause AND Abort)
+        and mark Running, returning the new ``scan_id``.
 
-        ``start_scan`` itself clears Pause/NoRequest and marks Running -- so Pause is the
-        only flag the reset clears, satisfying "single clear-point" without losing Abort.
+        A newly-popped job represents fresh intent to run, so a leftover ``Abort``/``Pause``
+        from the PREVIOUS scan must not block it -- ``start_scan`` resets the request to
+        NoRequest and marks Running (the runtime-design "clear all control flags at
+        start-of-job" must-fix; bug-runjob-stale-abortrunseq). An abort issued while THIS scan
+        runs still stops it via :meth:`check_pause_abort`; only a stale, pre-job abort is
+        cleared here. (Previously this refused to start while an abort was pending, which
+        permanently wedged every future scan because no ZMQ verb clears a stale ``Abort``.)
+
+        Returns the new ``scan_id`` (``None`` only if the source's ``start_scan`` itself
+        signals a refusal -- ``run_scan_group`` still treats ``None`` as an aborted start).
         """
-        if self._request() == SeqRequest.Abort:
-            return None
         return self._source.start_scan()
 
     def aborting(self):

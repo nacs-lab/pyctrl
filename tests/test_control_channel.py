@@ -137,7 +137,7 @@ class TestCheckPauseAbort:
 
 
 # --------------------------------------------------------------------------- #
-# scan boundary: single clear-point + abort-sticky
+# scan boundary: single clear-point (clear-at-job-start)
 # --------------------------------------------------------------------------- #
 class TestBeginScan:
     def test_begin_scan_starts_when_idle(self):
@@ -156,16 +156,18 @@ class TestBeginScan:
         assert cc.begin_scan() is not None
         assert src.req == SeqRequest.NoRequest
 
-    def test_begin_scan_refuses_when_abort_pending(self):
-        # abort-sticky: an abort between scans is NOT clobbered by start_scan's reset.
+    def test_begin_scan_clears_stale_abort(self):
+        # clear-at-job-start: a stale abort left from a PRIOR scan is cleared by start_scan so
+        # a newly-submitted scan runs (bug-runjob-stale-abortrunseq -- abort stops the current
+        # scan, not future ones). The mid-run check_pause_abort gate still honors a fresh abort.
         src = FakeControlSource()
         src.start_scan()
         src.abort_seq()
         started_before = src.started
         cc = ControlChannel(src, sleep=_no_sleep)
-        assert cc.begin_scan() is None              # refuses to start
-        assert src.started == started_before        # start_scan never called
-        assert src.req == SeqRequest.Abort          # abort still pending (sticky)
+        assert cc.begin_scan() is not None          # starts despite the stale abort
+        assert src.started == started_before + 1    # start_scan WAS called
+        assert src.req == SeqRequest.NoRequest       # stale abort cleared
 
     def test_aborting_query(self):
         src = FakeControlSource()

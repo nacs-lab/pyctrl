@@ -131,7 +131,7 @@ def test_duplicate_index_dedup_via_seq_map():
 
 
 # --------------------------------------------------------------------------- #
-# gate: abort + abort-sticky
+# gate: abort + refused start
 # --------------------------------------------------------------------------- #
 def test_gate_abort_stops_and_does_not_count_aborted_shot():
     rec = Recorder(abort_after=2)               # abort at the 2nd gate check (shot 2)
@@ -142,8 +142,12 @@ def test_gate_abort_stops_and_does_not_count_aborted_shot():
     assert rec.teardowns == 1                         # teardown fires on the abort path too
 
 
-def test_begin_scan_abort_sticky_refuses_to_start():
-    rec = Recorder(begin=None)                  # an abort is pending at scan start
+def test_begin_scan_none_is_a_refused_start():
+    # run_scan_group's contract: when begin_scan() returns None (the source refused to start),
+    # the scan aborts at 0 iterations with the config bracket torn down. (begin_scan no longer
+    # returns None for a stale abort -- that is now cleared at job start -- but the loop keeps
+    # honoring a None start as the generic refusal signal.)
+    rec = Recorder(begin=None)
     res, _ = _run(_scan([1.0, 2.0, 3.0]), rec)
     assert res == {"status": "aborted", "nseq": 0}
     assert rec.compiles == [] and rec.runs == []

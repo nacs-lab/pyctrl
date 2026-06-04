@@ -132,14 +132,16 @@ def test_abort_while_paused_wins(server):
 
 
 # --------------------------------------------------------------------------- #
-# abort-sticky: a pending abort survives the scan boundary (begin_scan refuses)
+# clear-at-job-start: a stale abort is cleared by the next begin_scan (no wedge)
 # --------------------------------------------------------------------------- #
-def test_begin_scan_refuses_with_pending_abort(server):
+def test_begin_scan_clears_stale_abort(server):
     srv, url = server
     control = ControlChannel(srv, poll_interval=0.05)
     control.begin_scan()                                    # Running, so abort_seq takes effect
     p = _writer(url, "0.0:abort_seq")
     p.wait(timeout=5)
     assert _wait(lambda: srv.check_request() == SeqRequest.Abort)
-    # Single-clear-point + abort-sticky: a between-scan begin_scan must NOT clobber the abort.
-    assert control.begin_scan() is None
+    # Single clear-point (clear-at-job-start): the next begin_scan clears the stale abort and
+    # starts -- a fresh submission must not be wedged by a prior abort.
+    assert control.begin_scan() is not None
+    assert srv.check_request() == SeqRequest.NoRequest
