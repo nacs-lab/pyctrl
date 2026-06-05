@@ -369,7 +369,7 @@ def open_camera(seq_config=None, log=None):
     """
     log = log or _noop_log
     try:
-        from orca_camera import open_orca_from_config
+        from devices.orca import open_orca_from_config
     except Exception as e:  # noqa: BLE001 - module/pylablib absent
         log("camera wrapper unavailable (%s) -- backend boots camera-less" % e)
         return None
@@ -720,7 +720,7 @@ def _teardown(server, camera, log=print):
         except Exception as e:  # noqa: BLE001
             log("[runner] camera close failed: %s" % e)
     try:
-        from nidaq_runner import NiDAQRunner
+        from devices.nidaq import NiDAQRunner
         NiDAQRunner.clear_session()              # release the NI Task (no DaqResourceWarning)
     except Exception:  # noqa: BLE001 - nidaqmx absent / nothing to release
         pass

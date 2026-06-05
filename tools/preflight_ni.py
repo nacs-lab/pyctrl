@@ -79,7 +79,7 @@ def main():
 
     import seq_manager
     import run_seq2
-    import nidaq_runner
+    import devices.nidaq.nidaq_runner as nidaq_runner
     import numpy as np
 
     def _c1():

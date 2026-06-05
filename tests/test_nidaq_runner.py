@@ -7,8 +7,8 @@ nidaqmx or the card. The live card-listen / clock-out is NEEDS-HARDWARE (mainten
 
 import pytest
 
-import nidaq_runner
-from nidaq_runner import NiDAQRunner
+import devices.nidaq.nidaq_runner as nidaq_runner
+from devices.nidaq import NiDAQRunner
 
 pytestmark = pytest.mark.no_hardware
 

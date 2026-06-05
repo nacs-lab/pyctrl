@@ -43,7 +43,7 @@ def store_shot_frames(camera, server, num_images, scan_id, seq_id, *,
     Returns the number of frames published (``num_images`` on success, the partial count on a
     short read -- in which case ``seq_cancel()`` was called and NOTHING was published).
     """
-    from orca_camera import to_store_array
+    from devices.orca import to_store_array
 
     collected = []
     deadline = clock() + timeout

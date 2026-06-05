@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 import runner
-from orca_camera import DEFAULT_ROI, OrcaCamera, to_store_array
+from devices.orca import DEFAULT_ROI, OrcaCamera, to_store_array
 
 pytestmark = pytest.mark.no_hardware
 
@@ -150,7 +150,7 @@ class _SeqCfg:
 
 class TestOrcaInit:
     def test_config_defaults(self):
-        from orca_camera import DEFAULT_ROI, orca_config_defaults
+        from devices.orca import DEFAULT_ROI, orca_config_defaults
         roi, exp = orca_config_defaults(_SeqCfg({"ROI": [1000.0, 100.0, 2100.0, 2100.0],
                                                  "ExposureTime": 0.050004}))
         assert roi == [1000, 100, 2100, 2100] and exp == 0.050004
@@ -169,7 +169,7 @@ class TestOrcaInit:
         assert a["output_trigger_kind[2]"] == 4      # TRIGGER READY
 
     def test_open_orca_from_config(self):
-        from orca_camera import open_orca_from_config
+        from devices.orca import open_orca_from_config
         fake = FakeDCAM()
         cam = open_orca_from_config(_SeqCfg({"ROI": [1000, 100, 512, 512], "ExposureTime": 0.02}),
                                     cam=fake)

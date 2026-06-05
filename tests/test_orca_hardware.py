@@ -18,7 +18,7 @@ pytestmark = pytest.mark.needs_hardware
 
 @pytest.fixture
 def cam():
-    from orca_camera import OrcaCamera
+    from devices.orca import OrcaCamera
     try:
         c = OrcaCamera()
     except Exception as e:  # noqa: BLE001 - no camera / held by MATLAB
@@ -38,7 +38,7 @@ def test_connectivity_readonly(cam):
 
 def test_internal_snap_and_store_format(cam):
     """One internal-trigger frame; to_store_array round-trips (the store_imgs wire format)."""
-    from orca_camera import to_store_array
+    from devices.orca import to_store_array
     cam.set_roi([0, 0, 128, 128])
     cam.set_exposure(0.01)
     frame = np.asarray(cam.snap())                 # internal/software trigger -- no FPGA

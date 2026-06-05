@@ -77,7 +77,7 @@ def run_bseq(seq, idx, nidaq=None):
                     "NI DAQ data length %d is not a multiple of channel count %d"
                     % (ni_ndata, ni_nchns))
             if nidaq is None:
-                from nidaq_runner import NiDAQRunner as nidaq  # lazy: needs hardware pkg
+                from devices.nidaq import NiDAQRunner as nidaq  # lazy: needs hardware pkg
             data = _reshape_sample_major(ni_data, ni_nchns)
             nidaq.run(ni_channels, seq.config.ni_clocks, seq.config.ni_start, data)
             ni_armed = True
@@ -87,7 +87,7 @@ def run_bseq(seq, idx, nidaq=None):
         pass
     if ni_armed:
         if nidaq is None:
-            from nidaq_runner import NiDAQRunner as nidaq
+            from devices.nidaq import NiDAQRunner as nidaq
         nidaq.wait()
 
     for cb in bseq.after_bseq_cbs:

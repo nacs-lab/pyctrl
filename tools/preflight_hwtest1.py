@@ -134,7 +134,7 @@ def main():
     import seq_manager
     import compare_bytes
     import run_seq2
-    import nidaq_runner
+    import devices.nidaq.nidaq_runner as nidaq_runner
     import numpy as np
 
     # ---- 1. engine importable in THIS interpreter -------------------------- #

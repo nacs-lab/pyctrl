@@ -25,8 +25,9 @@ import sys
 
 def _bootstrap():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl", "YbSeqs", "YbSteps"):
-        p = os.path.join(root, d)
+    # root itself carries the devices/ package + expConfig.py (top-level imports).
+    for p in [root] + [os.path.join(root, d)
+                       for d in ("lib", "YbExptCtrl", "YbSeqs", "YbSteps")]:
         if p not in sys.path:
             sys.path.insert(0, p)
 
@@ -67,7 +68,7 @@ def main(roi=(1000, 100, 2100, 2100), exposure=0.050004):
     import numpy as np
     import runner
     from seq_config import SeqConfig
-    from orca_camera import OrcaCamera
+    from devices.orca import OrcaCamera
     from control_channel import ControlChannel
     from ExptServer import ExptServer
     from TweezerLoadingSeq import TweezerLoadingSeq
