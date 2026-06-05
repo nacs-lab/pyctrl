@@ -12,7 +12,8 @@ pytestmark = pytest.mark.no_hardware
 
 def test_available_lists_all_registered_families():
     # The complete current set; adding a new device family updates this deliberately.
-    assert devices.available() == ["nidaq_dc", "nidaq_seq", "orca", "sigilent_awg", "slm"]
+    assert devices.available() == ["nidaq_dc", "nidaq_seq", "orca", "qick_awg",
+                                   "sigilent_awg", "slm"]
 
 
 def test_create_orca_returns_an_open_camera_handle():
@@ -43,6 +44,13 @@ def test_create_sigilent_awg_returns_a_connection_handle():
     assert isinstance(conn, devices.AWGConnection)
     assert conn.dev is None                              # not connected
     assert conn.channel == "C1"
+
+
+def test_create_qick_awg_returns_a_client_handle():
+    # Construction only -- connect() (the socket) is NOT called, so no network.
+    client = devices.create("qick_awg")
+    assert isinstance(client, devices.FPGAAWGClient)
+    assert not client.is_connected
 
 
 def test_create_unknown_device_raises():

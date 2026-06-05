@@ -50,3 +50,12 @@ try:
                 "gaussian_pulse_waveform"]
 except Exception as e:
     _log.warning("devices: 'sigilent_awg' family unavailable: %s", e)
+
+try:
+    from . import qick_awg
+    from .qick_awg import (FPGAAWGClient, FPGAABSClient, FPGAAWGManager, QickProgram,
+                           simple_pulse_cfg, simple_prog_cfg, compile_chn, loop)
+    __all__ += ["qick_awg", "FPGAAWGClient", "FPGAABSClient", "FPGAAWGManager", "QickProgram",
+                "simple_pulse_cfg", "simple_prog_cfg", "compile_chn", "loop"]
+except Exception as e:
+    _log.warning("devices: 'qick_awg' family unavailable: %s", e)
