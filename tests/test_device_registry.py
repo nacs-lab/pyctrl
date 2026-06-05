@@ -12,7 +12,7 @@ pytestmark = pytest.mark.no_hardware
 
 def test_available_lists_all_registered_families():
     # The complete current set; adding a new device family updates this deliberately.
-    assert devices.available() == ["nidaq_dc", "nidaq_seq", "orca"]
+    assert devices.available() == ["nidaq_dc", "nidaq_seq", "orca", "slm"]
 
 
 def test_create_orca_returns_an_open_camera_handle():
@@ -29,6 +29,12 @@ def test_create_nidaq_seq_is_the_runner_namespace():
 def test_create_nidaq_dc_exposes_set_and_read():
     dc = devices.create("nidaq_dc")
     assert callable(dc.set_channel) and callable(dc.read_channel)
+
+
+def test_create_slm_returns_the_shared_client():
+    client = devices.create("slm")                  # construction only -- network-free
+    assert isinstance(client, devices.SlmClient)
+    assert devices.create("slm") is client          # cached per-url singleton
 
 
 def test_create_unknown_device_raises():

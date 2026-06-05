@@ -32,3 +32,12 @@ try:
     __all__ += ["nidaq", "NiDAQRunner", "set_channel", "read_channel"]
 except Exception as e:
     _log.warning("devices: 'nidaq' family unavailable: %s", e)
+
+try:
+    from . import slm
+    from .slm import (SlmClient, SlmHTTPError, get_client,
+                      SlmScanSession, SlmLockUnavailable)
+    __all__ += ["slm", "SlmClient", "SlmHTTPError", "get_client",
+                "SlmScanSession", "SlmLockUnavailable"]
+except Exception as e:
+    _log.warning("devices: 'slm' family unavailable: %s", e)

@@ -34,7 +34,7 @@ Design inspired by the MATLAB original; no brassboard-seq code.
 
 import time
 
-from slm_client import SlmHTTPError
+from .slm_client import SlmHTTPError
 
 
 class SlmLockUnavailable(RuntimeError):
