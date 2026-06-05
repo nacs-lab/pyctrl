@@ -195,8 +195,10 @@ def _consts():
     # Cool556
     c["Cool556"] = {
         "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-        "X": {"FreqDetuning": 0.11e6, "Amp": 0.16},
-        "h": {"FreqDetuning": 0.11e6, "Amp": 0.14},
+        # RNR cooling opt 2026-06-05 (CoolingScan_RNR, release-recapture 50us, interleaved X<->h
+        # joint converged, survival 0.28->0.31): was X {0.11e6, 0.16}, h {0.11e6, 0.14}
+        "X": {"FreqDetuning": 0.135e6, "Amp": 0.13},
+        "h": {"FreqDetuning": 0.13e6, "Amp": 0.12},
     }
 
     # Pushout
