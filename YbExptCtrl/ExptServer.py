@@ -617,6 +617,38 @@ class ExptServer(object):
         scan_id = round(time.time() * 1000)
         return scan_id
 
+    def mark_idle_if_queue_empty(self) -> bool:
+        """End-of-job idle transition: if NO work remains queued, return the coarse
+        ``seq_status`` Running -> Init so ``get_status`` reports "Sequence is stopped" again.
+
+        Counterpart to :meth:`start_scan` (which sets Running at scan begin); the run loop calls
+        this right after each job finishes. Fixes the stuck-"running"-after-a-finite-scan defect
+        (problem-memory ``bug-pyctrl-status-not-reset-idle``).
+
+        STATUS ONLY -- unlike :meth:`abort_seq` it does NOT touch ``__seq_req``, so it can never
+        leave a stale ``SeqRequest.Abort`` that ``check_request`` would apply to the next job
+        (cf. clear-at-job-start; ``bug-runjob-stale-abortrunseq``). It also only resets from
+        ``Running`` -- it never disturbs a ``Paused`` scan or an already-idle ``Init``.
+
+        Race-safe vs. enqueue: the queue-emptiness check AND the status reset run together under
+        ``__queue_lock``, which EVERY enqueue path also holds (``submit_job`` /
+        ``submit_scan_descriptor`` / ``link_descriptor_to_job``). So a concurrent submit cannot
+        interleave between the check and the reset: either its entry is already in ``__queue``
+        when we look (we leave the status Running) OR it lands after we release (its job is popped
+        on the next loop iteration, where ``start_scan`` sets Running again). Lock order is
+        ``__queue_lock`` -> ``__data_lock``; no method anywhere takes ``__data_lock`` then
+        ``__queue_lock``, so the single direction can't deadlock. Returns True iff it reset."""
+        with self.__queue_lock:
+            # __queue holds only 'queued'/'running' entries ('done'/'error' move to __history);
+            # ANY remaining entry (job OR not-yet-drained descriptor) means work is pending.
+            if any(e.get('state') in ('queued', 'running') for e in self.__queue):
+                return False
+            with self.__data_lock:
+                if self.seq_status == self.State.Running:
+                    self.seq_status = self.State.Init
+                    return True
+        return False
+
     def store_imgs(self, data, scan_id=-1, seq_id=-1):
         # MATLAB passes `data` as a lazy matlab.double wrapper around its own
         # memory. Force an eager copy into Python-owned bytes here — once the

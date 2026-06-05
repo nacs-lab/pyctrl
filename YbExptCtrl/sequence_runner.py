@@ -67,7 +67,15 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
     if run is None:
         from run_seq import run_scan_group as run
     if control_factory is None:
-        from control_channel import ControlChannel as control_factory
+        from control_channel import ControlChannel
+        import rearrange_runtime
+
+        # Default control channel wires the rearrangement pause/resume hooks: a pause actively
+        # drops the scan-long SLM lock, a resume reacquires + rewrites the loading phase. Both are
+        # no-ops when no SLM session is active (non-rearrange scans), so this is harmless for them.
+        def control_factory(srv):
+            return ControlChannel(srv, on_pause=rearrange_runtime.on_pause,
+                                  on_resume=rearrange_runtime.on_resume)
 
     # --- 0. hot-reload ported seq/step modules so live edits take effect (before resolution). ---
     if reload_modules is not None:

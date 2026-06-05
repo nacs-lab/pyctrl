@@ -59,10 +59,18 @@ class ControlChannel:
             timeline deterministically).
     """
 
-    def __init__(self, source, poll_interval=1.0, sleep=time.sleep):
+    def __init__(self, source, poll_interval=1.0, sleep=time.sleep,
+                 on_pause=None, on_resume=None):
         self._source = source
         self._poll = poll_interval
         self._sleep = sleep
+        # Optional scan-boundary hooks fired when the run loop ENTERS the pause park (on_pause)
+        # and when it RESUMES out of it (on_resume, NOT on abort). The rearrangement run wires
+        # these to actively drop the scan-long SLM lock on pause and reacquire+rewrite on resume;
+        # both are no-ops when no SLM session is active. Best-effort: a hook failure never breaks
+        # the pause gate (a failed resume regrab is enforced by the next shot's ensure_held).
+        self._on_pause = on_pause
+        self._on_resume = on_resume
 
     # ----------------------------------------------------------------------- #
     # the per-sequence gate (CheckPauseAbort replacement)
@@ -79,16 +87,21 @@ class ControlChannel:
             return True               # abort precedes pause -- don't park
         if req == SeqRequest.Pause:
             self.ack_paused(True)     # IsPausedRunSeq = 1 (reached-paused ack)
+            self._fire(self._on_pause)  # active drop of the scan-long SLM lock (no-op if none)
+            resumed = False
             try:
                 while True:
                     req = self._request()
                     if req == SeqRequest.Abort:
                         return True
                     if req != SeqRequest.Pause:
+                        resumed = True
                         return False  # resumed (request cleared via start_seq_serv)
                     self._sleep(self._poll)
             finally:
                 self.ack_paused(False)  # IsPausedRunSeq = 0 on exit (resume OR abort)
+                if resumed:
+                    self._fire(self._on_resume)  # reacquire + rewrite the loading phase
         return False
 
     # ----------------------------------------------------------------------- #
@@ -120,6 +133,15 @@ class ControlChannel:
     # ----------------------------------------------------------------------- #
     def _request(self):
         return SeqRequest(int(self._source.check_request()))
+
+    def _fire(self, hook):
+        """Call a scan-boundary hook best-effort; never let it break the pause gate."""
+        if hook is None:
+            return
+        try:
+            hook()
+        except Exception:  # noqa: BLE001 - a hook failure must not crash the run loop
+            pass
 
     def ack_paused(self, parked):
         """Reflect actually-parked state on the source, if it supports it (item-7 hook).

@@ -54,7 +54,7 @@ def LACScan(url=None, reps=None):
     rp.NumPerGroup = 500
     rp.NumImages = 1
     rp.isInit = 0
-    rp.Scramble = 0
+    rp.Scramble = 1
     rp.isHC = 0
     rp.isGrid2 = 0
 

@@ -235,6 +235,18 @@ def consume_loop(server, *, should_stop, run_job_fn=None, dispatch_pop=None,
 
         _safe_set_dummy_running(server, 0)
         result = run_job_fn(server, job["payload"], job_id=job["id"], **run_kwargs)
+        # End of sequence: a finished finite scan leaves seq_status == Running (start_scan set it
+        # at scan begin; nothing resets it). If the queue is now empty, return the status to idle
+        # so get_status reports "stopped" (bug-pyctrl-status-not-reset-idle). The server method
+        # checks the queue + resets the status ATOMICALLY under __queue_lock, so this cannot race
+        # a concurrent submit, and it is status-only (never touches the seq request). getattr-
+        # guarded so the NO-HARDWARE consume_loop tests (fake servers) skip it cleanly.
+        mark_idle = getattr(server, "mark_idle_if_queue_empty", None)
+        if mark_idle is not None:
+            try:
+                mark_idle()
+            except Exception as e:  # noqa: BLE001 - a status reset must never stop the loop
+                log("end-of-job idle-status reset failed: %s" % e)
         # 'last'-mode replay caching (the compiled-seq capture) is a documented follow-up;
         # until then IdleScheduler falls back to the canonical DummySeq when no seq is
         # cached. We still surface the resolved name for logging.
@@ -433,15 +445,39 @@ def make_engine_run(server, camera, seq_config, log=None):
         _write_scan_prep(scan_id, scangroup, camera, num_images, log,
                          scan_name=scan_name, seq_config=seq_config, params=params_order)
 
+        # --- Scan-long SLM session ------------------------------------------------------------ #
+        # Hold the slm HARDWARE lock + write the loading (WGS) phase for the WHOLE scan. This
+        # applies to EVERY scan (default useScanLongSlmLock=1): any scan loads atoms into the SLM
+        # pattern and assumes it stays put, so it must own the lock. begin() raises if the lock
+        # can't be acquired within the block budget -> the run errors (run_job catches it).
+        # Rearrangement scans additionally do an initial setup_rearrangement at dequeue and own
+        # their camera frames per shot (so the standard capture post_cb is skipped for them).
+        import rearrange_runtime
+        is_rearrange = _is_rearrange_scan(scangroup)
+        slm_ses = _make_slm_session(scangroup, scan_id, log)
+        if slm_ses is not None:
+            slm_client = slm_ses.c
+            if is_rearrange:
+                _initial_setup_rearrangement(slm_client, scangroup, scan_id, log)
+            slm_ses.begin()                                      # grab slm lock + write WGS phase
+            rearrange_runtime.set_context(rearrange_runtime.ScanContext(
+                session=slm_ses, camera=camera, server=server, client=slm_client,
+                scan_id=scan_id, is_rearrange=is_rearrange, n_rounds=_n_rounds(scangroup),
+                log=lambda m: log("[runner] %s" % m)))
+        seq_owns_frames = is_rearrange and slm_ses is not None
+
         armed = False
         if camera is not None and num_images > 0:
             try:
                 camera.flush()                                   # drop stale frames (MATLAB flushdata)
                 camera.start_video(external=True, nframes=max(num_images * 4, 16))
                 armed = True
-                from frame_capture import make_capture_post_cb
-                post.append(make_capture_post_cb(
-                    camera, server, num_images, scan_id, seq_config))
+                if not seq_owns_frames:
+                    # Normal scan: the runner captures + publishes frames after each shot.
+                    # Rearrangement scans read + store frames mid-shot in their own callbacks.
+                    from frame_capture import make_capture_post_cb
+                    post.append(make_capture_post_cb(
+                        camera, server, num_images, scan_id, seq_config))
             except Exception:  # noqa: BLE001 - camera arm failure must not crash the job pre-run
                 armed = False
         try:
@@ -453,6 +489,12 @@ def make_engine_run(server, camera, seq_config, log=None):
                     camera.stop_video()
                 except Exception:  # noqa: BLE001
                     pass
+            if slm_ses is not None:
+                try:
+                    slm_ses.done()                               # release the scan-long slm lock
+                except Exception:  # noqa: BLE001
+                    pass
+            rearrange_runtime.clear_context()
 
     return run
 
@@ -471,6 +513,116 @@ def _runp_num(runp, name, default=0):
         return float(getattr(runp, name)(default))
     except Exception:  # noqa: BLE001
         return default
+
+
+# =========================================================================== #
+# Scan-long SLM session helpers (rearrangement scan support)
+# =========================================================================== #
+def _is_rearrange_scan(scangroup):
+    """True iff this scan drives per-shot rearrangement: it loads a rearrangement model
+    (``runp().warmup_kwargs.model_filename``) or sets an explicit ``runp().isRearrange``. Used to
+    do the dequeue-time setup_rearrangement and to let the seq own its camera frames (skip the
+    standard capture post_cb). Defensive -> False on any error."""
+    try:
+        rp = scangroup.runp()
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        if rp.isfield("isRearrange"):
+            return bool(rp.isRearrange(0))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        wk = rp.warmup_kwargs
+        if wk.isfield("model_filename"):
+            return bool(str(wk.model_filename("")).strip())
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _n_rounds(scangroup):
+    """Rounds of rearrangement = NumImages - 1 (NumImages = n_rounds + 1); >= 1."""
+    try:
+        return max(int(_runp_num(scangroup.runp(), "NumImages", 2)) - 1, 1)
+    except Exception:  # noqa: BLE001
+        return 1
+
+
+def _make_slm_session(scangroup, scan_id, log):
+    """Construct (do NOT begin) the :class:`SlmScanSession` for this scan + declare its loading
+    pattern. Returns None when ``runp().useScanLongSlmLock`` is disabled (default ON). The caller
+    runs ``begin()`` after the optional initial setup_rearrangement, mirroring the user spec order
+    (setup -> grab lock -> write WGS phase)."""
+    try:
+        rp = scangroup.runp()
+    except Exception:  # noqa: BLE001
+        return None
+    if not bool(_runp_num(rp, "useScanLongSlmLock", 1)):
+        return None
+    from slm_client import get_client
+    from slm_scan_session import SlmScanSession
+    ses = SlmScanSession(get_client(), description="scan %s" % scan_id,
+                         log=lambda m: log("[runner] %s" % m))
+    pat = _first_loading_pattern(rp)
+    if pat is not None:
+        ses.set_loading_pattern(pat["name"], pat["phase_path"], pat["zernike"],
+                                legacy_zerniked=pat["legacy"], baked_zernike=pat["baked"])
+    return ses
+
+
+def _first_loading_pattern(rp):
+    """Resolve the img1 loading pattern + loading defocus (port of ybFirstLoadingPattern.m).
+
+    Priority: an explicit ``runp().loading_phase`` (any scan), else a rearrangement scan's
+    ``warmup_kwargs.initial_phase`` (+ ``extras.initial_phase_zernike`` baked). The generic
+    ``runp().loading_defocus`` (ANSI z4, radians) is layered on top as ``[0 0 0 0 z4]`` (absolute;
+    the server strips ``baked`` first). Returns a dict, or None when no pattern is declared (the
+    session then holds the lock but writes nothing -- preserving whatever phase is on the SLM)."""
+    phase = ""
+    baked = []
+    try:
+        phase = str(rp.loading_phase("")).strip()
+    except Exception:  # noqa: BLE001
+        phase = ""
+    if not phase:
+        try:
+            wk = rp.warmup_kwargs
+            phase = str(wk.initial_phase("")).strip()
+            if phase and wk.extras.isfield("initial_phase_zernike"):
+                baked = [float(x) for x in wk.extras.initial_phase_zernike([])]
+        except Exception:  # noqa: BLE001
+            phase = phase or ""
+    if not phase:
+        return None
+    z4 = _runp_num(rp, "loading_defocus", 0)
+    zernike = [0.0, 0.0, 0.0, 0.0, float(z4)] if z4 else []
+    name = os.path.splitext(os.path.basename(phase.replace("\\", "/")))[0]
+    legacy = bool(baked) and any(b != 0 for b in baked)
+    return {"name": name, "phase_path": phase.replace("\\", "/"),
+            "zernike": zernike, "legacy": legacy, "baked": baked}
+
+
+def _initial_setup_rearrangement(client, scangroup, scan_id, log):
+    """Dequeue-time setup_rearrangement: load the model + patterns from ``runp().warmup_kwargs``
+    with ``reset_params=True`` (new run + factory-default the sticky cache). Per-shot setup calls
+    (in the seq pre_run) then run WITHOUT reset_params so they stay sticky on top of this."""
+    import rearrange_runtime
+    try:
+        rp = scangroup.runp()
+    except Exception:  # noqa: BLE001
+        return
+    args = rearrange_runtime.collect_kwargs(rp.warmup_kwargs)
+    args = rearrange_runtime.translate_zernike_zN(args)
+    if not args:
+        return
+    args["reset_params"] = True
+    args.setdefault("client_scan_id", str(scan_id))
+    try:
+        client.setup_rearrangement(**args)
+        log("[runner] initial setup_rearrangement (%d field(s), reset_params)" % len(args))
+    except Exception as e:  # noqa: BLE001
+        log("[runner] initial setup_rearrangement failed: %s" % e)
 
 
 def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,

@@ -68,6 +68,7 @@ class FakeQueueServer:
         self.linked = []                        # [(desc_id, job_id), ...]
         self.desc_finished = []                 # [(desc_id, status, msg), ...]
         self.dummy_running = []                 # [flag, ...]
+        self.mark_idle_calls = 0                 # end-of-job idle-status resets
         self.submit_should_raise = False
 
     def pop_next_descriptor(self):
@@ -100,6 +101,10 @@ class FakeQueueServer:
 
     def set_dummy_running(self, flag):
         self.dummy_running.append(flag)
+
+    def mark_idle_if_queue_empty(self):
+        self.mark_idle_calls += 1
+        return True
 
 
 # --------------------------------------------------------------------------- #
@@ -228,6 +233,37 @@ class TestConsumeLoop:
             srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             sleep=lambda dt: slept.append(dt))
         assert slept == [1.0]
+
+    def test_marks_idle_after_a_job_runs(self):
+        # End-of-job hook: consume_loop calls server.mark_idle_if_queue_empty() once the job
+        # returns, so a finite scan's stuck "running" status returns to idle.
+        srv = FakeQueueServer(jobs=[{"id": 5, "payload": b"{}"}])
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1),
+            run_job_fn=lambda *a, **k: type("R", (), {"status": "ok"})(),
+            dispatch_pop=lambda s: 0, sleep=lambda dt: None)
+        assert srv.mark_idle_calls == 1
+
+    def test_no_idle_reset_on_pure_idle_iteration(self):
+        # The reset is end-of-JOB only; a no-job iteration leaves it to the idle state machine
+        # (a never-run backend is already Init), so mark_idle is NOT called here.
+        srv = FakeQueueServer()
+        idle = type("Idle", (), {"step": lambda self, sleep: None})()
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
+            idle=idle, sleep=lambda dt: None)
+        assert srv.mark_idle_calls == 0
+
+    def test_idle_reset_failure_never_stops_the_loop(self):
+        # A throwing mark_idle_if_queue_empty must be swallowed (status reset is best-effort).
+        srv = FakeQueueServer(jobs=[{"id": 9, "payload": b"{}"}])
+        srv.mark_idle_if_queue_empty = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        ran = []
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1),
+            run_job_fn=lambda *a, **k: ran.append(1) or type("R", (), {"status": "ok"})(),
+            dispatch_pop=lambda s: 0, sleep=lambda dt: None)
+        assert ran == [1]                        # job ran; loop survived the reset error
 
 
 # --------------------------------------------------------------------------- #
