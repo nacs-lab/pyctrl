@@ -12,7 +12,7 @@ import json
 import pytest
 
 from dispatch_descriptor import dispatch_descriptor
-from scan_export import (linspace, logspace, scangroup_to_descriptor,
+from scan_export import (linspace, logspace, matlab_colon, scangroup_to_descriptor,
                          _encode_value, _seq_name)
 from scan_group import ScanGroup
 from yb_start_scan import ybStartScan
@@ -28,6 +28,38 @@ def _fake_resolver(name):
 def _enumerate(group):
     """All points of a group as a list of (nested) param dicts."""
     return [group.getseq(n) for n in range(1, group.nseq() + 1)]
+
+
+# --------------------------------------------------------------------------- #
+# matlab_colon: bit-identical reproduction of MATLAB's colon operator
+# --------------------------------------------------------------------------- #
+class TestMatlabColon:
+    def test_integer_step_exact(self):
+        # Integer-valued progressions are exact regardless of algorithm.
+        assert matlab_colon(220.0, 35.0, 360.0) == [220.0, 255.0, 290.0, 325.0, 360.0]
+        assert matlab_colon(0.0, 1.0, 4.0) == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+    def test_count_and_endpoints(self):
+        f = matlab_colon(103.5, 0.1, 106.5)          # Spectrum556 sweep
+        assert len(f) == 31 and f[0] == 103.5 and f[-1] == 106.5
+        v = matlab_colon(2.0, 0.6, 9.0)              # BlueLAC sweep base (12 pts; does NOT reach 9)
+        assert len(v) == 12 and v[0] == 2.0 and v[-1] == 8.6
+
+    def test_symmetric_differs_from_naive_at_byte_critical_point(self):
+        # THE reason matlab_colon exists: MATLAB's colon is NOT start + k*step. The naive sum
+        # lands exactly on 6.2 at index 7 of 2:0.6:9; MATLAB (and matlab_colon) yield one ULP
+        # below. A swept value serializes as a raw float64, so this 1-ULP gap is byte-visible.
+        v = matlab_colon(2.0, 0.6, 9.0)
+        naive = [2.0 + 0.6 * k for k in range(12)]
+        assert v != naive
+        assert v[7] * 1e6 == 6199999.999999999       # MATLAB R2023a-exact (verified bit-for-bit)
+        assert v[7] * 1e6 != 6200000.0               # what the naive a+k*step gives
+
+    def test_edge_cases(self):
+        assert matlab_colon(5.0, 1.0, 5.0) == [5.0]   # single point
+        assert matlab_colon(5.0, 1.0, 4.0) == []      # empty (start past stop, positive step)
+        with pytest.raises(ValueError):
+            matlab_colon(0.0, 0.0, 1.0)               # zero step
 
 
 # --------------------------------------------------------------------------- #

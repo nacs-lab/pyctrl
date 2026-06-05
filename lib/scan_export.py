@@ -27,9 +27,13 @@ Use :func:`linspace` / :func:`logspace` (MATLAB endpoint semantics) to build the
 Design inspired by the MATLAB original; no brassboard-seq code.
 """
 
+import math
 import re
 
 from scan_group import ScanGroup, _foreach_nonstruct
+
+# float64 machine epsilon (2**-52); used by matlab_colon's point-count tolerance.
+_EPS = 2.0 ** -52
 
 # Mirrors yb_analysis/scans/descriptor.py SCHEMA_VERSION (pyctrl's dispatch_descriptor ignores
 # it, but emit it for forward-compat with the JSON descriptor validator).
@@ -112,6 +116,39 @@ def linspace(start, stop, n):
 def logspace(start_exp, stop_exp, n):
     """MATLAB ``logspace(a, b, n)`` -- ``10 ** linspace(a, b, n)``; ``n == 1`` -> ``[10**b]``."""
     return [10.0 ** e for e in linspace(start_exp, stop_exp, n)]
+
+
+def matlab_colon(start, step, stop):
+    """MATLAB colon ``start:step:stop`` -- a BIT-IDENTICAL float64 reproduction.
+
+    MATLAB's colon operator does NOT compute the k-th element as ``start + k*step``. For the
+    upper half of the range it counts back from the right anchor ``start + n*step`` -- a
+    symmetric build that minimises round-off. Naive ``start + k*step`` therefore differs from
+    MATLAB by 1 ULP at some points (e.g. ``2:0.6:9`` at index 7: MATLAB yields
+    ``6.199999999999999`` where the naive sum gives exactly ``6.2``). That 1-ULP gap WOULD
+    break THE ONE RULE, because a swept parameter is serialized as a raw float64 -- so for any
+    ported scan whose MATLAB sweep is written ``a:d:b`` with a non-integer step, build the
+    value array with this, not a list comprehension.
+
+    Verified bit-for-bit against MATLAB R2023a for ``(103.5:0.1:106.5)*1e6`` (31 pts) and
+    ``(2:0.6:9)*1e6`` (12 pts); see ``tests/test_scan_export.py``. Returns a list of floats
+    (possibly empty), the arithmetic progression up to -- but not past -- ``stop``.
+    """
+    start = float(start)
+    step = float(step)
+    stop = float(stop)
+    if step == 0.0:
+        raise ValueError("matlab_colon: step must be non-zero")
+    # Tolerant point count (MATLAB admits a tiny overshoot so a:d:b reaches b when b-a is a
+    # near-exact multiple of d); n is the number of *intervals*, so n+1 points.
+    n = math.floor((stop - start) / step + 3.0 * _EPS * max(abs(start), abs(stop)))
+    if n < 0:
+        return []
+    right = start + n * step
+    out = []
+    for k in range(n + 1):
+        out.append(start + k * step if 2 * k <= n else right - (n - k) * step)
+    return out
 
 
 # =========================================================================== #
