@@ -1,9 +1,12 @@
 """PushoutSurvivalSeq.py -- transliteration of
 ``matlab_new/YbSeqs/PushoutSurvivalSeq.m``.
 
-nargin-1 seq. Opens with a build-time 616-EOM frequency ramp driven by a sequence
-global (set from MemoryMap in the DEFERRED server_pre_run, which serialize() never runs,
-so the global stays unassigned -- matching the engine-free capture). Then:
+nargin-1 seq. Opens with a 616-EOM frequency ramp driven by a sequence global. On the BYTE
+path the global stays symbolic (the deferred server_pre_run is never run by serialize(), so the
+capture is reproducible). At RUNTIME ``register_eom616_persistence`` (runtime_state.py, the
+MemoryMap-free replacement) injects the global <- the LAST run's 616-EOM frequency before
+bc_gen, keeping the ramp ~20 ms; without it the global is 0 and the ramp runs ~15 s/shot
+(bytecode ~60 MB). Then:
 Init -> BlueMOT -> SLM -> GreenMOT -> LAC -> Imag399 -> Cool556 -> Pushout -> Imag399 ->
 (wait) -> Init.
 
@@ -22,16 +25,11 @@ from InitStep import InitStep
 from LACStep import LACStep
 from PushoutStep import PushoutStep
 from ramp_to import ramp_to
+from runtime_state import register_eom616_persistence
 from SLMStep import SLMStep
 
 
-def _noop(s1):
-    pass
-
-
 def PushoutSurvivalSeq(s):
-    s.reg_before_start(_noop)          # server_pre_run (deferred; reads MemoryMap, sets global)
-
     # Initialising 616EOM to its old value from last run (via a sequence global).
     Freq_EOM616 = s.C.Init.EOM616.Freq(Consts().Init.EOM616.Freq)
     freq616global = s.new_global()
@@ -40,6 +38,11 @@ def PushoutSurvivalSeq(s):
     # Slow EOM ramp. 3.0 (not 3): SeqVal operand -> must be FLOAT64.
     time = abs((Freq_EOM616 - freq616global) * 20e-9 * 3.0) + 20e-3
     s.add_step(time).add('FreqEOM616', ramp_to(Freq_EOM616))
+
+    # server_pre_run/server_post_run (MemoryMap-free): inject freq616global <- the last 616-EOM
+    # frequency (persisted across shots/scans) BEFORE bc_gen, and persist this run's target
+    # AFTER. Without it the ramp runs from 0 (~15 s/shot, ~60 MB bytecode). Not serialized.
+    register_eom616_persistence(s, freq616global, Freq_EOM616)
 
     s.add_step(InitStep, s.C.Init)
     s.add_step(BlueMOTStep, s.C.BlueMOT)
@@ -61,8 +64,6 @@ def PushoutSurvivalSeq(s):
 
     s.wait(0.1)
     s.add_step(InitStep, s.C.Init)
-
-    s.reg_after_end(_noop)             # server_post_run (deferred; MemoryMap + camera)
 
     # SeqPlotter dump is gated on s.C.debug, which defaults to 0 -> never taken.
     debug = s.C.debug(0)
