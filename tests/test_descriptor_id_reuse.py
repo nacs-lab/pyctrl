@@ -140,3 +140,51 @@ def test_two_scans_keep_consecutive_single_ids(server):
     queued = server.queue_list()["queued"]
     assert _ids(queued) == [d1, d2]
     assert all(e["kind"] == "job" for e in queued)
+
+
+# --- re-queue support: the job row preserves the original descriptor --------
+# The descriptor ROW is dropped on id-reuse, but its JSON is copied onto the
+# job (the scan's single record) so the dashboard can re-queue a finished run
+# with byte-identical params. See ExptServer.link_descriptor_to_job.
+
+def test_link_same_id_preserves_descriptor_on_job(server):
+    desc_json = json.dumps({"seq": "A", "params": {"X.Y": 3}})
+    did = server.submit_scan_descriptor(desc_json, label="myrun")
+    server.pop_next_descriptor()                        # queued -> building
+    job_id = server.submit_job(b'{"seq":"A"}', job_id=did)
+    assert server.link_descriptor_to_job(did, job_id) is True
+    # The descriptor row is gone, but the job row carries its JSON + label.
+    job = server.queue_list()["queued"][0]
+    assert job["kind"] == "job"
+    assert json.loads(job["descriptor"]) == json.loads(desc_json)
+    assert job["label"] == "myrun"
+    # And it survives into history when the job finishes (what re-queue reads).
+    server.pop_next_job()
+    server.finish_job(job_id, "ok")
+    hist = server.queue_list()["history"]
+    assert _ids(hist) == [did]
+    assert json.loads(hist[0]["descriptor"]) == json.loads(desc_json)
+
+
+def test_dispatch_preserves_descriptor_for_requeue(server):
+    desc_json = json.dumps({"seq": "TweezerLoadingSeq", "label": "LACScan",
+                            "runp": {"NumPerGroup": 2000}})
+    server.submit_scan_descriptor(desc_json, label="LACScan")
+    assert handle_descriptor_pop(server) == 1
+    job = server.queue_list()["queued"][0]
+    assert job["kind"] == "job"
+    # The original descriptor rides along on the single job row.
+    assert json.loads(job["descriptor"]) == json.loads(desc_json)
+
+
+# --- file_id stamp (pyctrl mints scan_id with no job_id in scope) -----------
+
+def test_set_running_job_file_id_targets_the_running_job(server):
+    did = server.submit_scan_descriptor(json.dumps({"seq": "A"}))
+    handle_descriptor_pop(server)
+    # Nothing running yet -> no-op, returns False.
+    assert server.set_running_job_file_id("20260605_120000") is False
+    server.pop_next_job()                              # the single job -> running
+    assert server.set_running_job_file_id("20260605_120000") is True
+    running = server.queue_list()["running"]
+    assert running["id"] == did and running["file_id"] == "20260605_120000"

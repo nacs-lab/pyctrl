@@ -444,6 +444,15 @@ def make_engine_run(server, camera, seq_config, log=None):
         # without it the monitor errors "Cannot load <path>" and its _process_once dies).
         _write_scan_prep(scan_id, scangroup, camera, num_images, log,
                          scan_name=scan_name, seq_config=seq_config, params=params_order)
+        # Stamp the data-folder id (scan_id) onto the running job so the queue/history shows it
+        # (MATLAB fills this via set_job_file_id; pyctrl mints scan_id here, with no job_id in
+        # scope, so set_running_job_file_id targets the single running job). Display + a
+        # re-queue's key to find this run's code snapshot; best-effort, never fails the run.
+        try:
+            sid = str(int(scan_id))
+            server.set_running_job_file_id("%s_%s" % (sid[:8], sid[8:]))
+        except Exception:  # noqa: BLE001
+            pass
 
         # --- Scan-long SLM session ------------------------------------------------------------ #
         # Hold the slm HARDWARE lock + write the loading (WGS) phase for the WHOLE scan. This
@@ -460,9 +469,11 @@ def make_engine_run(server, camera, seq_config, log=None):
             if is_rearrange:
                 _initial_setup_rearrangement(slm_client, scangroup, scan_id, log)
             slm_ses.begin()                                      # grab slm lock + write WGS phase
+            pat0 = _first_loading_pattern(scangroup.runp())
             rearrange_runtime.set_context(rearrange_runtime.ScanContext(
                 session=slm_ses, camera=camera, server=server, client=slm_client,
                 scan_id=scan_id, is_rearrange=is_rearrange, n_rounds=_n_rounds(scangroup),
+                pattern_name=(pat0 or {}).get("name"),
                 log=lambda m: log("[runner] %s" % m)))
         seq_owns_frames = is_rearrange and slm_ses is not None
 
@@ -560,8 +571,7 @@ def _make_slm_session(scangroup, scan_id, log):
         return None
     if not bool(_runp_num(rp, "useScanLongSlmLock", 1)):
         return None
-    from slm_client import get_client
-    from slm_scan_session import SlmScanSession
+    from devices.slm import get_client, SlmScanSession
     ses = SlmScanSession(get_client(), description="scan %s" % scan_id,
                          log=lambda m: log("[runner] %s" % m))
     pat = _first_loading_pattern(rp)
@@ -603,6 +613,65 @@ def _first_loading_pattern(rp):
             "zernike": zernike, "legacy": legacy, "baked": baked}
 
 
+def _loading_patterns_json(rp, num_images):
+    """Per-image loading-pattern declaration (port of ybLoadingPatternsJson.m). One entry per
+    camera frame: frame-0 <- ``warmup_kwargs.initial_phase``, final frame <- ``final_phase``, with
+    ``extras.*_phase_zernike`` as the baked Zernike to strip. An explicit ``runp().imagePatternsJson``
+    wins. Each entry: ``{name, base_phase_path, order, legacy_zerniked, [baked_zernike]}``. Returns
+    the list, or None when the scan declares no loading pattern (legacy day-folder behaviour)."""
+    # (1) explicit override wins.
+    try:
+        explicit = str(rp.imagePatternsJson("")).strip()
+    except Exception:  # noqa: BLE001
+        explicit = ""
+    if explicit:
+        try:
+            import json
+            items = json.loads(explicit)
+            if items:
+                return items
+        except Exception:  # noqa: BLE001
+            pass
+    # (2) synthesise from rearrange warmup_kwargs.
+    try:
+        wk = rp.warmup_kwargs
+        ip = str(wk.initial_phase("")).strip()
+    except Exception:  # noqa: BLE001
+        return None
+    if not ip:
+        return None
+    try:
+        fp = str(wk.final_phase("")).strip()
+    except Exception:  # noqa: BLE001
+        fp = ""
+    items = [_pattern_item(ip, _baked_zern(wk, "initial_phase_zernike"))]
+    if fp and int(num_images) >= 2:
+        items.append(_pattern_item(fp, _baked_zern(wk, "final_phase_zernike")))
+    return items
+
+
+def _pattern_item(phase_path, baked):
+    path = phase_path.replace("\\", "/")
+    name = os.path.splitext(os.path.basename(path))[0]
+    z = [float(x) for x in (baked or [])]
+    legacy = any(c != 0.0 for c in z)
+    it = {"name": name, "base_phase_path": path, "order": "col", "legacy_zerniked": legacy}
+    if legacy:
+        it["baked_zernike"] = z
+    return it
+
+
+def _baked_zern(wk, field):
+    """The baked Zernike list under ``warmup_kwargs.extras.<field>`` if non-zero, else None."""
+    try:
+        if wk.extras.isfield(field):
+            z = [float(x) for x in getattr(wk.extras, field)([])]
+            return z if any(c != 0.0 for c in z) else None
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _initial_setup_rearrangement(client, scangroup, scan_id, log):
     """Dequeue-time setup_rearrangement: load the model + patterns from ``runp().warmup_kwargs``
     with ``reset_params=True`` (new run + factory-default the sticky cache). Per-shot setup calls
@@ -618,6 +687,19 @@ def _initial_setup_rearrangement(client, scangroup, scan_id, log):
         return
     args["reset_params"] = True
     args.setdefault("client_scan_id", str(scan_id))
+    # Loading defocus (ANSI z4) -> WGS "loading_zernike": the SERVER adds it to BOTH the initial
+    # and final WGS write phases (setup_rearrangement) so reload_rearrange (initial) and the
+    # rearrange bookend (final) physically display WGS+defocus during loading -- correct
+    # regardless of whether reload runs/no-ops. SEPARATE from the model zernike
+    # (rearrange_kwargs.extras.z*/zernike_coeffs, which only touches model frames). Sent on the
+    # DEQUEUE setup (when initial/final_phase are stored), never per-shot, so it can't double-stack.
+    z4 = _runp_num(rp, "loading_defocus", 0)
+    if z4:
+        extras = args.get("extras")
+        if not isinstance(extras, dict):
+            extras = {}
+            args["extras"] = extras
+        extras.setdefault("loading_zernike", [0.0, 0.0, 0.0, 0.0, float(z4)])
     try:
         client.setup_rearrangement(**args)
         log("[runner] initial setup_rearrangement (%d field(s), reset_params)" % len(args))
@@ -644,6 +726,9 @@ def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
         rp = scangroup.runp()
         scan_meta = _scan_meta(scangroup, scan_name, seq_config, log)
         num_per_group = len(params) if params is not None else int(_runp_num(rp, "NumPerGroup", 0))
+        # Per-image loading-pattern declaration (port of ybLoadingPatternsJson): drives the live
+        # monitor's per-pattern grids/thresholds + the offline analysis's per-pattern calibration.
+        image_patterns = _loading_patterns_json(rp, num_images)
         path = write_scan_config(
             scan_id, (roi[2], roi[3]), num_images,
             is_init=int(_runp_num(rp, "isInit", 0)),
@@ -651,7 +736,9 @@ def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
             is_grid2=int(_runp_num(rp, "isGrid2", 0)),
             num_per_group=num_per_group,
             params=params,
-            scan_meta=scan_meta)
+            scan_meta=scan_meta,
+            image_patterns=image_patterns,
+            roi=list(roi))
         log("scan config written: %s" % path)
     except Exception as e:  # noqa: BLE001
         log("scan-config write failed: %s" % e)

@@ -11,8 +11,8 @@ the engine:
 
 import pytest
 
-from slm_client import SlmClient, SlmHTTPError, _build_setup_body, _encode_bits
-from slm_scan_session import SlmScanSession, SlmLockUnavailable
+from devices.slm.slm_client import SlmClient, SlmHTTPError, _build_setup_body, _encode_bits
+from devices.slm import SlmScanSession, SlmLockUnavailable
 import rearrange_runtime
 
 pytestmark = pytest.mark.no_hardware
@@ -338,21 +338,21 @@ def test_pause_resume_hooks_route_to_session(monkeypatch):
 # =========================================================================== #
 # rearrange_runtime: the ported atom detector (sparse matvec bits)
 # =========================================================================== #
-def test_detector_bits(monkeypatch):
+def test_detector_bits_day_folder(tmp_path):
     np = pytest.importorskip("numpy")
     pytest.importorskip("scipy")
+    import time
+    from scipy.io import savemat
     from rearrange_runtime import _Detector
 
-    # Two sites: one with a low threshold (will fire when its box is lit), one with a huge
-    # threshold (never fires). Grid is [Y, X] in 1-based pixel coords.
-    grid = np.array([[10.0, 10.0], [10.0, 30.0]])
-    thresholds = np.array([5.0, 1.0e9])
-    monkeypatch.setattr("rearrange_runtime._read_grid_locations", lambda _p: grid)
-    monkeypatch.setattr("rearrange_runtime._read_thresholds", lambda _p: thresholds)
+    # Real day-folder calibration: two sites, one low threshold (fires) + one huge (never fires).
+    day = tmp_path / time.strftime("%Y%m%d")
+    day.mkdir()
+    (day / "gridLocations.txt").write_text("Y\tX\n10\t10\n10\t30\n")
+    savemat(str(day / "threshold.mat"), {"thresholds": np.array([5.0, 1.0e9])})
 
     img = np.zeros((40, 40))
     img[5:14, 5:14] = 100.0          # light the 9x9 box around site 0 (Y=10, X=10), 1-based
 
-    det = _Detector("unused_root")
-    bits = det.bits(img)
-    assert bits == "10"
+    det = _Detector(str(tmp_path))   # pattern_name=None -> day-folder source
+    assert det.bits(img) == "10"

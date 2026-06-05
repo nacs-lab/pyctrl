@@ -77,42 +77,48 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
             return ControlChannel(srv, on_pause=rearrange_runtime.on_pause,
                                   on_resume=rearrange_runtime.on_resume)
 
-    # --- 0. hot-reload ported seq/step modules so live edits take effect (before resolution). ---
-    if reload_modules is not None:
+    # Opt-in code-snapshot REPLAY (#3): if THIS descriptor pins a ``code_snapshot``, run its
+    # dispatch + resolution against that snapshot's experiment code (YbSeqs/YbSteps/YbScans/
+    # YbRearrangement on sys.path), then restore. Absent field -> nullcontext -> the run path is
+    # byte-for-byte identical to before. Best-effort: a missing/bad snapshot falls back to live
+    # code inside the context. ``lib``/expConfig are never swapped (framework-stability boundary).
+    with _snapshot_replay_ctx(descriptor_json, reload_modules):
+        # --- 0. hot-reload ported seq/step modules so live edits take effect (before resolution).
+        if reload_modules is not None:
+            try:
+                reload_modules()
+            except Exception:  # noqa: BLE001 - stale modules == pre-reload behavior; never kill a job
+                pass
+
+        # --- 1. descriptor -> (ScanGroup, seq, opts). Bad descriptor / un-ported seq fail loud. ---
         try:
-            reload_modules()
-        except Exception:  # noqa: BLE001 - stale modules == pre-reload behavior; never kill a job
-            pass
+            disp = dispatch(descriptor_json)
+        except NotMigratedError as e:
+            return _fail(server, job_id, "not migrated: %s" % e, None)
+        except Exception as e:  # noqa: BLE001 - any malformed descriptor
+            return _fail(server, job_id, "descriptor error: %s" % e, None)
 
-    # --- 1. descriptor -> (ScanGroup, seq, opts). Bad descriptor / un-ported seq fail loud. ---
-    try:
-        disp = dispatch(descriptor_json)
-    except NotMigratedError as e:
-        return _fail(server, job_id, "not migrated: %s" % e, None)
-    except Exception as e:  # noqa: BLE001 - any malformed descriptor
-        return _fail(server, job_id, "descriptor error: %s" % e, None)
+        _safe(server, "set_seq_name", job_id, disp.seq_name)
 
-    _safe(server, "set_seq_name", job_id, disp.seq_name)
+        # --- 2. NEEDS-HARDWARE prep (AWG upload / ROI / stale-frame flush) -- optional hook. ---
+        if on_prep is not None:
+            try:
+                on_prep(disp)
+            except Exception as e:  # noqa: BLE001
+                return _fail(server, job_id, "prep error: %s" % e, disp.seq_name)
 
-    # --- 2. NEEDS-HARDWARE prep (AWG upload / ROI / stale-frame flush) -- optional hook. ---
-    if on_prep is not None:
+        # --- 3. run the scan (compile-per-point + per-seq gate live inside run_scan_group). ---
+        control = control_factory(server) if server is not None else None
         try:
-            on_prep(disp)
-        except Exception as e:  # noqa: BLE001
-            return _fail(server, job_id, "prep error: %s" % e, disp.seq_name)
-
-    # --- 3. run the scan (compile-per-point + per-seq gate live inside run_scan_group). ---
-    control = control_factory(server) if server is not None else None
-    try:
-        # scan_name (the descriptor label, e.g. "LACScan") rides to the engine run so scan-prep
-        # can stamp ScanName for the dashboard. The default run seam (run_scan_group) is only
-        # used in tests, which inject a **kw-tolerant stub; the live engine run accepts it.
-        # _build_run_kwargs hands run_scan_group a pre-built, pre-scrambled run order
-        # (ybBuildScanJob's Scan.Params), so the scan loop just RUNS the order it is given.
-        result = run(disp.seq, disp.scangroup, control=control, scan_name=disp.label,
-                     **_build_run_kwargs(disp, rng))
-    except Exception as e:  # noqa: BLE001 - a compile/run failure fails THIS job only
-        return _fail(server, job_id, "run error: %s" % e, disp.seq_name)
+            # scan_name (the descriptor label, e.g. "LACScan") rides to the engine run so scan-prep
+            # can stamp ScanName for the dashboard. The default run seam (run_scan_group) is only
+            # used in tests, which inject a **kw-tolerant stub; the live engine run accepts it.
+            # _build_run_kwargs hands run_scan_group a pre-built, pre-scrambled run order
+            # (ybBuildScanJob's Scan.Params), so the scan loop just RUNS the order it is given.
+            result = run(disp.seq, disp.scangroup, control=control, scan_name=disp.label,
+                         **_build_run_kwargs(disp, rng))
+        except Exception as e:  # noqa: BLE001 - a compile/run failure fails THIS job only
+            return _fail(server, job_id, "run error: %s" % e, disp.seq_name)
 
     status = result.get("status", "ok") if isinstance(result, dict) else "ok"
     _finish(server, job_id, status)
@@ -183,6 +189,64 @@ class IdleScheduler:
             _safe(self._server, "set_last_fallback_direct", False)
         self._run_dummy()
         return "default"
+
+
+# =========================================================================== #
+# code-snapshot replay (#3) -- opt-in; absent field == unchanged behavior
+# =========================================================================== #
+def _extract_code_snapshot(descriptor_json):
+    """The descriptor's optional ``code_snapshot`` dict (pin to replay), or None.
+
+    ``dispatch_descriptor`` ignores this top-level key, so it is inert for every normal run --
+    it only matters here, to the replay context. Tolerates str/bytes/dict input."""
+    try:
+        d = descriptor_json
+        if isinstance(d, (str, bytes, bytearray)):
+            import json
+            d = json.loads(d)
+        if not isinstance(d, dict):
+            return None
+        cs = d.get("code_snapshot")
+        return cs if isinstance(cs, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _default_data_root():
+    """``<prefix>/Data`` -- the scan-prep data root (``$YB_DATA_PREFIX`` else lab default)."""
+    import os
+    from scan_prep import DEFAULT_DATA_PREFIX
+    prefix = os.environ.get("YB_DATA_PREFIX", DEFAULT_DATA_PREFIX)
+    return os.path.join(prefix, "Data")
+
+
+def _snapshot_replay_ctx(descriptor_json, reload_modules):
+    """Return a context manager for run_job's body: ``code_snapshot.snapshot_syspath`` when the
+    descriptor pins a snapshot, else ``contextlib.nullcontext()`` (unchanged path). Best-effort:
+    any resolution failure degrades to nullcontext (live code)."""
+    import contextlib
+    spec = _extract_code_snapshot(descriptor_json)
+    if not spec:
+        return contextlib.nullcontext()
+    try:
+        import code_snapshot
+        run_id = spec.get("scan_id")
+        if run_id is None:
+            return contextlib.nullcontext()
+        data_root = spec.get("data_root") or _default_data_root()
+        return code_snapshot.snapshot_syspath(
+            data_root, run_id, reload_modules=reload_modules, log=_replay_log)
+    except Exception:  # noqa: BLE001
+        return contextlib.nullcontext()
+
+
+def _replay_log(msg):
+    """One-line replay narration to the runner log (best-effort)."""
+    try:
+        import logging
+        logging.getLogger("pyctrl.runner").info("%s", msg)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # =========================================================================== #

@@ -8,6 +8,7 @@ runSeq2's global randperm.
 """
 
 import json
+import os
 import random
 
 import pytest
@@ -113,3 +114,99 @@ class TestWriteScanConfigParams:
         path = write_scan_config(20260603120001, (0, 0), 1, prefix=str(tmp_path))
         cfg = json.load(open(path))
         assert "Params" not in cfg                 # backward compatible (pre-2026-06 behavior)
+
+
+# --------------------------------------------------------------------------- #
+# write_scan_config -- per-run code snapshot (#2). Additive: cfg['code_snapshot']
+# + content-addressed blobs/manifest under <prefix>/Data/_code_snapshots.
+# --------------------------------------------------------------------------- #
+class TestWriteScanConfigCodeSnapshot:
+    def test_snapshot_block_and_manifest(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("YB_CODE_SNAPSHOT", raising=False)
+        sid = 20260605120000
+        path = write_scan_config(sid, (10, 20), 1, num_per_group=4, prefix=str(tmp_path))
+        cfg = json.load(open(path))
+        cs = cfg.get("code_snapshot")
+        assert cs is not None and cs["scan_id"] == sid
+        assert cs["n_experiment"] >= 1             # the real YbSeqs/YbSteps were captured
+        assert isinstance(cs.get("hashes"), dict)
+        # Per-run manifest exists under <prefix>/Data/_code_snapshots/_runs/<sid>/.
+        man = tmp_path / "Data" / cs["run_manifest"].replace("/", os.sep)
+        assert man.is_file()
+
+    def test_snapshot_disabled_by_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("YB_CODE_SNAPSHOT", "0")
+        path = write_scan_config(20260605120001, (0, 0), 1, prefix=str(tmp_path))
+        assert "code_snapshot" not in json.load(open(path))   # opt-out is honored
+
+    def test_replay_run_records_pointer_not_resnapshot(self, tmp_path, monkeypatch):
+        # A '+code' re-queue executes OLD code; its own sidecar must honestly point at the
+        # replayed run (not re-snapshot the live disk, which is not what ran).
+        import code_snapshot
+        monkeypatch.delenv("YB_CODE_SNAPSHOT", raising=False)
+        monkeypatch.setattr(code_snapshot, "_active_replay_source", 20260101000000)
+        path = write_scan_config(20260605120003, (5, 5), 1, prefix=str(tmp_path))
+        cs = json.load(open(path))["code_snapshot"]
+        assert cs["replayed_from_scan_id"] == 20260101000000
+        assert "hashes" not in cs                  # did NOT re-snapshot live experiment code
+
+    def test_snapshot_failure_never_breaks_the_sidecar(self, tmp_path, monkeypatch):
+        # A failure deep in capture must leave a valid sidecar (provenance is best-effort):
+        # _capture_code_snapshot swallows it and returns None, so no code_snapshot key.
+        import code_snapshot
+        monkeypatch.delenv("YB_CODE_SNAPSHOT", raising=False)
+        monkeypatch.setattr(code_snapshot, "snapshot_code",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        path = write_scan_config(20260605120002, (5, 5), 1, prefix=str(tmp_path))
+        cfg = json.load(open(path))
+        assert "code_snapshot" not in cfg and cfg["frameSize"] == [5, 5]
+
+
+# --------------------------------------------------------------------------- #
+# write_scan_config -- detection calibration baked into the json (mirrors
+# MATLAB ybBuildScanPayload), so the offline analysis gets per-site maps +
+# thresholds + discrimination for pyctrl runs.
+# --------------------------------------------------------------------------- #
+class TestWriteScanConfigCalibration:
+    def _day_folder(self, tmp_path, scan_id, n_sites=5):
+        np = pytest.importorskip("numpy")
+        savemat = pytest.importorskip("scipy.io").savemat
+        day = str(scan_id)[:8]
+        day_dir = tmp_path / "Data" / day
+        day_dir.mkdir(parents=True)
+        with open(day_dir / "gridLocations.txt", "w") as f:
+            f.write("Y\tX\n")
+            for i in range(n_sites):
+                f.write("%f\t%f\n" % (10.0 + i, 20.0 + i))
+        savemat(str(day_dir / "threshold.mat"),
+                {"thresholds": np.arange(100.0, 100.0 + n_sites),
+                 "infidelities": np.linspace(1e-3, 5e-3, n_sites)})
+        return n_sites
+
+    def test_calibration_written_for_production_scan(self, tmp_path):
+        sid = 20260603120010
+        n = self._day_folder(tmp_path, sid)
+        path = write_scan_config(sid, (2100, 2100), 2, is_init=0,
+                                 num_per_group=10, prefix=str(tmp_path))
+        cfg = json.load(open(path))
+        for k in ("initGridLocationsX", "initGridLocationsY",
+                  "initThresholds", "initInfidelities"):
+            assert len(cfg[k]) == n
+        assert cfg["initGridLocationsY"][0] == 10.0   # gridLocations.txt col Y
+        assert cfg["initGridLocationsX"][0] == 20.0   # col X
+        assert cfg["boxSize"] == 9 and cfg["maskSigma"] == 2
+
+    def test_is_init_scan_has_no_calibration(self, tmp_path):
+        sid = 20260603120011
+        self._day_folder(tmp_path, sid)
+        path = write_scan_config(sid, (2100, 2100), 1, is_init=1,
+                                 prefix=str(tmp_path))
+        cfg = json.load(open(path))
+        assert not any(k.startswith("initGrid") for k in cfg)
+
+    def test_missing_day_folder_is_graceful(self, tmp_path):
+        # No day folder created -> no calibration keys, no crash.
+        path = write_scan_config(20260603120012, (2100, 2100), 2, is_init=0,
+                                 prefix=str(tmp_path))
+        cfg = json.load(open(path))
+        assert not any(k.startswith("initGrid") for k in cfg)

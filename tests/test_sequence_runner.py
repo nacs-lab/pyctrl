@@ -213,6 +213,63 @@ class TestRunJobWiring:
 
 
 # --------------------------------------------------------------------------- #
+# run_job: code-snapshot REPLAY wiring (#3). Opt-in -- a descriptor pinning a
+# code_snapshot runs its dispatch against that snapshot's experiment code; an
+# absent field is a nullcontext (byte-for-byte the prior behavior).
+# --------------------------------------------------------------------------- #
+class TestCodeSnapshotReplay:
+    def test_extract_absent_present_and_garbage(self):
+        from sequence_runner import _extract_code_snapshot
+        assert _extract_code_snapshot('{"seq":"X"}') is None
+        assert _extract_code_snapshot(
+            '{"seq":"X","code_snapshot":{"scan_id":1}}') == {"scan_id": 1}
+        assert _extract_code_snapshot({"code_snapshot": {"scan_id": 2}}) == {"scan_id": 2}
+        assert _extract_code_snapshot("not json") is None
+        assert _extract_code_snapshot(123) is None
+
+    def test_no_field_is_nullcontext(self):
+        import sys
+        from sequence_runner import _snapshot_replay_ctx
+        saved = list(sys.path)
+        with _snapshot_replay_ctx('{"seq":"X"}', None):
+            pass
+        assert sys.path == saved
+
+    def test_pinned_descriptor_injects_then_restores(self, tmp_path):
+        import json
+        import os
+        import sys
+        import code_snapshot
+        from sequence_runner import _snapshot_replay_ctx
+        root = str(tmp_path / "proj")
+        data_root = str(tmp_path / "data")
+        os.makedirs(os.path.join(root, "YbSeqs"))
+        with open(os.path.join(root, "YbSeqs", "ReplayProbe.py"), "w") as f:
+            f.write("V = 5\n")
+        code_snapshot.snapshot_code(root, data_root, run_id=11)
+        desc = json.dumps({"seq": "ReplayProbe",
+                           "code_snapshot": {"scan_id": 11, "data_root": data_root}})
+        saved = list(sys.path)
+        with _snapshot_replay_ctx(desc, None) as active:
+            assert active is True
+            assert any(p.endswith("YbSeqs") and data_root in p for p in sys.path[:4])
+        assert sys.path == saved        # restored exactly
+
+    def test_run_job_with_missing_snapshot_runs_and_restores(self, tmp_path):
+        # End to end: a pinned descriptor whose snapshot is absent falls back to live code
+        # (the job still completes) and never leaves sys.path mutated.
+        import json
+        import sys
+        desc = json.dumps({"seq": "X",
+                           "code_snapshot": {"scan_id": 99, "data_root": str(tmp_path)}})
+        saved = list(sys.path)
+        res = run_job(FakeServer(), desc, job_id=8, dispatch=_disp(), run=FakeRun(status="ok"),
+                      control_factory=lambda s: None)
+        assert res.status == "ok"
+        assert sys.path == saved
+
+
+# --------------------------------------------------------------------------- #
 # run_job: production run-order (ybBuildScanJob -> Scan.Params), handed to run_scan_group
 # as a pre-built/pre-scrambled `indices` list with rep=1, is_random=False.
 # --------------------------------------------------------------------------- #

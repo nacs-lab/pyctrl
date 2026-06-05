@@ -851,6 +851,23 @@ class ExptServer(object):
                     return True
             return False
 
+    def set_running_job_file_id(self, file_id: str):
+        """Stamp the data-folder id (scan_id) onto the currently-running job.
+
+        pyctrl mints the scan_id deep in the engine run (a fresh 14-digit stamp at
+        scan-prep), where the job_id isn't in scope -- but there is exactly one running
+        job, so the runner calls this to fill the queue/history ``file_id`` (the same
+        column the MATLAB backend fills via ``set_job_file_id``). Additive: it only
+        populates a display field + gives a re-queue a key to find the run's code
+        snapshot; it never affects the run. Returns True if a running job was stamped."""
+        with self.__queue_lock:
+            for e in self.__queue:
+                if e.get('state') == 'running' and e.get('kind', 'job') == 'job':
+                    e['file_id'] = str(file_id)
+                    self.__save_queue_locked()
+                    return True
+            return False
+
     def set_seq_name(self, job_id: int, name: str):
         """Runner calls this after decoding the payload so the UI shows the
         true sequence name (not the heuristic sniff)."""
@@ -982,6 +999,21 @@ class ExptServer(object):
                         # matlab_new, which archives a distinct-id descriptor;
                         # only reachable when the caller reuses the id, i.e. the
                         # pyctrl run loop -- never the MATLAB path.)
+                        #
+                        # Before dropping the descriptor row, copy its original
+                        # JSON (and label/seqName) onto the job row. The job is
+                        # the scan's single record and becomes the history entry
+                        # when it finishes, so this is what preserves the exact
+                        # spec the scan was queued with -- letting the dashboard
+                        # "re-queue" a finished run with byte-identical params.
+                        for j in self.__queue:
+                            if j.get('kind') == 'job' and j['id'] == job_id:
+                                j['descriptor'] = e.get('descriptor')
+                                if e.get('label') and not j.get('label'):
+                                    j['label'] = e.get('label')
+                                if e.get('seqName') and not j.get('seqName'):
+                                    j['seqName'] = e.get('seqName')
+                                break
                         self.__queue.pop(i)
                         self.__save_queue_locked()
                         return True

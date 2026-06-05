@@ -409,6 +409,12 @@ class _NumImagesSG:
 
             def NumImages(self, default=None):
                 return self._n
+
+            def useScanLongSlmLock(self, default=0):
+                # NO-HARDWARE: these tests exercise camera arm/capture plumbing, not the scan-long
+                # SLM session (tested in test_slm_rearrangement). Disable it so make_engine_run does
+                # not try to grab the real SLM lock over the network.
+                return 0
         return _RP(self._n)
 
 

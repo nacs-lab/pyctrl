@@ -20,3 +20,6 @@ tools/last_lacscan_gray.*
 
 # Pretty-printed (derived) copies of committed JSON references.
 tests/reference/*.pretty.json
+
+# Throwaway scratch: diagnostic run/submit/analysis scripts + figures + JSON dumps.
+tmp/

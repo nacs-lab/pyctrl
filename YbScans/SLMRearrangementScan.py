@@ -110,7 +110,7 @@ def SLMRearrangementScan(url=None, reps=None):
     g().rearrange_kwargs.extras.ifEnhanced = True
     g().rearrange_kwargs.extras.precompute = True
     g().rearrange_kwargs.extras.hw_sequence = False
-    g().rearrange_kwargs.extras.z4 = -4
+    g().rearrange_kwargs.extras.z4 = -5            # MATCH rp.loading_defocus (same focal plane)
 
     # ---- non-rearrangement scan settings ----------------------------------------------
     g().BlueMOT.LoadingTime = 0.5
@@ -124,7 +124,9 @@ def SLMRearrangementScan(url=None, reps=None):
     # ---- run params (runp) ------------------------------------------------------------
     rp.NumPerGroup = 100000
     # Loading defocus (ANSI z4, rad) added to the base loading phase on the SLM write at scan
-    # start (SlmScanSession). Distinct from rearrange_kwargs.extras.z4 (the rearrange MODEL z).
+    # start (SlmScanSession). MATCHED to rearrange_kwargs.extras.z4 (the rearrange MODEL z4) so the
+    # rearrangement model frames sit at the SAME focal plane as the loaded atoms (no transit defocus
+    # mismatch). 33x33_uniform has no baked Zernike, so -5 is absolute.
     rp.loading_defocus = -5
     rp.NumImages = n_rounds + 1                  # img1 + one frame per round
     rp.Scramble = 1

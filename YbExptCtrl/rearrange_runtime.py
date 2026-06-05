@@ -43,7 +43,8 @@ class ScanContext:
     """Live handles for the active scan's rearrangement callbacks (set by the runner)."""
 
     def __init__(self, *, session, camera, server, client, scan_id,
-                 is_rearrange=False, n_rounds=1, calib_root=None, log=None):
+                 is_rearrange=False, n_rounds=1, pattern_name=None,
+                 calib_root=None, log=None):
         self.session = session          # SlmScanSession (scan-long slm lock owner)
         self.camera = camera            # OrcaCamera (or None)
         self.server = server            # ExptServer (store_imgs / seq_finish / seq_cancel)
@@ -51,8 +52,14 @@ class ScanContext:
         self.scan_id = scan_id          # 14-digit YYYYMMDDHHMMSS (frame routing)
         self.is_rearrange = bool(is_rearrange)
         self.n_rounds = int(n_rounds)
+        self.pattern_name = pattern_name  # frame-0 loading pattern (per-pattern detection)
         self.log = log or (lambda _m: None)
-        self._detector = _Detector(calib_root or _DATA_ROOT, log=self.log)
+        # The mid-shot detector prefers the per-pattern registry grid+thresholds (keyed by the
+        # scan's frame-0 pattern, mapped to camera pixels through the global affine + this scan's
+        # ROI), falling back to the day-folder grid+thresholds. The ROI comes from the live camera.
+        roi_provider = (camera.current_roi if camera is not None else None)
+        self._detector = _Detector(calib_root or _DATA_ROOT, pattern_name=pattern_name,
+                                   roi_provider=roi_provider, log=self.log)
 
     def detect_bits(self, img):
         """Detect atoms in ``img`` -> '0'/'1' string, or '' on a calibration mismatch (so the
@@ -197,20 +204,24 @@ def _as_plain_dict(subprops):
 # atom detector (port of slm_detect_init + detect_bits)
 # =========================================================================== #
 class _Detector:
-    """Day-folder calibration -> per-site sparse weight matrix -> '0'/'1' bits via one matvec.
+    """Grid + thresholds -> per-site sparse weight matrix -> '0'/'1' bits via one matvec.
 
-    Rebuilt when ``gridLocations.txt`` / ``threshold.mat`` mtimes change (yb_analysis drift
-    correction / threshold refit) or when the image shape changes."""
+    PREFERS the per-pattern registry (the scan's frame-0 pattern: knm -> global affine -> ROI-crop
+    grid + ``<pattern>/threshold.mat``), the same source yb_analysis's live detection uses, so the
+    rearrange bits score with PATTERN thresholds. Falls back to the DAY-FOLDER ``gridLocations.txt``
+    + ``threshold.mat`` when no pattern is set or the registry/affine isn't available -- nothing is
+    lost. Rebuilt when the source calibration changes (mtimes / ROI / pattern) or the image shape
+    changes."""
 
-    def __init__(self, data_root, log=None):
+    def __init__(self, data_root, pattern_name=None, roi_provider=None, log=None):
         self._data_root = data_root
+        self._pattern_name = pattern_name
+        self._roi_provider = roi_provider
         self._log = log or (lambda _m: None)
         self._W = None                 # scipy.sparse (M, H*W)
         self._thresholds = None        # (M,)
         self._img_shape = None         # (H, W)
-        self._calib_folder = None
-        self._grid_mtime = -1.0
-        self._thr_mtime = -1.0
+        self._key = None               # cache identity of the built calibration
 
     def bits(self, img):
         import numpy as np
@@ -232,27 +243,60 @@ class _Detector:
         return "".join("1" if b else "0" for b in logicals)
 
     def _ensure(self, img_shape):
+        """(Re)build the sparse weight matrix from the best available calibration source."""
+        src = self._pattern_source() or self._day_source()
+        if src is None:
+            raise RuntimeError("no per-pattern or day-folder calibration available")
+        grid, thresholds, key = src
+        if self._W is not None and self._img_shape == img_shape and self._key == key:
+            return                          # warm + unchanged
+        self._build(grid, thresholds, img_shape, key)
+
+    def _pattern_source(self):
+        """(grid [Y,X], thresholds, cache-key) from the per-pattern registry, or None."""
+        if not self._pattern_name or self._roi_provider is None:
+            return None
+        try:
+            roi = list(self._roi_provider())
+            import pattern_grid
+            pc = pattern_grid.resolve_pattern_calibration(self._pattern_name, roi)
+        except Exception as e:  # noqa: BLE001 - registry/affine unavailable -> day-folder
+            self._log("[rearrange_runtime] pattern calibration unavailable (%s); day folder" % e)
+            return None
+        if pc is None:
+            return None
+        import numpy as np
+        grid = np.asarray(pc["grid"], dtype=float).reshape(-1, 2)
+        thr = np.asarray(pc["thresholds"], dtype=float).ravel()
+        # Key on the per-pattern threshold.mat mtime so the detector REBUILDS when the live
+        # monitor refits + re-saves the pattern thresholds mid-scan (the day-folder source keys
+        # on mtime too, see _day_source). Without it the pattern thresholds would be frozen for
+        # the whole backend session -- the rearrange bits would never pick up a refit.
+        thr_mtime = _mtime(pattern_grid._pattern_threshold_path(self._pattern_name))
+        key = ("pattern", self._pattern_name, tuple(float(v) for v in roi[:4]),
+               int(grid.shape[0]), thr_mtime)
+        return grid, thr, key
+
+    def _day_source(self):
+        """(grid [Y,X], thresholds, cache-key) from the day folder, or None."""
         folder = self._today_folder()
         grid_file = os.path.join(folder, "gridLocations.txt")
         thr_file = os.path.join(folder, "threshold.mat")
-        grid_mt = _mtime(grid_file)
-        thr_mt = _mtime(thr_file)
-        if (self._W is not None and self._img_shape == img_shape
-                and self._calib_folder == folder
-                and grid_mt <= self._grid_mtime and thr_mt <= self._thr_mtime):
-            return                          # warm + unchanged
-        self._build(folder, grid_file, thr_file, img_shape)
-        self._calib_folder = folder
-        self._grid_mtime = grid_mt
-        self._thr_mtime = thr_mt
-
-    def _build(self, folder, grid_file, thr_file, img_shape):
-        from scipy import sparse
+        if not (os.path.isfile(grid_file) and os.path.isfile(thr_file)):
+            return None
         grid = _read_grid_locations(grid_file)            # (M, 2) [Y, X], 1-based pixel coords
         thresholds = _read_thresholds(thr_file)           # (M,)
+        if grid.shape[0] != thresholds.shape[0]:
+            raise ValueError("gridLocations has %d sites but thresholds has %d"
+                             % (grid.shape[0], thresholds.shape[0]))
+        key = ("day", folder, _mtime(grid_file), _mtime(thr_file), int(grid.shape[0]))
+        return grid, thresholds, key
+
+    def _build(self, grid, thresholds, img_shape, key):
+        from scipy import sparse
         m = grid.shape[0]
         if thresholds.shape[0] != m:
-            raise ValueError("gridLocations has %d sites but thresholds has %d"
+            raise ValueError("grid has %d sites but thresholds has %d"
                              % (m, thresholds.shape[0]))
         H, W = int(img_shape[0]), int(img_shape[1])
         mask = _fspecial_gaussian(_BOX, _SIGMA)
@@ -280,8 +324,9 @@ class _Detector:
         self._W = sparse.csr_matrix((vals, (rows, cols)), shape=(m, H * W))
         self._thresholds = thresholds.astype(float)
         self._img_shape = (H, W)
-        self._log("[rearrange_runtime] detector built: %s M=%d imgSize=[%d %d]"
-                  % (folder, m, H, W))
+        self._key = key
+        self._log("[rearrange_runtime] detector built: source=%s M=%d imgSize=[%d %d]"
+                  % (key[0], m, H, W))
 
     def _today_folder(self):
         return os.path.join(self._data_root, time.strftime("%Y%m%d"))
