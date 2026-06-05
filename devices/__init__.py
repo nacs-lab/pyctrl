@@ -41,3 +41,12 @@ try:
                 "SlmScanSession", "SlmLockUnavailable"]
 except Exception as e:
     _log.warning("devices: 'slm' family unavailable: %s", e)
+
+try:
+    from . import sigilent_awg
+    from .sigilent_awg import (AWGConnection, AWGManager, WAVEFORM_FIELDS,
+                               gaussian_pulse_waveform)
+    __all__ += ["sigilent_awg", "AWGConnection", "AWGManager", "WAVEFORM_FIELDS",
+                "gaussian_pulse_waveform"]
+except Exception as e:
+    _log.warning("devices: 'sigilent_awg' family unavailable: %s", e)

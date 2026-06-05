@@ -435,6 +435,7 @@ def make_engine_run(server, camera, seq_config, log=None):
     def run(seq, scangroup, control=None, scan_name=None, **opts):
         num_images = _num_images(scangroup)
         post = list(opts.pop("post_cb", []) or [])
+        pre = list(opts.pop("pre_cb", []) or [])
         scan_id = _new_scan_id()        # 14-digit YYYYMMDDHHMMSS (the monitor/MATLAB convention)
         # The pre-built run order (sequence_runner._build_run_kwargs) IS ybBuildScanJob's
         # Scan.Params -- persist it so the monitor's scan curve can bucket each shot's result.
@@ -454,13 +455,32 @@ def make_engine_run(server, camera, seq_config, log=None):
         except Exception:  # noqa: BLE001
             pass
 
+        # --- Siglent AWG: batch-upload unique waveforms + per-shot active-waveform switch ----- #
+        # A scan opts in via runp().AWGs (e.g. ["AWG556"]). setup() walks the ScanGroup and uploads
+        # every UNIQUE Gaussian pulse once here; the per-shot pre_cb re-sends the active waveform
+        # for this point's AWG.<name>.* scan values (~2 ms, skipped when unchanged). cleanup() in
+        # the finally disconnects. Non-AWG scans (AWGs absent/empty) pay nothing.
+        # Done BEFORE the scan-long SLM lock (below): the WVDT uploads can take seconds, and doing
+        # them first means slm_ses.begin() grabs the lock LAST, with a fresh ~10 s lease entering
+        # the per-shot loop (rather than burning the lease during the uploads).
+        awg_names = _awg_names(scangroup)
+        if awg_names:
+            from devices.sigilent_awg import AWGManager
+            AWGManager.setup(awg_names, scangroup)
+
+            def _awg_pre_cb(_seq_num, arg0):
+                pt = scangroup.getseq(arg0)
+                AWGManager.recall_for_seq(pt.get("AWG", {}) if isinstance(pt, dict) else {})
+            pre.append(_awg_pre_cb)
+
         # --- Scan-long SLM session ------------------------------------------------------------ #
         # Hold the slm HARDWARE lock + write the loading (WGS) phase for the WHOLE scan. This
         # applies to EVERY scan (default useScanLongSlmLock=1): any scan loads atoms into the SLM
         # pattern and assumes it stays put, so it must own the lock. begin() raises if the lock
         # can't be acquired within the block budget -> the run errors (run_job catches it).
-        # Rearrangement scans additionally do an initial setup_rearrangement at dequeue and own
-        # their camera frames per shot (so the standard capture post_cb is skipped for them).
+        # Acquired AFTER the AWG batch-upload (above) so the lease is fresh entering the per-shot
+        # loop. Rearrangement scans additionally do an initial setup_rearrangement at dequeue and
+        # own their camera frames per shot (so the standard capture post_cb is skipped for them).
         import rearrange_runtime
         is_rearrange = _is_rearrange_scan(scangroup)
         slm_ses = _make_slm_session(scangroup, scan_id, log)
@@ -492,7 +512,8 @@ def make_engine_run(server, camera, seq_config, log=None):
             except Exception:  # noqa: BLE001 - camera arm failure must not crash the job pre-run
                 armed = False
         try:
-            return run_scan_group(seq, scangroup, control=control, post_cb=post,
+            return run_scan_group(seq, scangroup, control=control,
+                                  pre_cb=pre, post_cb=post,
                                   new_run=seq_manager.new_run, **opts)
         finally:
             if armed:
@@ -503,6 +524,12 @@ def make_engine_run(server, camera, seq_config, log=None):
             if slm_ses is not None:
                 try:
                     slm_ses.done()                               # release the scan-long slm lock
+                except Exception:  # noqa: BLE001
+                    pass
+            if awg_names:
+                try:
+                    from devices.sigilent_awg import AWGManager
+                    AWGManager.cleanup()                         # disconnect all AWGs
                 except Exception:  # noqa: BLE001
                     pass
             rearrange_runtime.clear_context()
@@ -524,6 +551,24 @@ def _runp_num(runp, name, default=0):
         return float(getattr(runp, name)(default))
     except Exception:  # noqa: BLE001
         return default
+
+
+def _awg_names(scangroup):
+    """The AWGs this scan activates: ``runp().AWGs`` (e.g. ``["AWG556"]``), [] if unset.
+
+    Mirrors MATLAB ``scanp.AWGs({})`` gating AWGManager.setup. A bare string is wrapped; a
+    missing/empty field -> [] so non-AWG scans skip the AWG path entirely.
+    """
+    try:
+        v = scangroup.runp().AWGs([])
+    except Exception:  # noqa: BLE001
+        return []
+    if isinstance(v, str):
+        return [v]
+    try:
+        return [str(x) for x in v if x]
+    except TypeError:
+        return []
 
 
 # =========================================================================== #
