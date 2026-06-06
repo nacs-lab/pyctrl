@@ -179,6 +179,19 @@ def test_per_pulse_provenance_is_segment_specific():
     assert pulses[str(pids_b[0])]["params"] == ["B"]
 
 
+def test_per_pulse_formula_with_param_names():
+    """A value that folds to a constant still carries a param-named formula (the user-facing
+    'how is this number derived' hint), even though serialize() sees only the folded float."""
+    s = ExpSeq({"Res": 3.0, "Det": -1.0, "Gain": 2.0})
+    with provenance.capture(consts_dp=s.C) as sess:
+        s.add_step(1).add("FreqX", s.C.Res() + s.C.Det())
+        s.add_step(1).add("AmpX", s.C.Gain() * 2)
+    pulses = sess.result()["pulses"]
+    exprs = {tuple(e["params"]): e.get("expr") for e in pulses.values()}
+    assert exprs[("Det", "Res")] == "Res + Det"
+    assert exprs[("Gain",)] == "Gain * 2"
+
+
 def test_global_dep_layer_records_runtime_global():
     s = ExpSeq({"Foo": 3.0})
     g = s.new_global()                              # runtime global -> g(0)

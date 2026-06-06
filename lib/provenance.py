@@ -31,6 +31,8 @@ to watch the value flow during the build. Two layers, merged into one ``xref.jso
 """
 
 from seq_val import SeqVal
+from seq_val import to_string as _sv_to_string
+from seq_val import _BINARY_STR, _FUNC_STR, _FUNC2_STR
 
 # Lazy numpy (matches seq_dump's optional-numpy pattern); used only to recognise numpy scalars.
 try:  # pragma: no cover - trivial import guard
@@ -60,43 +62,62 @@ def _prov_of(o):
     return o._prov if isinstance(o, TaggedFloat) else frozenset()
 
 
+def _numstr(v):
+    """Compact constant rendering for a formula operand (integral -> no decimals)."""
+    f = float(v)
+    if f == int(f) and abs(f) < 1e15:
+        return str(int(f))
+    return "%g" % f
+
+
+def _expr_of(o):
+    return o._expr if isinstance(o, TaggedFloat) else _numstr(o)
+
+
 class TaggedFloat(float):
-    """A ``float`` tagged with the set of dotted param paths that produced it."""
+    """A ``float`` tagged with the dotted param paths that produced it AND a human
+    formula (``_expr``) built up through arithmetic, so the viewer can show e.g.
+    ``Resonance399Freq + BlueMOT.FreqDetuning`` for a value that folded to a constant.
+    """
 
-    __slots__ = ("_prov",)
+    __slots__ = ("_prov", "_expr")
 
-    def __new__(cls, value, prov=()):
+    def __new__(cls, value, prov=(), expr=None):
         obj = float.__new__(cls, value)
         obj._prov = prov if isinstance(prov, frozenset) else frozenset(prov)
+        obj._expr = expr if expr is not None else _numstr(value)
         return obj
 
-    # -- binary arithmetic: fold + union tags; defer non-numbers (SeqVal/ndarray). -- #
+    # -- binary arithmetic: fold value, union tags, compose the formula; defer
+    #    non-numbers (SeqVal/ndarray) so SeqVal.__r*__ / numpy take over. -- #
     @staticmethod
-    def _binop(fn):
+    def _binop(fn, sym):
         def op(self, other):
             if not _is_scalar_number(other):
-                return NotImplemented            # let SeqVal.__r*__ / numpy take over
+                return NotImplemented
             res = fn(float(self), float(other))
-            return TaggedFloat(res, self._prov | _prov_of(other))
+            return TaggedFloat(res, self._prov | _prov_of(other),
+                               "(%s %s %s)" % (self._expr, sym, _expr_of(other)))
         return op
 
     @staticmethod
-    def _rbinop(fn):
+    def _rbinop(fn, sym):
         def op(self, other):
             if not _is_scalar_number(other):
                 return NotImplemented
             res = fn(float(other), float(self))
-            return TaggedFloat(res, self._prov | _prov_of(other))
+            return TaggedFloat(res, self._prov | _prov_of(other),
+                               "(%s %s %s)" % (_expr_of(other), sym, self._expr))
         return op
 
     def __neg__(self):
-        return TaggedFloat(-float(self), self._prov)
+        return TaggedFloat(-float(self), self._prov, "-%s" % self._expr)
 
     def __pos__(self):
         return self
 
     def __abs__(self):
-        return TaggedFloat(abs(float(self)), self._prov)
+        return TaggedFloat(abs(float(self)), self._prov, "abs(%s)" % self._expr)
 
     def __index__(self):
         # Allow a tagged integral value to be used as an index (range/list/np.zeros),
@@ -108,37 +129,111 @@ class TaggedFloat(float):
 
 
 # Generate the forward/reflected operators (kept simple: the common build math).
-TaggedFloat.__add__ = TaggedFloat._binop(lambda a, b: a + b)
-TaggedFloat.__radd__ = TaggedFloat._rbinop(lambda a, b: a + b)
-TaggedFloat.__sub__ = TaggedFloat._binop(lambda a, b: a - b)
-TaggedFloat.__rsub__ = TaggedFloat._rbinop(lambda a, b: a - b)
-TaggedFloat.__mul__ = TaggedFloat._binop(lambda a, b: a * b)
-TaggedFloat.__rmul__ = TaggedFloat._rbinop(lambda a, b: a * b)
-TaggedFloat.__truediv__ = TaggedFloat._binop(lambda a, b: a / b)
-TaggedFloat.__rtruediv__ = TaggedFloat._rbinop(lambda a, b: a / b)
-TaggedFloat.__floordiv__ = TaggedFloat._binop(lambda a, b: a // b)
-TaggedFloat.__rfloordiv__ = TaggedFloat._rbinop(lambda a, b: a // b)
-TaggedFloat.__mod__ = TaggedFloat._binop(lambda a, b: a % b)
-TaggedFloat.__rmod__ = TaggedFloat._rbinop(lambda a, b: a % b)
-TaggedFloat.__pow__ = TaggedFloat._binop(lambda a, b: a ** b)
-TaggedFloat.__rpow__ = TaggedFloat._rbinop(lambda a, b: a ** b)
+TaggedFloat.__add__ = TaggedFloat._binop(lambda a, b: a + b, "+")
+TaggedFloat.__radd__ = TaggedFloat._rbinop(lambda a, b: a + b, "+")
+TaggedFloat.__sub__ = TaggedFloat._binop(lambda a, b: a - b, "-")
+TaggedFloat.__rsub__ = TaggedFloat._rbinop(lambda a, b: a - b, "-")
+TaggedFloat.__mul__ = TaggedFloat._binop(lambda a, b: a * b, "*")
+TaggedFloat.__rmul__ = TaggedFloat._rbinop(lambda a, b: a * b, "*")
+TaggedFloat.__truediv__ = TaggedFloat._binop(lambda a, b: a / b, "/")
+TaggedFloat.__rtruediv__ = TaggedFloat._rbinop(lambda a, b: a / b, "/")
+TaggedFloat.__floordiv__ = TaggedFloat._binop(lambda a, b: a // b, "//")
+TaggedFloat.__rfloordiv__ = TaggedFloat._rbinop(lambda a, b: a // b, "//")
+TaggedFloat.__mod__ = TaggedFloat._binop(lambda a, b: a % b, "%")
+TaggedFloat.__rmod__ = TaggedFloat._rbinop(lambda a, b: a % b, "%")
+TaggedFloat.__pow__ = TaggedFloat._binop(lambda a, b: a ** b, "^")
+TaggedFloat.__rpow__ = TaggedFloat._rbinop(lambda a, b: a ** b, "^")
 
 
 def tag_value(value, dotted):
     """Wrap a scalar numeric ``value`` as a :class:`TaggedFloat` carrying ``dotted``.
 
-    Existing tags are preserved (unioned). Non-scalars (dicts/structs, ``SeqVal``,
-    bools, strings) pass through untouched -- only numbers flow to channel outputs.
+    A leaf read gets ``_expr = dotted`` (the param name); existing tags are unioned.
+    Non-scalars (dicts/structs, ``SeqVal``, bools, strings) pass through untouched --
+    only numbers flow to channel outputs.
     """
     if isinstance(value, bool):
         return value                              # logical: not a traced numeric
     if isinstance(value, TaggedFloat):
-        return TaggedFloat(float(value), value._prov | {dotted})
+        return TaggedFloat(float(value), value._prov | {dotted}, value._expr)
     if isinstance(value, (int, float)):
-        return TaggedFloat(float(value), {dotted})
+        return TaggedFloat(float(value), {dotted}, dotted)
     if _np is not None and isinstance(value, (_np.integer, _np.floating)):
-        return TaggedFloat(float(value), {dotted})
+        return TaggedFloat(float(value), {dotted}, dotted)
     return value
+
+
+# --------------------------------------------------------------------------- #
+# Formula rendering -- turn a pulse's value into a readable derivation with PARAM
+# NAMES. A folded constant carries its formula in TaggedFloat._expr; a SeqVal
+# (e.g. a ramp) is rendered by mirroring SeqVal.to_string but substituting any
+# TaggedFloat leaf with its param-name formula instead of the folded number.
+# --------------------------------------------------------------------------- #
+def _strip_outer(s):
+    """Drop one redundant outer paren pair (``(a + b)`` -> ``a + b``)."""
+    if s and len(s) >= 2 and s[0] == "(" and s[-1] == ")":
+        depth = 0
+        for i, c in enumerate(s):
+            depth += (c == "(") - (c == ")")
+            if depth == 0:
+                return s[1:-1] if i == len(s) - 1 else s
+    return s
+
+
+def _render_arg(x):
+    if isinstance(x, TaggedFloat):
+        return x._expr
+    if isinstance(x, SeqVal):
+        return _render_seqval(x)
+    return _numstr(x) if isinstance(x, (int, float)) else str(x)
+
+
+def _render_seqval(sv):
+    head, args = sv.head, sv.args
+    if head in _BINARY_STR:
+        return "(%s%s%s)" % (_render_arg(args[0]), _BINARY_STR[head], _render_arg(args[1]))
+    if head in _FUNC_STR:
+        return "%s(%s)" % (_FUNC_STR[head], _render_arg(args[0]))
+    if head in _FUNC2_STR:
+        return "%s(%s, %s)" % (_FUNC2_STR[head], _render_arg(args[0]), _render_arg(args[1]))
+    if head == SeqVal.OP_NOT:
+        return "~%s" % _render_arg(args[0])
+    if head == SeqVal.OP_SELECT:
+        return "ifelse(%s, %s, %s)" % (_render_arg(args[0]), _render_arg(args[1]),
+                                       _render_arg(args[2]))
+    if head == SeqVal.OP_IDENTITY:
+        return _render_arg(args[0])
+    if head == SeqVal.H_GLOBAL:
+        return "g(%d)" % int(args[0])
+    if head == SeqVal.H_MEASURE:
+        return "m(%d)" % int(args[0])
+    if head == SeqVal.H_ARG:
+        return "arg(%d)" % int(args[0])
+    return _sv_to_string(sv)                       # interp/xor/etc.: fall back (folded nums)
+
+
+def render_expr(value):
+    """Readable derivation formula (param names) for a pulse value, or None."""
+    try:
+        if isinstance(value, TaggedFloat):
+            return _strip_outer(value._expr)
+        if isinstance(value, SeqVal):
+            return _strip_outer(_render_seqval(value))
+    except Exception:  # noqa: BLE001 - a formula is a hint; never break the build
+        return None
+    return None
+
+
+_EXPR_MAX = 240
+
+
+def _pulse_out(e):
+    """Serialise one pulse entry for ``xref.json`` (caps a runaway formula)."""
+    d = {"channel": e["channel"], "params": sorted(e["params"])}
+    ex = e.get("expr")
+    if ex:
+        d["expr"] = ex if len(ex) <= _EXPR_MAX else ex[:_EXPR_MAX - 3] + "..."
+    return d
 
 
 # --------------------------------------------------------------------------- #
@@ -206,7 +301,16 @@ class ProvenanceSession:
         # so the viewer can map a clicked plot point to exactly THIS segment's params and
         # vice-versa (highlight a param's regions). Only param-bearing pulses are recorded.
         pid = int(pulse_id)
-        self.pulses[pid] = {"channel": name, "params": set(paths)}
+        # Formula (param-named): prefer the value that still carries provenance -- a numeric
+        # pulse's resolved value is a plain float (the tag is stripped by _resolve_pulse), so
+        # the raw (TaggedFloat) carries the formula; a ramp's resolved value is the SeqVal.
+        src = resolved if isinstance(resolved, (TaggedFloat, SeqVal)) else (
+            raw if isinstance(raw, (TaggedFloat, SeqVal)) else None)
+        entry = {"channel": name, "params": set(paths)}
+        expr = render_expr(src) if src is not None else None
+        if expr:
+            entry["expr"] = expr
+        self.pulses[pid] = entry
         for p in paths:
             self.param_to_pids.setdefault(p, set()).add(pid)
 
@@ -246,8 +350,7 @@ class ProvenanceSession:
                                   for k, v in sorted(self.param_to_channels.items())},
             "channel_to_params": {k: sorted(v)
                                   for k, v in sorted(self.channel_to_params.items())},
-            "pulses": {str(pid): {"channel": e["channel"], "params": sorted(e["params"])}
-                       for pid, e in sorted(self.pulses.items())},
+            "pulses": {str(pid): _pulse_out(e) for pid, e in sorted(self.pulses.items())},
             "param_to_pids": {k: sorted(v)
                               for k, v in sorted(self.param_to_pids.items())},
         }
