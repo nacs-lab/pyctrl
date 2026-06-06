@@ -1,9 +1,15 @@
-"""runtime_state.py -- pyctrl-private persistent runtime state (currently: the 616-EOM freq).
+"""runtime_state.py -- pyctrl-private persistent runtime state.
 
-A tiny mmap-backed store for the one bit of cross-shot / cross-scan state a sequence must carry:
-the last 616-EOM frequency, used to keep its inter-run ramp short. ``PushoutSurvivalSeq`` & friends
-open with a slow ramp that slews the 616 EOM from its LAST value to this run's target; that "last
-value" used to live in ``MemoryMap.Data(1).FreqEOM616Old``.
+A tiny mmap-backed store for the few bits of cross-shot / cross-scan / cross-process state the
+backend must carry:
+
+  * offset 0 (float64) -- the last 616-EOM frequency, used to keep its inter-run ramp short.
+    ``PushoutSurvivalSeq`` & friends open with a slow ramp that slews the 616 EOM from its LAST
+    value to this run's target; that "last value" used to live in ``MemoryMap.Data(1).FreqEOM616Old``.
+  * offset 8 (uint8)   -- the dashboard "save sequence dumps" toggle (0=off, 1=on). Written by the
+    dashboard control (out-of-process), read by ``runner.run()`` at scan start to gate the SeqPlotter
+    auto-dump. Lives here (not over ExptServer's control verbs) by design: a live global flag that
+    avoids touching the fragile ZMQ control plane.
 
 This is **pyctrl-private**: its OWN ``<tempdir>/nacsctl/pyctrl_runtime_state.dat`` (8 bytes, one
 little-endian float64 at offset 0), NOT the MATLAB ``nacs_mem_map.dat``. So it carries no
@@ -29,22 +35,39 @@ logger = logging.getLogger(__name__)
 
 # pyctrl-private store (distinct from MATLAB's nacs_mem_map.dat), in the run-loop artifact dir.
 _PATH = os.path.join(tempfile.gettempdir(), "nacsctl", "pyctrl_runtime_state.dat")
-_SIZE = 8                       # one float64: FreqEOM616Old at offset 0
+_EOM_OFF = 0                    # float64: FreqEOM616Old
+_FLAG_OFF = 8                   # uint8:  save_sequence_dumps toggle (0/1)
+_SIZE = 9
 _NAN = struct.pack("<d", float("nan"))
+_DEFAULT = _NAN + b"\x00"       # NaN freq ("unset") + toggle off
 
 _mm = None                      # cached mmap handle (opened once, process lifetime)
 _fh = None
 
 
 def _open():
-    """Return the cached mmap, creating/initialising the file (to NaN) on first use."""
+    """Return the cached mmap, creating/initialising the file on first use.
+
+    Migrates a legacy 8-byte (EOM-only) file to the current layout, PRESERVING the
+    stored 616-EOM frequency (bytes 0-7), so the upgrade never forces a slow first ramp.
+    """
     global _mm, _fh
     if _mm is not None:
         return _mm
     os.makedirs(os.path.dirname(_PATH), exist_ok=True)
     if not os.path.isfile(_PATH) or os.path.getsize(_PATH) < _SIZE:
-        with open(_PATH, "wb") as f:        # fresh/short file -> NaN sentinel = "unset"
-            f.write(_NAN)
+        existing = b""
+        try:
+            if os.path.isfile(_PATH):
+                with open(_PATH, "rb") as f:
+                    existing = f.read()
+        except OSError:
+            existing = b""
+        buf = bytearray(_DEFAULT)
+        if len(existing) >= 8:
+            buf[0:8] = existing[0:8]        # keep the last 616-EOM freq across the upgrade
+        with open(_PATH, "wb") as f:
+            f.write(bytes(buf))
     _fh = open(_PATH, "r+b")
     _mm = mmap.mmap(_fh.fileno(), _SIZE)
     return _mm
@@ -77,6 +100,34 @@ def set_eom616_old(value):
         mm.flush()
     except Exception as e:  # noqa: BLE001 - persistence is best-effort; never kill a shot
         logger.debug("runtime_state write failed: %s", e)
+
+
+# --------------------------------------------------------------------------- #
+# "save sequence dumps" toggle (offset 8) -- dashboard writes, runner reads.
+# --------------------------------------------------------------------------- #
+def get_save_sequence_dumps(default=False):
+    """The dashboard "save sequence dumps" toggle (mmap flag at offset 8).
+
+    Returns ``default`` on any read failure (a missing store -> default off)."""
+    try:
+        mm = _open()
+        mm.seek(_FLAG_OFF)
+        b = mm.read(1)
+    except Exception as e:  # noqa: BLE001 - any I/O failure -> safe default
+        logger.debug("runtime_state flag read failed (%s); using default", e)
+        return bool(default)
+    return b == b"\x01"
+
+
+def set_save_sequence_dumps(on):
+    """Set the "save sequence dumps" toggle (written by the dashboard control)."""
+    try:
+        mm = _open()
+        mm.seek(_FLAG_OFF)
+        mm.write(b"\x01" if on else b"\x00")
+        mm.flush()
+    except Exception as e:  # noqa: BLE001 - persistence is best-effort
+        logger.debug("runtime_state flag write failed: %s", e)
 
 
 def register_eom616_persistence(s, freq616global, freq_target):

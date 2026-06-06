@@ -51,7 +51,8 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
                    pre_cb=(), post_cb=(), tstartwait=0.0,
                    control=None, compile_point=None, run_real=None,
                    seq_config=None, new_run=None, on_seq_num=None,
-                   config_teardown=None, sleep=time.sleep, rng=None):
+                   config_teardown=None, sleep=time.sleep, rng=None,
+                   on_compile=None):
     """Run a ScanGroup as a scan (port of ``runSeq2(func, scangroup, ...)``).
 
     Returns a result dict ``{"status": "ok"|"aborted", "nseq": <shots completed>}``. (The
@@ -111,6 +112,16 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
             return
         seqid_map[seqid] = idx
         seqlist[idx] = compile_point(seqfn, seqparam)
+        # Auto-dump hook: ARM (don't fire) the SeqPlotter .seq dump for this unique
+        # compiled sequence. The dump must run DURING the shot, not here at compile
+        # time: a global-dependent ramp (e.g. the 616-EOM slow ramp) reads its
+        # driving global at bc_gen, and that global is 0 until a before_start
+        # callback injects it inside run_real -- dumping at compile would build the
+        # degenerate ~15 s / ~60 MB zero-from ramp. So we register the dump on the
+        # seq's after_end callbacks (fired after before_start set the global and
+        # before reset_globals wipes it), capturing the real per-shot bytecode.
+        if on_compile is not None:
+            _arm_dump(seqlist[idx], on_compile, arg0, seqid)
 
     def run_cb(cbs, idx):
         for cb in cbs:
@@ -187,6 +198,45 @@ def _scan_loop(run_one, nseq, rep, is_random, rng):
             if run_one(i):
                 return True
     return False
+
+
+def _arm_dump(seq, on_compile, arg0, seqid):
+    """Register a best-effort, one-shot ``.seq`` dump in run_real's after_end window.
+
+    ``on_compile(arg0, seqid, seq)`` is the SeqPlotter auto-dump (seq_dump.py). It is
+    DEFERRED to the seq's ``after_end`` callbacks rather than fired at compile time:
+    after_end runs AFTER the before_start callbacks injected this shot's runtime
+    globals (e.g. the persisted 616-EOM frequency, runtime_state.py) and BEFORE
+    ``reset_globals`` resets the non-persist ones (run_seq2.run_real), so the dump's
+    bc_gen sees the real value and builds the short (~ms) ramp instead of the
+    ~15 s / ~60 MB ramp a zero-valued global yields at compile time.
+
+    A closure flag makes it fire ONCE per unique seqid: the seq object is reused
+    across reps and duplicate-index points, and after_end fires every shot, so the
+    flag matches the old once-per-seqid contract and also avoids re-running the dump
+    every shot if the first attempt fails. Because after_end only fires on the
+    SUCCESS path, a shot that errors before after_end defers the dump to the first
+    successful shot (never dumps a half-run seq). Fully guarded: a seq without
+    ``reg_after_end`` (test fakes) or any dump/registration error never perturbs a run.
+    """
+    reg = getattr(seq, "reg_after_end", None)
+    if reg is None:
+        return
+    fired = []
+
+    def _dump_cb(_root):
+        if fired:
+            return
+        fired.append(True)
+        try:
+            on_compile(arg0, seqid, seq)
+        except Exception:  # noqa: BLE001 - dumping is never allowed to break a run
+            pass
+
+    try:
+        reg(_dump_cb)
+    except Exception:  # noqa: BLE001 - registration must never break a run
+        pass
 
 
 def _default_compile_point(seqfn, seqparam):

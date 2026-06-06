@@ -511,11 +511,24 @@ def make_engine_run(server, camera, seq_config, log=None):
                         camera, server, num_images, scan_id, seq_config))
             except Exception:  # noqa: BLE001 - camera arm failure must not crash the job pre-run
                 armed = False
+        # --- Sequence auto-dump (SeqPlotter), gated by the dashboard toggle ---------------- #
+        # When runtime_state's "save sequence dumps" flag is ON, write one flattened .seq per
+        # UNIQUE compiled sequence into <scan_dir>/sequence/ + a manifest.json that the dashboard
+        # Sequence tab reads. The dump evaluates get_nominal_output WITHOUT start() -> no FPGA
+        # trigger / NI arm / camera frame. Wholly best-effort: never affects the run.
+        seq_dump_session = _make_seq_dump_session(scan_id, scangroup, scan_name, log)
+        seq_on_compile = seq_dump_session.on_compile if seq_dump_session is not None else None
         try:
             return run_scan_group(seq, scangroup, control=control,
                                   pre_cb=pre, post_cb=post,
-                                  new_run=seq_manager.new_run, **opts)
+                                  new_run=seq_manager.new_run,
+                                  on_compile=seq_on_compile, **opts)
         finally:
+            if seq_dump_session is not None:
+                try:
+                    seq_dump_session.finalize()                  # write manifest.json
+                except Exception:  # noqa: BLE001 - dump finalize never fails the run
+                    pass
             if armed:
                 try:
                     camera.stop_video()
@@ -543,6 +556,42 @@ def _num_images(scangroup):
         return int(scangroup.runp().NumImages(1))
     except Exception:  # noqa: BLE001
         return 0
+
+
+def _make_seq_dump_session(scan_id, scangroup, scan_name, log):
+    """Build a :class:`seq_dump.SeqDumpSession` iff the dashboard "save sequence
+    dumps" toggle (runtime_state, offset 8) is ON; else ``None``.
+
+    Best-effort: any failure (toggle off, missing module, bad scan_id) returns
+    ``None`` so the auto-dump never affects a run.
+    """
+    try:
+        import runtime_state
+        if not runtime_state.get_save_sequence_dumps(False):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        import os
+        from seq_dump import SeqDumpSession, SEQ_SUBDIR
+        from scan_prep import scan_dir
+        sdir = os.path.join(scan_dir(scan_id), SEQ_SUBDIR)
+        dt = None
+        try:
+            from datetime import datetime
+            dt = datetime.strptime(str(int(scan_id)), "%Y%m%d%H%M%S")
+        except Exception:  # noqa: BLE001
+            dt = None
+        sess = SeqDumpSession(sdir, scangroup, scan_id=str(int(scan_id)),
+                              seq_name=scan_name or "seq", datetime_stamp=dt, log=log)
+        log("[runner] sequence auto-dump ON -> %s" % sdir)
+        return sess
+    except Exception as exc:  # noqa: BLE001
+        try:
+            log("[runner] sequence auto-dump setup failed: %s" % exc)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
 
 def _runp_num(runp, name, default=0):
