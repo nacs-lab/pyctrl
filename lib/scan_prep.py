@@ -265,7 +265,7 @@ def scan_config_path(scan_id, prefix=None):
 
 def write_scan_config(scan_id, frame_wh, num_images, *, is_init=0, is_hc=0, is_grid2=0,
                       num_per_group=0, scan_meta=None, params=None, prefix=None,
-                      image_patterns=None, roi=None):
+                      image_patterns=None, roi=None, descriptor=None):
     """Write the JSON scan-config for ``scan_id``; return the path.
 
     Args:
@@ -331,6 +331,13 @@ def write_scan_config(scan_id, frame_wh, num_images, *, is_init=0, is_hc=0, is_g
         # never overrides the frame-routing keys above (those win on a key clash).
         for k, v in scan_meta.items():
             cfg.setdefault(k, v)
+    # Self-contained reconstruction descriptor (SeqPlotter): the exact descriptor JSON
+    # (scangroup_to_descriptor's output -- params + sweeps + seq name + runp) so an OFFLINE
+    # reconstruction can rebuild the ScanGroup + resolve the seq function with
+    # dispatch_descriptor, WITHOUT needing the live queue history. Additive metadata (does
+    # NOT affect serialize() bytes / THE ONE RULE). Best-effort -> omitted on failure.
+    if descriptor is not None:
+        cfg["descriptor"] = descriptor
     # Per-run source-code snapshot (additive provenance; mirrors the SLM server's
     # code_snapshot). Content-addressed blobs + a readable/importable per-run tree under
     # <data_root>/_code_snapshots; the compact result rides in cfg['code_snapshot'] so the

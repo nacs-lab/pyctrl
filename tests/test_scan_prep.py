@@ -117,6 +117,24 @@ class TestWriteScanConfigParams:
 
 
 # --------------------------------------------------------------------------- #
+# write_scan_config -- the self-contained reconstruction descriptor (SeqPlotter).
+# --------------------------------------------------------------------------- #
+class TestWriteScanConfigDescriptor:
+    def test_descriptor_stored(self, tmp_path):
+        desc = {"schema_version": 1, "seq": "RydDetSeq",
+                "params": {"Pushout.Time": {"scan": 1, "values": [1e-3, 2e-3]}}}
+        path = write_scan_config(20260603120002, (0, 0), 1,
+                                 descriptor=desc, prefix=str(tmp_path))
+        cfg = json.load(open(path))
+        assert cfg["descriptor"] == desc           # rebuilds via dispatch_descriptor offline
+
+    def test_no_descriptor_key_when_absent(self, tmp_path):
+        path = write_scan_config(20260603120003, (0, 0), 1, prefix=str(tmp_path))
+        cfg = json.load(open(path))
+        assert "descriptor" not in cfg             # backward compatible / best-effort
+
+
+# --------------------------------------------------------------------------- #
 # write_scan_config -- per-run code snapshot (#2). Additive: cfg['code_snapshot']
 # + content-addressed blobs/manifest under <prefix>/Data/_code_snapshots.
 # --------------------------------------------------------------------------- #

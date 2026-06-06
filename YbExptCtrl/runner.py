@@ -444,7 +444,8 @@ def make_engine_run(server, camera, seq_config, log=None):
         # Scan-prep: write the Scan-config .mat the monitor's DataManager reads (best-effort;
         # without it the monitor errors "Cannot load <path>" and its _process_once dies).
         _write_scan_prep(scan_id, scangroup, camera, num_images, log,
-                         scan_name=scan_name, seq_config=seq_config, params=params_order)
+                         scan_name=scan_name, seq_config=seq_config, params=params_order,
+                         seq=seq)
         # Stamp the data-folder id (scan_id) onto the running job so the queue/history shows it
         # (MATLAB fills this via set_job_file_id; pyctrl mints scan_id here, with no job_id in
         # scope, so set_running_job_file_id targets the single running job). Display + a
@@ -836,8 +837,22 @@ def _initial_setup_rearrangement(client, scangroup, scan_id, log):
         log("[runner] initial setup_rearrangement failed: %s" % e)
 
 
+def _scan_descriptor(scangroup, seq, log):
+    """Best-effort descriptor JSON (scangroup_to_descriptor) for self-contained offline
+    reconstruction; ``None`` if the group can't be exported (e.g. multi-group)."""
+    try:
+        from scan_export import scangroup_to_descriptor
+        return scangroup_to_descriptor(scangroup, seq)
+    except Exception as e:  # noqa: BLE001
+        try:
+            log("scan descriptor export skipped: %s" % e)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
 def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
-                     scan_name=None, seq_config=None, params=None):
+                     scan_name=None, seq_config=None, params=None, seq=None):
     """Write the scan-config the monitor's DataManager reads (best-effort; never crash a job).
 
     frameSize = the camera ROI (W, H); the rest from the descriptor runp. ``params`` is the
@@ -858,6 +873,7 @@ def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
         # Per-image loading-pattern declaration (port of ybLoadingPatternsJson): drives the live
         # monitor's per-pattern grids/thresholds + the offline analysis's per-pattern calibration.
         image_patterns = _loading_patterns_json(rp, num_images)
+        descriptor = _scan_descriptor(scangroup, seq, log) if seq is not None else None
         path = write_scan_config(
             scan_id, (roi[2], roi[3]), num_images,
             is_init=int(_runp_num(rp, "isInit", 0)),
@@ -867,7 +883,8 @@ def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
             params=params,
             scan_meta=scan_meta,
             image_patterns=image_patterns,
-            roi=list(roi))
+            roi=list(roi),
+            descriptor=descriptor)
         log("scan config written: %s" % path)
     except Exception as e:  # noqa: BLE001
         log("scan-config write failed: %s" % e)
