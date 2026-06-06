@@ -70,11 +70,12 @@ class TimeStep(TimeSeq):
         ctx = toplevel.seq_ctx
         raw = pulse
         pulse = self._resolve_pulse(ctx, toplevel, pulse)
-        # INERT unless an offline ProvenanceSession is active (lib/provenance.py); collects
-        # the param<->channel edge from the raw + resolved value. No ctx mutation, so the
-        # byte-load-bearing next_obj_id() ordering below is preserved.
-        provenance.on_pulse(toplevel, cid, raw, pulse)
         id_ = ctx.next_obj_id()
+        # INERT unless an offline ProvenanceSession is active (lib/provenance.py); records the
+        # param<->channel edge (per pulse id_) from the raw + resolved value. Placed AFTER
+        # next_obj_id (which keeps its byte-load-bearing position) so it carries the pulse id;
+        # it never mutates ctx, so the bytes are unaffected.
+        provenance.on_pulse(toplevel, cid, id_, raw, pulse)
         self.pulses[cid] = Pulse(id_, pulse, cond)
         return self
 
@@ -90,8 +91,8 @@ class TimeStep(TimeSeq):
         ctx = toplevel.seq_ctx
         raw = pulse
         pulse = self._resolve_pulse(ctx, toplevel, pulse)
-        provenance.on_pulse(toplevel, cid, raw, pulse)   # INERT unless a session is active
         id_ = ctx.next_obj_id()
+        provenance.on_pulse(toplevel, cid, id_, raw, pulse)  # INERT unless a session is active
         self.pulses[cid] = Pulse(id_, pulse, cond)
         return self
 

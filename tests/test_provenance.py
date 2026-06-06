@@ -97,7 +97,7 @@ def test_on_access_inert_returns_value_unchanged():
     assert provenance._session is None
     v = object()
     assert provenance.on_access(DynProps({}), ("p",), v) is v
-    assert provenance.on_pulse(None, 1, 0.0, 0.0) is None    # no crash, no session
+    assert provenance.on_pulse(None, 1, 7, 0.0, 0.0) is None  # no crash, no session
 
 
 def test_serialize_identical_without_session():
@@ -154,6 +154,29 @@ def test_capture_value_flow_through_callable_and_expression():
     res = sess.result()
     # both A and B reach CH1 (A via the *t term, B via the + term)
     assert set(res["channel_to_params"]["Device1/CH1"]) == {"A", "B"}
+
+
+def test_per_pulse_provenance_is_segment_specific():
+    """Two pulses on ONE channel from DIFFERENT params -> each pulse maps to its OWN param
+    (the fix for whole-channel coarseness). pulses + param_to_pids invert cleanly; the pulse
+    id == the .seq's per-point pid, so the viewer maps a clicked point to just its segment."""
+    s = ExpSeq({"A": 1.0, "B": 2.0})
+    with provenance.capture(consts_dp=s.C) as sess:
+        s.add_step(1).add("Device1/CH1", s.C.A())   # segment 1 <- A
+        s.add_step(1).add("Device1/CH1", s.C.B())   # segment 2 <- B
+    res = sess.result()
+    # aggregate: the channel is fed by both params...
+    assert set(res["channel_to_params"]["Device1/CH1"]) == {"A", "B"}
+    # ...but per-pulse, each segment carries its OWN single param
+    pulses = res["pulses"]
+    assert len(pulses) == 2
+    assert all(e["channel"] == "Device1/CH1" for e in pulses.values())
+    assert {tuple(e["params"]) for e in pulses.values()} == {("A",), ("B",)}
+    # param_to_pids inverts: each param -> exactly one pulse id present in `pulses`
+    pids_a, pids_b = res["param_to_pids"]["A"], res["param_to_pids"]["B"]
+    assert len(pids_a) == 1 and len(pids_b) == 1
+    assert pulses[str(pids_a[0])]["params"] == ["A"]
+    assert pulses[str(pids_b[0])]["params"] == ["B"]
 
 
 def test_global_dep_layer_records_runtime_global():

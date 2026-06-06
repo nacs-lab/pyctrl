@@ -166,6 +166,8 @@ class ProvenanceSession:
         self._ns = {}                  # id(DynProps) -> dotted-path prefix
         self.param_to_channels = {}    # dotted path -> set(channel)
         self.channel_to_params = {}    # channel     -> set(dotted path)
+        self.pulses = {}               # pulse id    -> {"channel": str, "params": set}
+        self.param_to_pids = {}        # dotted path -> set(pulse id)
 
     def register(self, dynprops, prefix):
         """Map a ``DynProps`` instance to a path prefix (``""`` = bare config namespace).
@@ -185,7 +187,7 @@ class ProvenanceSession:
         return tag_value(value, prefix + dotted if prefix else dotted)
 
     # -- TimeStep pulse hook ------------------------------------------------- #
-    def record_pulse(self, toplevel, cid, raw, resolved):
+    def record_pulse(self, toplevel, cid, pulse_id, raw, resolved):
         try:
             name = toplevel.channel_name(cid)
             name = _decorate_channel(name, getattr(toplevel, "inverse_chn_map", None))
@@ -200,6 +202,13 @@ class ProvenanceSession:
         for p in paths:
             chan.add(p)
             self.param_to_channels.setdefault(p, set()).add(name)
+        # Per-pulse (region) provenance: the pulse id == the .seq's per-point pid (verified),
+        # so the viewer can map a clicked plot point to exactly THIS segment's params and
+        # vice-versa (highlight a param's regions). Only param-bearing pulses are recorded.
+        pid = int(pulse_id)
+        self.pulses[pid] = {"channel": name, "params": set(paths)}
+        for p in paths:
+            self.param_to_pids.setdefault(p, set()).add(pid)
 
     def _collect(self, value, paths):
         if isinstance(value, TaggedFloat):
@@ -226,12 +235,21 @@ class ProvenanceSession:
 
     # -- result -------------------------------------------------------------- #
     def result(self):
-        """The two sorted maps in the ``xref.json`` ``by_file`` entry shape."""
+        """The ``xref.json`` ``by_file`` entry: aggregate maps + per-pulse (region) maps.
+
+        ``pulses`` is keyed by the pulse id as a STRING (JSON object keys are strings; the
+        ``.seq``'s per-point ``pid`` is the same integer). ``param_to_pids`` is the inverse
+        for fast param->region lookup in the viewer.
+        """
         return {
             "param_to_channels": {k: sorted(v)
                                   for k, v in sorted(self.param_to_channels.items())},
             "channel_to_params": {k: sorted(v)
                                   for k, v in sorted(self.channel_to_params.items())},
+            "pulses": {str(pid): {"channel": e["channel"], "params": sorted(e["params"])}
+                       for pid, e in sorted(self.pulses.items())},
+            "param_to_pids": {k: sorted(v)
+                              for k, v in sorted(self.param_to_pids.items())},
         }
 
 
@@ -249,12 +267,12 @@ def on_access(dynprops, path, value):
     return s.wrap(dynprops, path, value)
 
 
-def on_pulse(toplevel, cid, raw, resolved):
-    """``TimeStep`` pulse hook: record param->channel edges when a session is active."""
+def on_pulse(toplevel, cid, pulse_id, raw, resolved):
+    """``TimeStep`` pulse hook: record param->channel + per-pulse edges (when a session is on)."""
     s = _session
     if s is None:
         return
-    s.record_pulse(toplevel, cid, raw, resolved)
+    s.record_pulse(toplevel, cid, pulse_id, raw, resolved)
 
 
 def begin(session):
