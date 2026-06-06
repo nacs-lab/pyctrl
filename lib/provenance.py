@@ -30,6 +30,8 @@ to watch the value flow during the build. Two layers, merged into one ``xref.jso
     channels (pairs with ``manifest.approximate``).
 """
 
+import re
+
 from seq_val import SeqVal
 from seq_val import to_string as _sv_to_string
 from seq_val import _BINARY_STR, _FUNC_STR, _FUNC2_STR
@@ -212,16 +214,40 @@ def _render_seqval(sv):
     return _sv_to_string(sv)                       # interp/xor/etc.: fall back (folded nums)
 
 
+# A pulse value-function's args: arg(0) = time t into the step; arg(1) = the channel's
+# previous value (what a ramp goes FROM). The tick<->second conversion (tick_per_sec) shows
+# up as a redundant (X * N) / N round-trip; collapse it so a ramp reads as a ramp.
+_TICK_RT = re.compile(r"\(([\w.]+)\s*\*\s*(\d+)\)\s*/\s*\2(?!\d)")
+
+
+def _cleanup_formula(s):
+    if not s:
+        return s
+    prev = None
+    while prev != s:                              # collapse nested (param * N) / N -> param
+        prev = s
+        s = _TICK_RT.sub(r"\1", s)
+    s = re.sub(r"arg\(0\)\s*/\s*\d+", "t", s)     # arg(0)/<scale> == the seconds-time t
+    s = s.replace("arg(1)", "from").replace("arg(0)", "t")
+    prev = None
+    while prev != s:                              # drop redundant parens around a lone token
+        prev = s
+        s = re.sub(r"\(([\w.]+)\)", r"\1", s)
+    return s
+
+
 def render_expr(value):
     """Readable derivation formula (param names) for a pulse value, or None."""
     try:
         if isinstance(value, TaggedFloat):
-            return _strip_outer(value._expr)
-        if isinstance(value, SeqVal):
-            return _strip_outer(_render_seqval(value))
+            raw = value._expr
+        elif isinstance(value, SeqVal):
+            raw = _render_seqval(value)
+        else:
+            return None
+        return _strip_outer(_cleanup_formula(raw))
     except Exception:  # noqa: BLE001 - a formula is a hint; never break the build
         return None
-    return None
 
 
 _EXPR_MAX = 240
@@ -263,6 +289,7 @@ class ProvenanceSession:
         self.channel_to_params = {}    # channel     -> set(dotted path)
         self.pulses = {}               # pulse id    -> {"channel": str, "params": set}
         self.param_to_pids = {}        # dotted path -> set(pulse id)
+        self.time_regions = {}         # dotted path -> [[t0_ms, t1_ms], ...]  (waits)
 
     def register(self, dynprops, prefix):
         """Map a ``DynProps`` instance to a path prefix (``""`` = bare config namespace).
@@ -314,6 +341,20 @@ class ProvenanceSession:
         for p in paths:
             self.param_to_pids.setdefault(p, set()).add(pid)
 
+    # -- Wait/timing hook: a param-driven wait advances time over [t0, t1] with no
+    #    channel output, so it maps to a time-axis band rather than a pulse. -- #
+    def record_wait(self, t, t0_ticks, t1_ticks):
+        paths = set()
+        self._collect(t, paths)
+        if not paths:
+            return
+        t0 = float(t0_ticks) * 1e-9                # ticks -> ms (matches seq_parse's x-axis)
+        t1 = float(t1_ticks) * 1e-9
+        if t1 < t0:
+            t0, t1 = t1, t0
+        for p in paths:
+            self.time_regions.setdefault(p, []).append([t0, t1])
+
     def _collect(self, value, paths):
         if isinstance(value, TaggedFloat):
             paths.update(value._prov)
@@ -353,6 +394,7 @@ class ProvenanceSession:
             "pulses": {str(pid): _pulse_out(e) for pid, e in sorted(self.pulses.items())},
             "param_to_pids": {k: sorted(v)
                               for k, v in sorted(self.param_to_pids.items())},
+            "time_regions": {k: v for k, v in sorted(self.time_regions.items())},
         }
 
 
@@ -376,6 +418,27 @@ def on_pulse(toplevel, cid, pulse_id, raw, resolved):
     if s is None:
         return
     s.record_pulse(toplevel, cid, pulse_id, raw, resolved)
+
+
+def wait_start(seq):
+    """``wait()`` pre-hook: the wait's absolute start tick, or None (inert/unresolvable)."""
+    if _session is None:
+        return None
+    try:
+        return seq.cur_seq_time.get_val()
+    except Exception:  # noqa: BLE001 - dynamic (global/measure) timing -> skip this wait
+        return None
+
+
+def wait_end(seq, t, t0):
+    """``wait()`` post-hook: record the param-driven time region [t0, now] (when a session is on)."""
+    if _session is None or t0 is None:
+        return
+    try:
+        t1 = seq.cur_seq_time.get_val()
+    except Exception:  # noqa: BLE001
+        return
+    _session.record_wait(t, t0, t1)
 
 
 def begin(session):

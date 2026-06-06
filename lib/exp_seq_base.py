@@ -14,6 +14,7 @@ site (``mat_round``), never inside ``SeqTime``.
 
 import struct
 
+import provenance
 from conditional_wrapper import ConditionalWrapper
 from ifelse import ifelse
 from mat_utils import is_logical, is_numeric, mat_round
@@ -65,9 +66,11 @@ class ExpSeqBase(TimeSeq):
                 return self
         if is_logical(self.cond) and not self.cond:
             return self
+        _pt0 = provenance.wait_start(self)         # INERT unless a session is active
         self.cur_seq_time = self.cur_seq_time.create(
             SeqTime.NONNEG,
             ifelse(self.cond, mat_round(t * self.top_level.time_scale), 0))
+        provenance.wait_end(self, t, _pt0)         # records the param-driven time region
         self.end_after_parent = True
         node = self
         while not node.latest_seq:

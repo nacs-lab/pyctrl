@@ -47,6 +47,12 @@ _PYCTRL = os.path.dirname(_TOOLS)
 RESULT_PREFIX = "XREF_RESULT:"
 SEQ_SUBDIR = "sequence"
 XREF_NAME = "xref.json"
+# Schema/format version stamped into xref.json so the viewer auto-rebuilds older artifacts.
+# Bump when the producer's output changes in a way the UI should pick up:
+#   1 aggregate maps · 2 + per-pulse regions · 3 + derivation formulas (cleaned)
+#   4 + wait/timing regions (time_regions)
+# Keep in lock-step with SEQ_XREF_VERSION in yb_analysis/plotting/static/dashboard.js.
+XREF_VERSION = 4
 _DEFAULT_TICK = 10 ** 12                              # config.yml tick_per_sec (1 ps); engine-free fallback
 _SIDECAR_RE = re.compile(r"^data_\d{8}_\d{6}\.json$")
 # LIVE experiment + lib dirs (NOT the snapshot) so the provenance hooks are loaded.
@@ -110,7 +116,7 @@ def write_xref_json(seq_dir, by_file, *, scan_id=None):
         return None
     try:
         os.makedirs(seq_dir, exist_ok=True)
-        doc = {"scan_id": scan_id, "by_file": by_file}
+        doc = {"scan_id": scan_id, "v": XREF_VERSION, "by_file": by_file}
         tmp = os.path.join(seq_dir, XREF_NAME + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(doc, f, indent=2)

@@ -192,6 +192,20 @@ def test_per_pulse_formula_with_param_names():
     assert exprs[("Gain",)] == "Gain * 2"
 
 
+def test_formula_cleanup_simplifies_ramp_noise():
+    """The renderer collapses the tick<->second round-trip and names the pulse args, so a
+    ramp reads cleanly (arg(0)->t, arg(1)->from, (X*N)/N -> X)."""
+    c = provenance._cleanup_formula
+    assert c("(GreenMOT.BFieldRampTime * 1000000000000) / 1000000000000") == \
+        "GreenMOT.BFieldRampTime"
+    assert c("arg(0) / 1000000000000") == "t"
+    assert c("(arg(0) / 1000000000000)") == "t"
+    assert c("arg(1)") == "from"
+    # a genuine (10 * X) / 7 is NOT a round-trip (different constants) -> preserved
+    assert c("(10 * GreenMOT.BiasCoilCurrent.X) / 7") == \
+        "(10 * GreenMOT.BiasCoilCurrent.X) / 7"
+
+
 def test_global_dep_layer_records_runtime_global():
     s = ExpSeq({"Foo": 3.0})
     g = s.new_global()                              # runtime global -> g(0)
@@ -199,6 +213,26 @@ def test_global_dep_layer_records_runtime_global():
         s.add_step(1).add("AmpThing", g + s.C.Foo())
     res = sess.result()
     assert set(res["channel_to_params"]["AmpThing"]) == {"Foo", "g(0)"}
+
+
+def test_wait_time_region_capture():
+    """A param-driven wait maps to a time-axis region [t0, t1] (no channel output); a plain
+    constant wait contributes nothing. (Fixture tick_per_sec=1000; ms = ticks * 1e-9.)"""
+    s = ExpSeq({"LoadTime": 0.5})
+    with provenance.capture(consts_dp=s.C) as sess:
+        s.add_step(1).add("Device1/CH1", 4)        # advance to t=1000 ticks first
+        s.wait(s.C.LoadTime())                      # 0.5 -> +500 ticks, tagged LoadTime
+    tr = sess.result()["time_regions"]
+    assert list(tr.keys()) == ["LoadTime"]
+    (t0, t1), = tr["LoadTime"]
+    assert t0 == pytest.approx(1000 * 1e-9)
+    assert t1 == pytest.approx(1500 * 1e-9)
+
+    s2 = ExpSeq()
+    with provenance.capture(consts_dp=s2.C) as sess2:
+        s2.add_step(1).add("Device1/CH1", 4)
+        s2.wait(0.3)                                # constant wait -> no provenance
+    assert sess2.result()["time_regions"] == {}
 
 
 def test_disabled_pulse_contributes_nothing():
