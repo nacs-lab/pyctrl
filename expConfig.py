@@ -128,7 +128,7 @@ def _consts():
     c["Orca"] = {"ROI": [1000, 100, 2100, 2100], "ExposureTime": 0.050004}
 
     # 556nm resonance (calibrate daily by spectroscopy; 3P1 mj=0 near-magic)
-    c["Resonance556mj0Freq"] = 107.717e6
+    c["Resonance556mj0Freq"] = 107.735e6   # fit 2026-06-05 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.97); was 107.717e6
     c["Resonance399Freq"] = 310e6              # not magic; changes with trap depth
 
     # Init: 2D MOT & Zeeman, electric fields, SLM servo
@@ -187,8 +187,10 @@ def _consts():
         "ExposureTime": None,                  # cross-ref -> Orca.ExposureTime (set below)
         "Cool556": {
             "FreqDetuning": 0.18e6, "Amp": 0.2,
-            "X": {"FreqDetuning": 0.12e6, "Amp": 0.18},
-            "h": {"FreqDetuning": 0.14e6, "Amp": 0.14},
+            # cooling opt 2026-06-05 (CoolingScan, jointly converged at imaging amp 0.18):
+            #   was X {0.12e6, 0.18}, h {0.14e6, 0.14}
+            "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
+            "h": {"FreqDetuning": 0.16e6, "Amp": 0.13},
         },
     }
 

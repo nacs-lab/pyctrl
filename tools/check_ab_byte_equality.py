@@ -38,10 +38,18 @@ _REF = os.path.join(_PYCTRL, "tests", "reference_scan_point", "ab_reference.json
 
 def _pairs():
     import BlueLACScan
+    import CoolingScan
+    import CoolingScan_RNR
+    import ImagingLifetimeScan
+    import ReleaseRecaptureScan
     import Spectrum556Scan
     return {
-        "bluelac":     (BlueLACScan.build,     "BlueTweezerLoadingSeq"),
-        "spectrum556": (Spectrum556Scan.build, "PushoutSurvivalSeq"),
+        "bluelac":         (BlueLACScan.build,         "BlueTweezerLoadingSeq"),
+        "spectrum556":     (Spectrum556Scan.build,     "PushoutSurvivalSeq"),
+        "imaginglifetime": (ImagingLifetimeScan.build, "ImagingPushoutSurvivalSeq"),
+        "coolingx2d":      (CoolingScan.build,         "ImagingPushoutSurvivalSeq"),
+        "coolingrnr":      (CoolingScan_RNR.build,     "ReleaseRecaptureSeq"),
+        "releasetime":     (ReleaseRecaptureScan.build, "ReleaseRecaptureSeq"),
     }
 
 
