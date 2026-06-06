@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 5 walkthrough — Run loop & drivers (pyctrl)</title>
+<style>
+  :root {
+    --fg: #1a1a2e; --muted: #5a5a72; --bg: #ffffff; --soft: #f6f8fa;
+    --border: #d8dbe2; --accent: #2d5bd7; --code: #b3306b; --ok: #1a7f37;
+    --warn: #9a6700;
+  }
+  * { box-sizing: border-box; }
+  body {
+    max-width: 880px; margin: 0 auto; padding: 2.4rem 1.4rem 5rem;
+    font: 16px/1.65 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .2rem; }
+  h2 { font-size: 1.35rem; margin: 2.6rem 0 .8rem; padding-bottom: .3rem;
+       border-bottom: 2px solid var(--border); }
+  h3 { font-size: 1.08rem; margin: 1.8rem 0 .5rem; }
+  p, li { color: var(--fg); }
+  a { color: var(--accent); }
+  code {
+    font-family: "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    font-size: .87em; background: var(--soft); color: var(--code);
+    padding: .12em .38em; border-radius: 4px; border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--soft); border: 1px solid var(--border); border-radius: 8px;
+    padding: .9rem 1.1rem; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--fg); font-size: .85em; }
+  blockquote {
+    margin: 1rem 0; padding: .6rem 1.1rem; border-left: 4px solid var(--accent);
+    background: #f3f6ff; color: var(--muted); border-radius: 0 6px 6px 0;
+  }
+  blockquote p { color: var(--muted); margin: .5rem 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid var(--border); padding: .5rem .7rem; text-align: left; vertical-align: top; }
+  th { background: #eef1f6; font-weight: 600; }
+  tbody tr:nth-child(even) { background: #fafbfc; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  .lede { color: var(--muted); font-size: 1.05rem; margin-top: .2rem; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<h1>Phase 5 walkthrough — Run loop &amp; drivers</h1>
+<p class="lede">pyctrl Python front-end migration · the run-loop host, first hardware
+(<span class="ok">core complete + live-verified 2026-06-04</span>; AWG ports hardware-pending)</p>
+
+<blockquote>
+<p><strong>Goal of Phase 5:</strong> drive one real experiment end to end <em>from Python</em> and
+match MATLAB. Phases 0–4 made the front edge — value math, the seq tree, config/globals, and the
+ScanGroup parameter sweep — produce <strong>byte-identical</strong> blobs offline, with the engine
+never loaded. Phase 5 is the first phase that <em>runs</em> those blobs: it hosts the ZMQ job hub
+in the pyctrl process, consumes scan descriptors, compiles each point through the libnacs engine,
+and fires the FPGA / NI DAQ / camera on real hardware — then publishes frames to the same monitor
+and dashboard the MATLAB stack uses.</p>
+<p>This doc walks the run-loop architecture (the three mutually-exclusive backend scenarios, the one
+ZMQ contract, the one descriptor currency), the entry point and the consume loop, the
+device-ownership re-scoping that collapsed "four drivers" down to essentially one real Python
+driver, the abort/pause/start control path (now memmap-free), the executable config, the scan→dashboard
+plumbing, code-snapshot replay, and the 2026-06-04 first-light hardware run. It closes with what is
+deliberately left for the hardware window and Phase 6.</p>
+</blockquote>
+
+<h2>TL;DR</h2>
+<ul>
+  <li><strong>The run loop runs.</strong> <code>python -m launcher.run_loop.runner tcp://…</code>
+    hosts <code>ExptServer.py</code> in the pyctrl process and consumes scan descriptors over ZMQ.
+    On <strong>2026-06-04</strong> it fired FPGA1, clocked out the NI DAQ, captured an Orca frame,
+    and the dashboard showed the loading image <strong>with atoms loaded</strong> — the whole chain
+    pyctrl→FPGA→Orca→relay→monitor→dashboard, end to end.</li>
+  <li><strong>One contract, one currency.</strong> The monitor is a backend-agnostic ZMQ client; the
+    hub (<code>ExptServer.py</code>) is the same code regardless of backend; the scan
+    <strong>descriptor JSON</strong> is the only submission format pyctrl consumes. Because pyctrl is
+    byte-identical (THE ONE RULE), a descriptor yields the same bytes whoever builds it.</li>
+  <li><strong>"Four drivers" is really one.</strong> The FPGA (zynq) and the Siglent <em>sequence</em>
+    output are <strong>engine-owned</strong> (just <code>init_run→start→wait→post_run</code>); the
+    FPGA bytecode even generates the NI clock + start trigger. The only real Python driver in the run
+    loop is <strong>NI DAQ clock-out</strong> (<code>nidaqmx</code>, listen-only). The Siglent/QICK
+    <em>recall</em> paths + camera capture are <strong>sequence callbacks</strong>, armed out-of-band.</li>
+  <li><strong>No memmap on the pyctrl side.</strong> Scenario 3 routes abort/pause/start through the
+    ZMQ <code>check_request</code> gate directly — the file-based MemoryMap is a MATLAB-only artifact.
+    Verified with a two-process integration test + a request-vs-reached paused ack.</li>
+  <li><strong>Config is now code.</strong> <code>pyctrl/expConfig.py</code> is the live source, hot-reloaded
+    per job; the frozen <code>config_reference.json</code> is demoted to a drift oracle. This resolved
+    the config-snapshot staleness bug.</li>
+  <li><strong>Status:</strong> the run-loop <em>host</em> is <span class="ok">complete and live-verified</span>.
+    <span class="warn">Remaining:</span> Siglent + QICK AWG device ports are software-complete but
+    <em>hardware-unverified</em> (need a downtime window + backend restart), and one open
+    rearrange-scan SLM-lock wedge. See "Status &amp; what's left."</li>
+</ul>
+
+<h2>The mental model — three scenarios, pyctrl is #3</h2>
+<p>The architecture rests on a user-ratified constraint: the two run loops (MATLAB and pyctrl)
+<strong>never run at the same time</strong>. That single fact deletes every hard problem a dual
+front-end would otherwise have — no hardware lease, no runtime arbitration, no two-writer
+precedence race, no concurrent-submission reconciliation. There are exactly three mutually-exclusive
+configurations:</p>
+<table>
+  <thead><tr><th>Scenario</th><th>Hub host</th><th>Consumer</th><th>Descriptor→bytes</th><th>Control path</th></tr></thead>
+  <tbody>
+    <tr><td>1 · old monitor + MATLAB <em>(production today)</em></td><td>MATLAB proc</td><td><code>SequenceRunner.m</code></td><td><code>dispatch_descriptor.m</code> / <code>ybStartScan</code></td><td>memmap (unchanged)</td></tr>
+    <tr><td>2 · new monitor + MATLAB</td><td>MATLAB proc</td><td><code>SequenceRunner.m</code></td><td><code>dispatch_descriptor.m</code></td><td>ZMQ → server-side memmap bridge</td></tr>
+    <tr><td>3 · <strong>new monitor + pyctrl</strong></td><td><strong>pyctrl proc</strong></td><td><strong><code>YbExptCtrl/runner.py</code></strong></td><td><strong><code>dispatch_descriptor.py</code></strong></td><td>ZMQ <code>check_request</code> (no memmap)</td></tr>
+  </tbody>
+</table>
+<p>Phase 5 builds <strong>scenario 3</strong>. The cost to MATLAB is ≈ zero: #1 is untouched, #2's
+descriptor path already existed, and in #3 MATLAB is simply off. A startup
+<strong>mutual-exclusion guard</strong> (<code>assert_single_backend</code> — port bind on the
+backend URL + a single-backend ping check) makes concurrency structurally impossible.</p>
+
+<h3>Two submission paths — and why pyctrl consumes only one</h3>
+<p>A scan can start two ways in the MATLAB world: a <strong>JSON descriptor</strong>
+(<code>submit_scan_descriptor</code>, the new monitor) or the <strong>".m run button"</strong>
+(<code>ybStartScan</code>→<code>submit_job</code>, a MATLAB-proprietary byte stream needing a live
+MATLAB). Scenario 3 has no MATLAB, and the run-button payload is MATLAB-only — so
+<strong>pyctrl consumes the descriptor path only</strong>. <code>handle_descriptor_pop</code>
+dispatches a popped descriptor into a JSON job payload pyctrl emits <em>and</em> consumes
+(<code>submit_job</code> + <code>link_descriptor_to_job</code>), reusing the queue-UI linkage
+verbatim. A pyctrl-side <code>ybStartScan</code> (<code>YbExptCtrl/yb_start_scan.py</code>) gives
+MATLAB ergonomics by building a <code>ScanGroup</code> imperatively and <em>exporting</em> it to a
+descriptor — one payload format, no second intra-backend currency.</p>
+
+<h2>The run loop — entry point to inner loop</h2>
+<p>The launch path is deliberately layered so the host stays flat-importable and
+NO-HARDWARE-testable like the rest of the codebase:</p>
+<pre><code>python -m launcher.run_loop.runner tcp://127.0.0.1:1408
+   │
+   ├─ launcher/run_loop/runner.py   THIN shim: -m gives only the package root on sys.path,
+   │                                so it prepends the flat pyproject pythonpath dirs
+   │                                (lib, YbSteps, YbSeqs, YbExptCtrl, tools, + root for expConfig.py)
+   │                                then delegates to:
+   └─ YbExptCtrl/runner.py::main → serve(url)        the real host (port of SequenceRunner.m)</code></pre>
+<p><code>serve(url)</code> wires the pieces and runs the loop:</p>
+<pre><code>serve(url):
+    assert_single_backend(url)              # refuse to start if another backend is alive
+    server  = ExptServer(url)               # host the ZMQ job hub IN this process
+    seqcfg  = load_configs()                # SeqConfig.load_real() from expConfig.py + config.yml
+    camera  = open_camera(seqcfg)           # pylablib OrcaCamera (NumImages>0 paths)
+    run     = make_engine_run(server, camera, seqcfg)   # the per-job engine closure
+    install SIGTERM/SIGINT handlers         # → clean DCAM release in finally
+    consume_loop(server, should_stop, run_job_fn=…, dispatch_pop=…)</code></pre>
+<p>Inside <code>consume_loop</code> each iteration does three things, in order: pump
+<strong>camera commands</strong> (cooling/ROI/exposure/start-stop from the monitor),
+<strong>dispatch descriptors</strong> (<code>handle_descriptor_pop</code> turns any queued
+descriptors into jobs), and <strong>run the next job</strong> (<code>run_job</code>). When the queue
+is empty it falls to the idle scheduler (dummy/last-frame replay). The per-job flow:</p>
+<pre><code>handle_descriptor_pop(server)      # descriptor → submit_job(payload, summary) + link
+run_job(server, payload)           # YbExptCtrl/sequence_runner.py
+    build run-order + Scan.Params  # prep layer (ports ybBuildScanJob, NOT runSeq2 randperm)
+    dispatch_descriptor(payload)   # → (seq_fn, ScanGroup)  inverse of the .m builder
+    make_engine_run.run(seq, sg):
+        for n in run-order:                       # the inner loop = ExpSeq(getseq(n)) → bytes
+            seq = ExpSeq(sg.getseq(n))            #   (Phase 0–4 front edge, byte-identical)
+            SequenceFn(seq); serialize(seq)
+            init_run → pre_run → start → wait → post_run     # ENGINE drives the hardware
+            (callbacks fire: AWG recall, camera capture)
+            check_request()                       # abort / pause / start gate, between shots</code></pre>
+<blockquote>
+<p>The inner loop is the same shape as the MATLAB runner, and the front-edge (everything up to
+<code>serialize</code>) is exactly the Phase 0–4 code already pinned byte-for-byte. Phase 5 adds
+only what surrounds it: the hub, the dispatch, the engine calls, the device touches, and the control
+gate.</p>
+</blockquote>
+
+<h2>Device ownership — why "four drivers" is really one</h2>
+<p>The headline scope ("FPGA + NI + Siglent + QICK + camera") reads like five drivers. Verified
+against <code>lib/ExpSeq.m</code>, <code>config.yml</code>, and the libnacs C++ zynq/nidaq backends,
+the run loop touches hardware in exactly <strong>one</strong> place (<code>run_bseq</code>), and the
+touch is of three kinds:</p>
+<table>
+  <thead><tr><th>Kind</th><th>Devices</th><th>What pyctrl does</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Engine-owned</strong><br>(zero front-end driver)</td>
+      <td>FPGA1 (<code>zynq</code>) · Siglent <code>AWG1</code> <em>sequence</em> output</td>
+      <td>Nothing device-specific — they ride out on <code>init_run → pre_run → start → wait → post_run</code>.
+      The FPGA bytecode also <em>generates</em> the NI DAQ <strong>sample clock</strong> (400 kHz on a
+      dedicated CLOCK line) and the <strong>start trigger</strong> (FPGA <code>TTL0</code>, reserved).
+      Wiring: FPGA clock → NI <code>PFI0</code>; FPGA TTL0 → NI <code>PFI1</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>Front-end-owned</strong><br>(the one real driver)</td>
+      <td>NI DAQ clock-out (PCIe-6738)</td>
+      <td><code>devices/nidaq/nidaq_runner.py</code> — a fresh port onto the <code>nidaqmx</code> package.
+      It does <em>not</em> generate the clock; it configures the card to <strong>listen</strong>
+      (<code>cfg_samp_clk_timing(source="/Dev1/PFI0", FINITE)</code> +
+      <code>cfg_dig_edge_start_trig("/Dev1/PFI1", RISING)</code>), transposes, writes, starts, waits.</td>
+    </tr>
+    <tr>
+      <td><strong>Callback-invoked</strong><br>(armed out-of-band)</td>
+      <td>Siglent <em>recall</em> · QICK FPGA_AWG · camera capture</td>
+      <td>Sequence callbacks (<code>regBeforeStart</code> / <code>regAfterEnd</code>), TTL-triggered.
+      The run loop only needs to <em>invoke</em> the registered callbacks; the callback-registration
+      infra was already ported (<code>exp_seq.py</code> <code>reg_before_start</code>,
+      <code>root_seq.py</code> <code>before_bseq_cbs</code>).</td>
+    </tr>
+  </tbody>
+</table>
+<blockquote>
+<p><strong>The #1 silent-bug risk:</strong> MATLAB queues sample-major <code>[nsamps, nchns]</code>;
+<code>nidaqmx</code> writes channel-major <code>[nchns, nsamps]</code> — a <strong>transpose</strong>
+is required and there is <em>no error</em> if you get it wrong (the card just clocks out garbage).
+Verified non-degenerate both compile-only and live (14 ch × 1048 samps, every column). The clock rate
+is deliberately set to <code>500e3</code> as an over-estimate of the real 400 kHz — an
+<em>under</em>-estimate makes the card stop early.</p>
+</blockquote>
+
+<h3>Reuse vs PORT (corrected 2026-06)</h3>
+<table>
+  <thead><tr><th>Device</th><th>Reach</th><th>Decision</th><th>pyctrl module</th></tr></thead>
+  <tbody>
+    <tr><td>FPGA1 (zynq)</td><td>engine</td><td>no driver</td><td>— (engine calls)</td></tr>
+    <tr><td>NI DAQ</td><td><code>nidaqmx</code></td><td><strong>PORT</strong> (the one real driver)</td><td><code>devices/nidaq/nidaq_runner.py</code></td></tr>
+    <tr><td>Camera capture</td><td><code>pylablib</code></td><td><strong>PORT</strong> (prod = MATLAB IMAQ in <code>OrcaImag.m</code>; <code>ExptServer</code> only <em>relays</em>)</td><td><code>devices/orca/orca_camera.py</code> + <code>lib/frame_capture.py</code></td></tr>
+    <tr><td>Siglent recall</td><td><code>pyvisa</code></td><td><strong>PORT</strong> (prod = native MATLAB <code>visadev</code>, no Python client)</td><td><code>devices/sigilent_awg/</code></td></tr>
+    <tr><td>QICK FPGA_AWG</td><td>socket</td><td><strong>REUSE pattern</strong> (1:1 with <code>FPGA_AWG_client.py</code>; stdlib socket, no vendor dep)</td><td><code>devices/qick_awg/</code></td></tr>
+  </tbody>
+</table>
+
+<h2>Control — abort / pause / start without memmap</h2>
+<p>In scenarios 1–2 the control flags live in a file-based MemoryMap that MATLAB polls. Scenario 3 has
+no MATLAB and no memmap: the monitor sends ZMQ verbs (<code>pause_seq</code> / <code>abort_seq</code> /
+<code>start_seq</code>), the hub records them, and the inner loop reads them through the
+<code>check_request</code> gate between shots. The monitor side is backend-aware:
+<code>memmap_signal.mmap_open(backend)</code> returns <code>None</code> for non-MATLAB backends, so the
+Tkinter panel falls through to ZMQ and the dashboard branches on <code>YB_BACKEND</code>.</p>
+<ul>
+  <li><strong>Abort</strong> stops the run-order loop and finishes the job; a <strong>stale-abort
+    wedge</strong> (a leftover Abort flag silently making the next scan run 0 iterations) is fixed by
+    <strong>clearing all control flags at job start</strong>.</li>
+  <li><strong>Pause</strong> is request-vs-<em>reached</em>: the loop acks when it has actually reached
+    the paused state, not merely received the request, so the monitor can distinguish "Pausing…" from
+    "Paused."</li>
+  <li>An <strong>abort-while-idle</strong> gate keeps a pause/abort sent to an empty queue from
+    poisoning the next job.</li>
+</ul>
+<p>Verified with a two-process integration test (one process runs the loop, another sends ZMQ
+control) and unit tests for the reached-paused ack and the clear-at-job-start fix.</p>
+<blockquote>
+<p><strong>Known open item:</strong> <code>get_status</code> coarseness — pyctrl reports a single ZMQ
+status string; the rich <code>Pausing…</code>/idle-dummy sub-states were memmap-only and remain an
+optional future <code>get_status_rich</code> verb. (Separately, a now-resolved bug had
+<code>get_status</code> stuck on "running" after a finite scan — fixed via
+<code>mark_idle_if_queue_empty</code>, live-verified 2026-06-05.)</p>
+</blockquote>
+
+<h2>Config — executable <code>expConfig.py</code>, hot-reloaded</h2>
+<p>Phases 0–4 fed off a frozen JSON config snapshot. Phase 5 made the config <strong>code</strong>:
+<code>pyctrl/expConfig.py</code> is the twin of <code>matlab_new/expConfig.m</code> and the live
+source. <code>SeqConfig.load_real()</code> builds from it, and the runner hot-reloads it per job
+(<code>load_real(reload=True)</code>, preserving <code>SeqConfig.G</code>) so a recalibration edit
+goes live <em>without a backend restart</em>. The engine <code>config.yml</code> was copied into the
+submodule too, so the front-end is self-contained.</p>
+<p>The committed <code>config_reference.json</code> is <strong>demoted to a drift oracle</strong>:
+<code>tests/test_exp_config.py</code> asserts <code>expConfig.py</code> ⇔ snapshot and fails loudly
+on drift, and the per-point byte oracles are a second net. This resolved the config-snapshot
+staleness bug. <strong>Editing policy (2026-06-05):</strong> <code>expConfig.py</code> is the source
+of truth — recalibrate it, regenerate <code>config_reference.json</code> via
+<code>tools/capture_config_reference.py</code> (no MATLAB), then sync <code>expConfig.m</code> and
+re-capture the MATLAB byte oracles to keep byte-equality (THE ONE RULE).</p>
+
+<h2>Scan → dashboard plumbing</h2>
+<p>So the new monitor shows the same scan metadata the MATLAB stack does, the runner emits three
+things, all from <code>lib/scan_summary.py</code> + <code>lib/scan_prep.py</code>:</p>
+<table>
+  <thead><tr><th>What</th><th>Shape</th><th>Consumed by</th></tr></thead>
+  <tbody>
+    <tr><td><code>build_descriptor_summary</code></td><td>the <code>ybScanSummary.m</code> dict: axes <code>[{dim,name,min,max,npts}]</code>, fixed overrides, <code>num/total_per_group</code></td><td>queue view (dashboard <code>_q_row</code>/<code>_q_axes</code> + Tkinter <code>queue_pane</code>) — attached to BOTH the queue entry and the running job row</td></tr>
+    <tr><td><code>scangroup_scan_config</code></td><td>the on-disk scan-config: <code>base.vars</code> (the sweeps), <code>base.params</code> (overrides), <code>ScanName</code>, <code>PlotScale</code></td><td>the monitor's <code>DataManager</code> live scan-info panel + scan-curve x-axis</td></tr>
+    <tr><td><code>config['Params']</code></td><td>the realized run-order (1-based <code>Scan.Params</code>), built up front in the prep layer</td><td><code>compute_scan_curve</code> — buckets each shot into its sweep point (finite scans only; <code>rep=0</code> forever emits none)</td></tr>
+  </tbody>
+</table>
+<p>Beyond MATLAB, the baseline <code>SeqConfig.get().consts</code> is embedded as
+<code>config['expConfig']</code> so a scan is fully reproducible (<em>effective = expConfig ⊕ ScanGroup
+overrides ⊕ sweep point</em>) — MATLAB saved only the user deltas. On the monitor side (an authorized
+edit), <code>mat_reader.load_scan_config</code> coerces numeric JSON lists → float ndarrays so the
+<code>.mat</code>-shaped consumers read a pyctrl JSON config identically to a scipy <code>.mat</code>.</p>
+
+<h3>Production run-order — scramble-within-pass + stack</h3>
+<p>pyctrl randomizes like MATLAB <em>production</em> (<code>ybBuildScanJob</code>), NOT runSeq2's global
+<code>randperm</code>. The run-order construction lives in the <strong>prep layer</strong>
+(<code>lib/scan_prep.py</code>): <code>stack()</code>, <code>scramble_groups()</code> (shuffle
+<em>within</em> each consecutive block, boundaries intact), and <code>build_scan_order(nseqs, *,
+stack_num, scramble, rng)</code> → <code>StackNum</code> back-to-back passes over <code>1..nseqs</code>,
+each pass independently shuffled when scrambling. The scan loop (<code>run_seq.py</code>) is unchanged
+— it just runs the order it is handed.</p>
+<table>
+  <thead><tr><th>Knob</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>passes (<code>StackNum</code>)</td><td>explicit <code>rep</code> opt (≥1, bypasses the formula) <em>else</em> <code>max(ceil(NumPerGroup/nseqs), 2)</code> (NumPerGroup default 200)</td></tr>
+    <tr><td>scramble</td><td><strong>DEFAULT OFF, runp-only</strong>: <code>bool(runp.Scramble, default 0)</code> — on only when the scan sets <code>g.runp().Scramble = 1</code>. The <code>random</code> opt does NOT control per-pass scramble (it only selects runSeq2's global shuffle on the <code>rep=0</code> forever path).</td></tr>
+  </tbody>
+</table>
+<p><span class="warn">Note:</span> not byte-reproducible vs MATLAB's <code>randperm</code> — it is
+<em>behavior</em>-faithful (the per-block invariant matches; the realized shuffle does not).</p>
+
+<h2>Per-run code snapshot + replay</h2>
+<p>Every scan records <em>what code ran</em> (mirroring the SLM server's
+<code>code_snapshot.py</code>). <code>scan_prep.write_scan_config</code> calls
+<code>snapshot_code()</code> (best-effort; kill-switch <code>YB_CODE_SNAPSHOT=0</code>):
+content-addressed blobs at <code>&lt;DATA&gt;/_code_snapshots/&lt;sha&gt;.py</code> (write-once dedup)
++ a readable per-run tree at <code>_runs/&lt;scan_id&gt;/</code> (hardlinks at original rel paths) +
+<code>manifest.json</code> (hashes, roles, git state). <strong>Roles</strong> are the
+<code>seq_reload</code> boundary: <code>YbSeqs/YbSteps/YbScans/YbRearrangement</code> = <em>experiment</em>
+(replayable); <code>lib</code>/<code>expConfig</code>/<code>config.yml</code>/<code>YbExptCtrl</code> =
+<em>record-only</em> (swapping framework classes breaks <code>isinstance</code>/singletons — only
+<code>lib_mismatch()</code>-detected, never replayed).</p>
+<p><strong>Replay</strong> is opt-in: a descriptor may carry
+<code>code_snapshot: {scan_id: N}</code> (the dashboard's "re-queue + code"). <code>run_job</code> wraps
+its dispatch + run in <code>snapshot_syspath(...)</code> — prepends that run's snapshot experiment dirs
+to <code>sys.path</code>, evicts cached experiment modules, runs, restores.
+<strong>Absent field → <code>nullcontext</code> → byte-identical to before</strong>, so every normal
+run is untouched.</p>
+
+<h2>Camera capture — pylablib + the wire format</h2>
+<p>Production capture is MATLAB IMAQ (<code>videoinput('hamamatsu')</code> in <code>OrcaImag.m</code>);
+<code>ExptServer.py</code> is only the image <strong>relay</strong> (a mailbox). pyctrl therefore
+<strong>captures</strong> via <code>pylablib</code> (<code>devices/orca/orca_camera.py</code>) and feeds
+the hosted relay (<code>lib/frame_capture.py</code> <code>store_imgs</code>). Validated on the real
+C15550-20UP: internal snap, external TTL-triggered capture (after fixing a rising-edge polarity
+gotcha), MATLAB-IMAQ-parity <code>start_video</code>/<code>stop_video</code>/<code>frames_available</code>/
+<code>flush</code>/<code>is_running</code> + cooling/ROI/exposure. <strong>Trigger confirmed
+<code>FPGA1/TTL54</code></strong> (not TTL14 = QICK).</p>
+<blockquote>
+<p><code>store_imgs</code>'s wire format is a <strong>column-major flatten + 3-element shape prefix</strong>
+packed MATLAB-side — the pyctrl capturer must reproduce it or yb_analysis mis-reads the frames.
+⚠ <code>get_num_imgs</code> reads 0 because <code>get_imgs</code> resets <code>nseq_imgs</code>; confirm
+capture out-of-band via <code>get_seq_num</code> deltas instead.</p>
+</blockquote>
+
+<h2>First light — the 2026-06-04 hardware run</h2>
+<p>The point of Phase 5. A console <code>serve()</code>
+(<code>python -m launcher.run_loop.runner tcp://127.0.0.1:1408</code>, <code>.venv-engine</code>)
+consumed descriptors over ZMQ and each path was verified:</p>
+<table>
+  <thead><tr><th>Path</th><th>Test seq</th><th>What proved it</th></tr></thead>
+  <tbody>
+    <tr><td><strong>FPGA1 fire</strong></td><td><code>get_my_seq</code> (FPGA-only, NumImages=0)</td><td>full <code>init_run→pre_run→start→wait→post_run</code> on the board; <code>DDS0/AMP=0</code> read back on the zynq dashboard. The per-bseq NI None-guard correctly SKIPPED the analog-free card.</td></tr>
+    <tr><td><strong>NI clock-out</strong></td><td><code>TweezerLoadingSeq</code> (14 NI ch, NumImages=0)</td><td>the externally-clocked FINITE AO task COMPLETED — only possible if the FPGA emitted the PFI0 clock + PFI1 trigger and the card clocked out every sample. The #1 transpose verified non-degenerate live.</td></tr>
+    <tr><td><strong>Camera capture</strong></td><td><code>TweezerLoadingSeq</code> (NumImages=1)</td><td><code>make_capture_post_cb</code> ran in the loop; <code>get_seq_num</code> advanced once per shot; the monitor consumed frames via <code>get_imgs</code>, and the <strong>dashboard showed the loading image WITH ATOMS LOADED</strong> (user-confirmed) — the full visual chain.</td></tr>
+  </tbody>
+</table>
+<p>A key libnacs fact surfaced and is now pinned: the NI sample clock lives in the
+<strong>bytecode</strong> (<code>get_zynq_bytecode</code>, baked by <code>bc_gen</code> from
+<code>set_clock_active_time</code>), NOT in <code>get_zynq_clock</code> — which returns empty after
+<code>generate()</code> (<code>m_clocks.clear()</code>) unless dump is enabled first.</p>
+
+<h3>The pre-flight harness (<code>tools/</code>)</h3>
+<p>To de-risk before any <code>start()</code>, the harness runs compile-only codegen checks first:</p>
+<ul>
+  <li><code>preflight_hwtest1.py</code> — FPGA byte/codegen, all hardware-free.</li>
+  <li><code>preflight_ni.py</code> — NI transpose + dump-enabled clock read-back.</li>
+  <li><code>preflight_camera.py</code> — camera path.</li>
+  <li><code>submit_hwtest1.py</code> / <code>submit_ni.py</code> / <code>submit_camera.py</code> — dry / <code>--fire</code> descriptor submitters.</li>
+  <li><code>query_backend.py</code> — status/queue probe.</li>
+</ul>
+
+<h2>What's pinned — test status</h2>
+<table>
+  <thead><tr><th>Check</th><th>Surface</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>Full no-hardware suite</td><td><code>pytest pyctrl -m no_hardware</code> (engine + hardware never touched)</td><td><span class="ok">763 passed</span> (grows per work item)</td></tr>
+    <tr><td>Run-loop host</td><td><code>test_runner.py</code>, <code>test_sequence_runner.py</code>, <code>test_exptserver_queue.py</code></td><td><span class="ok">pass</span> (injectable <code>consume_loop</code>/<code>run_job</code>, no hardware)</td></tr>
+    <tr><td>Two-process abort/pause</td><td>real ZMQ, one proc loops + one sends control</td><td><span class="ok">pass</span></td></tr>
+    <tr><td>Run-order / scramble / Scan.Params</td><td><code>test_scan_prep.py</code> + <code>TestRunOrder</code> + Params threading</td><td><span class="ok">pass</span> (3-lens adversarial review = ship)</td></tr>
+    <tr><td>Config drift oracle</td><td><code>test_exp_config.py</code>: <code>expConfig.py</code> ⇔ <code>config_reference.json</code></td><td><span class="ok">pass</span></td></tr>
+    <tr><td>Code snapshot + replay</td><td><code>test_code_snapshot.py</code>, <code>TestCodeSnapshotReplay</code>, <code>TestWriteScanConfigCodeSnapshot</code></td><td><span class="ok">pass</span></td></tr>
+    <tr><td><strong>End-to-end on hardware</strong></td><td>FPGA fire · NI clock-out · camera→dashboard (2026-06-04)</td><td><span class="ok">live-verified</span></td></tr>
+  </tbody>
+</table>
+<pre><code># safe default — no engine, no hardware (runs on the lab PC mid-experiment)
+pytest pyctrl
+
+# launch the scenario-3 backend (downtime / hardware window; engine venv)
+python -m launcher.run_loop.runner tcp://127.0.0.1:1408
+
+# pre-flight a hardware path WITHOUT firing (compile-only codegen check)
+python pyctrl/tools/preflight_ni.py</code></pre>
+
+<h2>Status &amp; what's left</h2>
+<ul>
+  <li><strong>Done + live-verified:</strong> the run-loop host (<code>ExptServer</code> hosting,
+    <code>consume_loop</code>, descriptor dispatch, engine wiring), the NI DAQ driver, camera capture,
+    the abort/pause/start control gate, executable <code>expConfig.py</code> + hot-reload, the
+    scan→dashboard plumbing + production run-order + <code>Scan.Params</code>, code-snapshot replay,
+    and the pre-flight harness. <strong>FPGA + NI + camera ran end-to-end on real hardware 2026-06-04.</strong></li>
+  <li><span class="warn">Remaining for full Phase-5 closeout (hardware window):</span>
+    <ul>
+      <li><strong>Siglent AWG</strong> — software-complete, wired into <code>runner.py</code>
+        (<code>devices/sigilent_awg/</code>, <code>runp().AWGs</code> convention), no-hardware tests green,
+        but <em>never touched a real AWG</em>. Needs a downtime window <strong>+ a backend restart</strong>
+        (the run loop loads once at start). Unverified: USB-VISA connect, the ~20 KB WVDT upload,
+        per-shot recall latency + gated EXT-burst firing, descriptor round-trip of <code>runp().AWGs</code>.
+        Tracker: <code>open-pyctrl-awg-hardware-unverified</code>.</li>
+      <li><strong>QICK FPGA_AWG</strong> — built (<code>devices/qick_awg/</code>, socket protocol +
+        batch-upload/pulse-picking manager) and no-hardware-tested, but <em>not</em> hardware-verified and
+        <strong>not wired into <code>runner.py</code></strong> — the recall driver + scan convention is a
+        deliberate <strong>Phase-6</strong> decision (QICK is invoked from Rydberg/Ramsey/STIRAP steps).</li>
+      <li><strong>SLM-lock wedge on rearrange scans</strong> (<em>open, not root-caused</em>): a pyctrl
+        rearrange scan wedges (lab <code>seq_num</code> frozen, <code>slm</code> lock auto-released,
+        status still "running"), most likely the warmup / <code>max-autotune</code> compile outrunning the
+        10 s <code>SlmScanSession</code> lease on the first shots. The <code>nsteps≤150</code> workaround is
+        NOT sufficient. Needs a backend log captured at the wedge. Tracker:
+        <code>bug-pyctrl-slm-lock-wedge-long-shots</code>.</li>
+    </ul>
+  </li>
+  <li><strong>Next phase:</strong> Phase 6 — full experiment migration (the YbSeqs/YbSteps port that
+    lands the Siglent recall + QICK callbacks in real seqs). Deliberately not started yet.</li>
+</ul>
+
+<footer>
+<strong>See also</strong><br>
+· <code>PYTHON_FRONTEND_PLAN.md</code> §"Phase 5 — Run loop &amp; drivers" — the plan, device-ownership notes, and the 3-scenario architecture.<br>
+· <code>.claude/skills/pyctrl/references/phase-status.md</code> — the dated Phase-5 progress log (this doc's source of record).<br>
+· <code>.claude/skills/pyctrl/references/runtime-design.md</code> — monitor↔backend control, dispatch_descriptor, camera/NI-DAQ design.<br>
+· <code>.claude/skills/pyctrl/references/config-and-capture.md</code> — executable <code>expConfig.py</code> + the drift oracle + engine-free capture.<br>
+· <code>docs/phase4_walkthrough.html</code> — the previous phase (ScanGroup).
+</footer>
+
+</body>
+</html>
