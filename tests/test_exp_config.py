@@ -1,12 +1,17 @@
 """Phase-5 expConfig.py: executable config drift oracle + hot-reload.
 
-The executable ``expConfig.py`` is pyctrl's production config source. While MATLAB is still
-production it must resolve to the SAME config as the committed MATLAB capture
-(``tests/reference/config_reference.json``, produced engine-free by
-``tools/capture_config_reference.m``). This test is the DRIFT ORACLE: if a recalibration updates
-``matlab_new/expConfig.m`` (and the re-captured snapshot) but ``expConfig.py`` is not mirrored,
-it fails loudly -- converting the old SILENT snapshot staleness (bug-pyctrl-config-snapshot-staleness)
-into a caught error. NO MATLAB needed at test time (the committed snapshot is the ground truth).
+The executable ``expConfig.py`` is pyctrl's production config source AND (since 2026-06-05, the
+gradual MATLAB -> pyctrl switch) the human-edited SOURCE OF TRUTH for the front-end config. The
+committed snapshot ``tests/reference/config_reference.json`` is a frozen copy of
+``expConfig.build_config()`` (regenerated engine-free by ``tools/capture_config_reference.py``).
+This test is the DRIFT ORACLE: an accidental/unintended edit to ``expConfig.py`` that is not a
+deliberate recalibration fails loudly until the snapshot is re-captured on purpose -- converting
+the old SILENT snapshot staleness (bug-pyctrl-config-snapshot-staleness) into a caught error. NO
+MATLAB needed at test time or to regenerate the snapshot.
+
+(THE ONE RULE byte-equality vs MATLAB is enforced separately by the byte oracles --
+``ybseqs_reference.json`` / ``scan_point_reference.json`` -- which stay MATLAB-captured. A
+recalibration still re-captures those from MATLAB; this config oracle no longer depends on MATLAB.)
 
 Also checks that ``SeqConfig.load_real()`` now sources the executable config, and that the
 per-job hot-reload updates in place while preserving runtime globals (``SeqConfig.G``).
@@ -32,9 +37,10 @@ def _snapshot_config():
 
 
 # --------------------------------------------------------------------------- #
-# drift oracle: expConfig.py resolves identically to the MATLAB capture
+# drift oracle: expConfig.py resolves identically to the committed snapshot
+# (the snapshot is a frozen capture of expConfig.py itself -- the source of truth)
 # --------------------------------------------------------------------------- #
-def test_exec_config_matches_matlab_snapshot():
+def test_exec_config_matches_committed_snapshot():
     snap = _snapshot_config()
     exe = SeqConfig(expConfig.build_config())
     # Compare each resolved table; pinpoint the first differing key for a useful failure.
