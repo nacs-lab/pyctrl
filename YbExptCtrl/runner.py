@@ -518,16 +518,28 @@ def make_engine_run(server, camera, seq_config, log=None):
         # trigger / NI arm / camera frame. Wholly best-effort: never affects the run.
         seq_dump_session = _make_seq_dump_session(scan_id, scangroup, scan_name, log)
         seq_on_compile = seq_dump_session.on_compile if seq_dump_session is not None else None
+        # --- Runtime-global capture (Q-F), UNGATED ------------------------------------- #
+        # ALWAYS on, independent of the dump toggle: record each unique sequence's injected
+        # runtime globals (e.g. the 616-EOM "from" frequency) into <scan_dir>/sequence/
+        # globals.json so a never-dumped scan stays faithfully reconstructable offline.
+        globals_session = _make_globals_session(scan_id, scan_name, log)
+        seq_on_globals = globals_session.on_globals if globals_session is not None else None
         try:
             return run_scan_group(seq, scangroup, control=control,
                                   pre_cb=pre, post_cb=post,
                                   new_run=seq_manager.new_run,
-                                  on_compile=seq_on_compile, **opts)
+                                  on_compile=seq_on_compile,
+                                  on_globals=seq_on_globals, **opts)
         finally:
             if seq_dump_session is not None:
                 try:
                     seq_dump_session.finalize()                  # write manifest.json
                 except Exception:  # noqa: BLE001 - dump finalize never fails the run
+                    pass
+            if globals_session is not None:
+                try:
+                    globals_session.finalize()                   # write globals.json
+                except Exception:  # noqa: BLE001 - globals finalize never fails the run
                     pass
             if armed:
                 try:
@@ -589,6 +601,29 @@ def _make_seq_dump_session(scan_id, scangroup, scan_name, log):
     except Exception as exc:  # noqa: BLE001
         try:
             log("[runner] sequence auto-dump setup failed: %s" % exc)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
+def _make_globals_session(scan_id, scan_name, log):
+    """Build a :class:`seq_dump.GlobalsCaptureSession` (Q-F runtime-global capture).
+
+    UNGATED -- created for EVERY scan, independent of the "save sequence dumps" toggle,
+    so a never-dumped scan still records its injected runtime globals (for faithful
+    offline reconstruction). Best-effort: any setup failure returns ``None`` so the
+    capture never affects a run. ``finalize`` itself skips writing when no globals exist.
+    """
+    try:
+        import os
+        from seq_dump import GlobalsCaptureSession, SEQ_SUBDIR
+        from scan_prep import scan_dir
+        sdir = os.path.join(scan_dir(scan_id), SEQ_SUBDIR)
+        return GlobalsCaptureSession(sdir, scan_id=str(int(scan_id)),
+                                     seq_name=scan_name or "seq", log=log)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            log("[runner] runtime-global capture setup failed: %s" % exc)
         except Exception:  # noqa: BLE001
             pass
         return None

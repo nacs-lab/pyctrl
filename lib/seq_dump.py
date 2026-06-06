@@ -42,6 +42,7 @@ logger = logging.getLogger("pyctrl.seq_dump")
 
 SEQ_SUBDIR = "sequence"
 MANIFEST_NAME = "manifest.json"
+GLOBALS_NAME = "globals.json"
 
 
 def _safe(s):
@@ -219,4 +220,108 @@ class SeqDumpSession:
             return manifest
         except Exception as exc:  # noqa: BLE001
             logger.warning("seq_dump finalize failed: %s", exc)
+            return None
+
+
+class GlobalsCaptureSession:
+    """Capture each unique compiled sequence's injected RUNTIME GLOBALS (Q-F).
+
+    Runtime globals -- e.g. the 616-EOM "from" frequency ``freq616global``, set by a
+    ``before_start`` callback from the rolling ``runtime_state`` mmap -- live in NO
+    code/config artifact. The ``.json`` sidecar holds only the *target* frequency; the
+    code snapshot holds only code. So a from-scratch offline rebuild cannot reproduce a
+    waveform whose geometry depends on such a global (the 616-EOM opening ramp), unless
+    we record the value that was actually injected at run time.
+
+    This session reads ``seq.get_global(id)`` for each ``seq.globals`` entry ONCE per
+    unique ``seqid`` in the after_end window (run_seq._arm_after_end_once) -- after the
+    before_start callbacks set the value and before ``reset_globals`` wipes the
+    non-persist ones -- and writes them to ``<scan_dir>/sequence/globals.json`` keyed by
+    seqid. A later offline reconstruction (tools/reconstruct_scan.py) ``set_global``s
+    these before ``get_nominal_output`` -> faithful global channels even with NO ``.seq``.
+
+    **UNGATED on purpose:** created for EVERY scan, independent of the ``.seq`` dump
+    toggle. That is the whole point -- if it only ran inside the dump, then any scan
+    with captured globals would also already have a ``.seq`` and never need
+    reconstruction. (Scans run before this landed have neither captured globals nor,
+    usually, a ``.seq`` -> their global channels stay "approximate"; Q-C legacy-only.)
+
+    Storage choice (vs a post-run ``.json``-sidecar rewrite): a separate ``globals.json``
+    in the same ``sequence/`` dir, because (a) ``scan_prep`` writes the ``.json`` at scan
+    START, before any global is injected, and (b) it keeps the capture independent of the
+    (possibly large) sidecar and co-located with the manifest/``.seq`` it pairs with.
+
+    Best-effort throughout: a capture or write failure logs and NEVER breaks the scan.
+    """
+
+    def __init__(self, seq_dir, *, scan_id=None, seq_name=None, log=None):
+        self.seq_dir = seq_dir
+        self.scan_id = scan_id
+        self.seq_name = seq_name
+        self._log = log or (lambda _m: None)
+        self.by_seqid = {}          # str(seqid) -> [{"id","value","persist","init_val"}]
+        self._made_dir = False
+
+    def _ensure_dir(self):
+        if not self._made_dir:
+            os.makedirs(self.seq_dir, exist_ok=True)
+            self._made_dir = True
+
+    def on_globals(self, arg0, seqid, seq):
+        """Capture this unique compiled sequence's runtime globals (deduped by seqid).
+
+        Armed on the seq's after_end callbacks (run_seq._arm_after_end_once); fires
+        during the first shot of each unique seq. Idempotent per seqid via
+        ``self.by_seqid``. Reads the public ``seq.get_global`` so a global SeqVal or a
+        raw id both resolve.
+        """
+        key = str(seqid)
+        if key in self.by_seqid:
+            return
+        entries = []
+        try:
+            for g in (getattr(seq, "globals", None) or []):
+                try:
+                    gid = int(g["id"])
+                    val = seq.get_global(gid)
+                    entries.append({
+                        "id": gid,
+                        "value": _jsonable(val),
+                        "persist": bool(g.get("persist")),
+                        "init_val": _jsonable(g.get("init_val")),
+                    })
+                except Exception:  # noqa: BLE001 - one bad global never aborts the rest
+                    continue
+        except Exception as exc:  # noqa: BLE001 - capture never breaks the scan
+            logger.warning("globals capture failed (seqid=%s): %s", seqid, exc)
+            self._log("[seq_dump] globals capture failed for seqid=%s: %s" % (seqid, exc))
+            return
+        self.by_seqid[key] = entries
+        self._log("[seq_dump] captured %d runtime global(s) for seqid=%s"
+                  % (len(entries), key))
+
+    def finalize(self):
+        """Write ``globals.json`` (keyed by seqid); return the doc, or None.
+
+        Skips writing entirely when NO seqid captured any global -- so a scan whose
+        sequences have no runtime globals doesn't litter an otherwise-absent
+        ``sequence/`` dir (there is nothing to reconstruct-from-globals).
+        """
+        if not any(self.by_seqid.values()):
+            return None
+        try:
+            self._ensure_dir()
+            doc = {
+                "scan_id": self.scan_id,
+                "seq": self.seq_name,
+                "globals": self.by_seqid,
+            }
+            tmp = os.path.join(self.seq_dir, GLOBALS_NAME + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(doc, f, indent=2)
+            os.replace(tmp, os.path.join(self.seq_dir, GLOBALS_NAME))
+            self._log("[seq_dump] globals.json: %d unique seq(s)" % len(self.by_seqid))
+            return doc
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("seq_dump globals finalize failed: %s", exc)
             return None

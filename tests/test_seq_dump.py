@@ -79,6 +79,19 @@ def _run_real_firing_after_end(seq):
         cb(seq)
 
 
+def _fake_seq_with_globals(tag, globals_map):
+    """A fake ExpSeq exposing the runtime-global API the capture reads.
+
+    ``globals_map`` is {global_id: injected_value}; ``globals`` mirrors ExpSeq's list of
+    {'id','persist','init_val'} dicts and ``get_global(id)`` returns the injected value.
+    """
+    seq = _fake_seq(tag)
+    seq.globals = [{"id": gid, "persist": True, "init_val": 0.0}
+                   for gid in globals_map]
+    seq.get_global = lambda gid, _m=globals_map: _m[int(gid)]
+    return seq
+
+
 # --------------------------------------------------------------------------- #
 # SeqDumpSession
 # --------------------------------------------------------------------------- #
@@ -190,3 +203,92 @@ def test_run_scan_group_no_on_compile_is_fine():
         seq_config=FakeSeqConfig(), control=None)
     assert res["status"] == "ok"
     assert res["nseq"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# GlobalsCaptureSession (Q-F: UNGATED runtime-global capture)
+# --------------------------------------------------------------------------- #
+def test_globals_capture_dedup_and_write(tmp_path):
+    seq_dir = str(tmp_path / "sequence")
+    sess = seq_dump.GlobalsCaptureSession(seq_dir, scan_id="20250619170317",
+                                          seq_name="RydDetSeq")
+    sess.on_globals(1, 10, _fake_seq_with_globals("A", {0: 1.234e8, 1: 5.0}))
+    sess.on_globals(2, 11, _fake_seq_with_globals("B", {0: 9.99e7}))
+    sess.on_globals(3, 10, _fake_seq_with_globals("A2", {0: 0.0}))   # dedup -> ignored
+
+    doc = sess.finalize()
+    assert doc is not None
+    on_disk = json.load(open(os.path.join(seq_dir, "globals.json")))
+    assert on_disk["scan_id"] == "20250619170317"
+    assert on_disk["seq"] == "RydDetSeq"
+    assert set(on_disk["globals"].keys()) == {"10", "11"}
+    # captured value == what get_global returned (the injected runtime value)
+    g10 = {e["id"]: e["value"] for e in on_disk["globals"]["10"]}
+    assert g10 == {0: 1.234e8, 1: 5.0}
+    # seqid 10's repeat (value 0.0) was deduped, NOT overwritten
+    g11 = {e["id"]: e["value"] for e in on_disk["globals"]["11"]}
+    assert g11 == {0: 9.99e7}
+    # per-entry metadata is carried for diagnostics / reconstruction
+    assert on_disk["globals"]["10"][0]["persist"] is True
+
+
+def test_globals_capture_skips_when_no_globals(tmp_path):
+    """A seq with no runtime globals must not litter an otherwise-absent sequence/ dir."""
+    seq_dir = str(tmp_path / "sequence")
+    sess = seq_dump.GlobalsCaptureSession(seq_dir)
+    sess.on_globals(1, 10, _fake_seq_with_globals("A", {}))   # no globals
+    assert sess.finalize() is None
+    assert not os.path.exists(seq_dir)
+
+
+def test_globals_capture_failure_never_raises(tmp_path):
+    seq_dir = str(tmp_path / "sequence")
+    sess = seq_dump.GlobalsCaptureSession(seq_dir)
+    seq = _fake_seq("A")
+    seq.globals = [{"id": 0, "persist": False, "init_val": 0.0}]
+
+    def boom(_gid):
+        raise RuntimeError("engine gone")
+
+    seq.get_global = boom
+    sess.on_globals(1, 10, seq)            # must not raise
+    assert sess.by_seqid == {"10": []}     # the bad global was skipped
+    assert sess.finalize() is None         # nothing to write
+    assert not os.path.exists(seq_dir)
+
+
+def test_run_scan_group_calls_on_globals_once_per_seqid():
+    """on_globals is armed in after_end (UNGATED -- here on_compile is None) and fires
+    once per UNIQUE seqid, like the dump hook."""
+    sg = FakeScanGroup([10, 11, 10, 11], [1e-3, 2e-3, 1e-3, 2e-3])
+    calls = []
+
+    def on_globals(arg0, seqid, seq):
+        calls.append((arg0, seqid, seq.tag))
+
+    def compile_point(seqfn, seqparam):
+        return _fake_seq_with_globals("v=%s" % seqparam["Pushout"]["Time"], {0: 1.0})
+
+    res = run_seq.run_scan_group(
+        seqfn=lambda s: None, scangroup=sg,
+        compile_point=compile_point, run_real=_run_real_firing_after_end,
+        seq_config=FakeSeqConfig(), control=None, on_globals=on_globals)
+
+    assert res["status"] == "ok"
+    assert res["nseq"] == 4
+    assert len(calls) == 2                       # once per unique seqid, not per shot
+    assert {c[1] for c in calls} == {10, 11}
+
+
+def test_run_scan_group_on_globals_not_fired_at_compile():
+    """Like the dump, the capture is ARMED at compile but FIRED only in after_end."""
+    sg = FakeScanGroup([10, 11], [1e-3, 2e-3])
+    calls = []
+    res = run_seq.run_scan_group(
+        seqfn=lambda s: None, scangroup=sg,
+        compile_point=lambda f, p: _fake_seq_with_globals("x", {0: 1.0}),
+        run_real=lambda seq: None,               # never fires after_end_cbs
+        seq_config=FakeSeqConfig(), control=None,
+        on_globals=lambda a, s, q: calls.append(s))
+    assert res["nseq"] == 2
+    assert calls == []                           # nothing captured at compile time
