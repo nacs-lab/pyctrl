@@ -143,8 +143,13 @@ def _apply_globals(s, entries):
     return applied, missing
 
 
-def reconstruct(scan_dir, pts_per_ramp=100):
-    """Regenerate every unique point's ``.seq`` + ``manifest.json`` into ``<scan>/sequence/``."""
+def reconstruct(scan_dir, pts_per_ramp=100, make_xref=True):
+    """Regenerate every unique point's ``.seq`` + ``manifest.json`` into ``<scan>/sequence/``.
+
+    When ``make_xref`` (default), also build ``xref.json`` (param<->channel provenance) via a
+    SEPARATE provenance build per unique point -- so the trusted waveform build above is never
+    perturbed by the tagged values. Best-effort; an xref failure never affects the ``.seq``.
+    """
     scan_dir = os.path.abspath(scan_dir)
     sidecar = _find_sidecar(scan_dir)
     if not sidecar:
@@ -224,14 +229,42 @@ def reconstruct(scan_dir, pts_per_ramp=100):
             json.dump(manifest, fh, indent=2)
         os.replace(tmp, os.path.join(seq_dir, "manifest.json"))
 
+    # xref.json (param<->channel provenance) -- built in a SEPARATE subprocess, because the
+    # provenance hooks live in the LIVE lib while THIS process is running the snapshot's lib
+    # (prepended for byte-faithful waveforms). A fresh process picks up the live lib + hooks.
+    xref = _build_xref_subprocess(scan_dir) if make_xref else None
+
     return {"ok": True, "n_seq": len(unique),
-            "n_points": n_total, "approximate": approximate, "scan_id": scan_id}
+            "n_points": n_total, "approximate": approximate, "scan_id": scan_id,
+            "xref": xref}
+
+
+def _build_xref_subprocess(scan_dir):
+    """Spawn ``provenance_scan.py`` (live lib, engine-free) to write ``xref.json``.
+
+    Best-effort: returns the child's parsed ``XREF_RESULT`` dict, or ``{"ok": False, ...}``
+    -- never raises, so an xref failure can't affect the reconstructed ``.seq`` deliverable.
+    """
+    import subprocess
+    tool = os.path.join(_TOOLS, "provenance_scan.py")
+    try:
+        proc = subprocess.run([sys.executable, tool, "--scan-dir", scan_dir],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=600)
+        for line in proc.stdout.decode("utf-8", "replace").splitlines():
+            if line.startswith("XREF_RESULT:"):
+                return json.loads(line[len("XREF_RESULT:"):])
+        return {"ok": False, "error": "no XREF_RESULT from provenance_scan"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
 
 
 def main(argv):
     ap = argparse.ArgumentParser(description="Offline reconstruct a scan's .seq waveforms.")
     ap.add_argument("--scan-dir", required=True, help="the scan data folder (holds data_*.json)")
     ap.add_argument("--pts-per-ramp", type=int, default=100)
+    ap.add_argument("--no-xref", action="store_true",
+                    help="skip building xref.json (param<->channel provenance)")
     args = ap.parse_args(argv)
 
     _bootstrap_live_path()
@@ -242,7 +275,8 @@ def main(argv):
     saved_fd = os.dup(1)
     os.dup2(devnull, 1)
     try:
-        result = reconstruct(args.scan_dir, pts_per_ramp=args.pts_per_ramp)
+        result = reconstruct(args.scan_dir, pts_per_ramp=args.pts_per_ramp,
+                             make_xref=not args.no_xref)
     except Exception as exc:  # noqa: BLE001 - report, never crash silently
         result = {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc),
                   "tb": traceback.format_exc()}

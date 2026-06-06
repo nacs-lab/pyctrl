@@ -23,6 +23,7 @@ Byte-equality fixes (PYTHON_FRONTEND_PLAN.md Phase 3 audit):
 
 import copy
 
+import provenance
 from sub_props import SubProps
 
 
@@ -179,14 +180,16 @@ class DynProps:
             if is_brace:
                 return SubProps(self, path)            # proxy, no mark
             self._mark(path)
-            return _remove_nanfields(cur)
+            # provenance.on_access is INERT (returns the value unchanged) unless an offline
+            # ProvenanceSession is active -- see lib/provenance.py. Byte path unaffected.
+            return provenance.on_access(self, path, _remove_nanfields(cur))
         # missing: a default is REQUIRED
         default = self._make_default(args)
         self._setpath(path, default)                  # persist
         if is_brace:
             return SubProps(self, path)               # proxy, no mark (default persisted)
         self._mark(path)
-        return _remove_nanfields(default)
+        return provenance.on_access(self, path, _remove_nanfields(default))
 
     @staticmethod
     def _make_default(args):

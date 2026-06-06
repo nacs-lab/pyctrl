@@ -12,6 +12,7 @@ is byte-load-bearing.
 
 import inspect
 
+import provenance
 from ifelse import ifelse
 from ir_pulse import IRPulse
 from mat_utils import is_logical, is_numeric
@@ -67,7 +68,12 @@ class TimeStep(TimeSeq):
         if is_logical(cond) and not cond:
             return self
         ctx = toplevel.seq_ctx
+        raw = pulse
         pulse = self._resolve_pulse(ctx, toplevel, pulse)
+        # INERT unless an offline ProvenanceSession is active (lib/provenance.py); collects
+        # the param<->channel edge from the raw + resolved value. No ctx mutation, so the
+        # byte-load-bearing next_obj_id() ordering below is preserved.
+        provenance.on_pulse(toplevel, cid, raw, pulse)
         id_ = ctx.next_obj_id()
         self.pulses[cid] = Pulse(id_, pulse, cond)
         return self
@@ -82,7 +88,9 @@ class TimeStep(TimeSeq):
         if is_logical(cond) and not cond:
             return self
         ctx = toplevel.seq_ctx
+        raw = pulse
         pulse = self._resolve_pulse(ctx, toplevel, pulse)
+        provenance.on_pulse(toplevel, cid, raw, pulse)   # INERT unless a session is active
         id_ = ctx.next_obj_id()
         self.pulses[cid] = Pulse(id_, pulse, cond)
         return self
