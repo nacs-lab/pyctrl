@@ -27,7 +27,7 @@ def build_config():
     """Return the raw config dict (aliases / consts / defaults / NI wiring) for ``SeqConfig``."""
     channel_alias = _channel_alias()
     consts = _consts()
-    default_vals = _default_vals()
+    default_vals = _default_vals(consts)
     return {
         "channel_alias_keys": list(channel_alias.keys()),
         "channel_alias_vals": list(channel_alias.values()),
@@ -244,8 +244,13 @@ def _consts():
     return c
 
 
-def _default_vals():
-    """Per-channel default values (``expConfig.m`` ``defaultVals``; Hz / s)."""
+def _default_vals(consts):
+    """Per-channel default values (``expConfig.m`` ``defaultVals``; Hz / s).
+
+    ``consts`` (the ``_consts()`` dict) is passed in so a default can cross-reference a
+    constant (e.g. ``VSLMservo`` <- ``Init.VSLMServo``), mirroring expConfig.m's
+    ``defaultVals(...) = consts....`` lines. Values are float-coerced downstream by
+    ``SeqConfig`` (so an int constant like ``Init.VSLMServo`` becomes a float here too)."""
     d = {}
     # TTLs
     d["TTLThorCamTrig"] = 0
@@ -281,7 +286,8 @@ def _default_vals():
     d["AmpSLM"] = 0.4
     d["FreqAOM308"] = 200e6
     d["AmpAOM308"] = 0
-    # NI DAQ electrodes
+    # NI DAQ
+    d["VSLMservo"] = consts["Init"]["VSLMServo"]  # default SLM servo to its Init value
     d["VElectrode1"] = 0
     d["VElectrode2"] = 0
     d["VElectrode3"] = 0
