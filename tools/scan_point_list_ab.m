@@ -15,6 +15,7 @@ function specs = scan_point_list_ab()
     specs = struct('name', {}, 'build', {}, 'seq', {});
     specs(end+1) = entry('bluelac',         @build_bluelac,         'BlueTweezerLoadingSeq');
     specs(end+1) = entry('spectrum556',     @build_spectrum556,     'PushoutSurvivalSeq');
+    specs(end+1) = entry('spectrum399',     @build_spectrum399,     'PushoutSurvival399Seq');
     specs(end+1) = entry('imaginglifetime', @build_imaginglifetime, 'ImagingPushoutSurvivalSeq');
     specs(end+1) = entry('coolingx2d',      @build_coolingx2d,      'ImagingPushoutSurvivalSeq');
     specs(end+1) = entry('coolingrnr',      @build_coolingrnr,      'ReleaseRecaptureSeq');
@@ -39,6 +40,16 @@ function g = build_spectrum556()
     g().Pushout.Green.Amp = 0.18;
     g().Pushout.Time = 20e-3;
     g().Pushout.Green.Freq.scan(1) = (103.5:0.1:106.5)*1e6;  % 31 points
+end
+
+function g = build_spectrum399()
+    % Spectrum399Scan.m: the active "AbsImg beam probing mj=0" block.
+    % PushoutSurvival399Seq -> Pushout399Step reads Pushout.Blue.Freq/Amp + Pushout.Time.
+    % The colon (220:3:360) is INTEGER-valued, so *1e6 is exact (no 1-ULP colon trap).
+    g = ScanGroup();
+    g().Pushout.Blue.Amp = 0.25;
+    g().Pushout.Time = 10e-3;
+    g().Pushout.Blue.Freq.scan(1) = (220:3:360)*1e6;   % 47 points
 end
 
 function g = build_imaginglifetime()
