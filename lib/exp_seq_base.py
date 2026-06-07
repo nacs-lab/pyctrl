@@ -533,6 +533,7 @@ class ExpSeqBase(TimeSeq):
         from sub_seq import SubSeq  # deferred import (ExpSeqBase <-> SubSeq cycle)
         step = SubSeq(self, start_time, cond)
         cb(step, *varargin)
+        provenance.on_step(self, cb, start_time, step)   # INERT unless a session is active
         step.latest_seq = False
         if is_nan(start_time):
             end_time = float('nan')
