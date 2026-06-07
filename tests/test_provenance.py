@@ -293,6 +293,38 @@ def test_wait_time_region_absolute_in_subsequence():
     assert t1 == pytest.approx(1600 * 1e-9)
 
 
+def test_pending_globals_zero_when_all_bands_placed():
+    """A scan whose bands resolve WITHOUT globals reports pending_globals == 0 (nothing is
+    waiting on the run's globals)."""
+    s = ExpSeq({"LoadTime": 0.5})
+    with provenance.capture(consts_dp=s.C) as sess:
+        s.add_step(1).add("Device1/CH1", 4)
+        s.wait(s.C.LoadTime())                         # placed without any global
+    res = sess.result()
+    assert res["time_regions"]                         # the band IS placed
+    assert res["pending_globals"] == 0
+
+
+def test_pending_globals_counts_global_dependent_band():
+    """A wait whose absolute position depends on a runtime global can't be placed without the
+    run's globals -> it's skipped AND counted; supplying the global resolves it (count -> 0)."""
+    s = ExpSeq({"Hold": 0.4})
+    g = s.new_global()
+    with provenance.capture(consts_dp=s.C, globals_dp=s.G) as sess:
+        s.add_step(g * 0.001).add("Device1/CH1", 4)    # GLOBAL-dependent step -> offset needs g
+        def sub(ss):
+            ss.wait(s.C.Hold())                         # wait inside the offset sub-seq
+        s.add_step(sub)
+    # no globals supplied -> the Hold band can't be placed; counted as pending
+    res = sess.result()
+    assert res["pending_globals"] >= 1
+    assert "Hold" not in res["time_regions"]
+    # supplying the global resolves the offset -> band placed, nothing pending
+    res2 = sess.result(globals_map={0: 1000.0})
+    assert res2["pending_globals"] == 0
+    assert "Hold" in res2["time_regions"]
+
+
 def test_eval_num_substitutes_globals():
     """The numeric SeqVal evaluator substitutes captured globals (used to place
     global-dependent sub-sequence offsets) and bails when a global is unavailable."""

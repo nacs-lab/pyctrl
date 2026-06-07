@@ -446,6 +446,10 @@ class ProvenanceSession:
         # absolute-time resolution as waits. [(label, start_node, end_node), ...] -> steps.
         self._step_pending = []
         self.steps = []                # [{"label": str, "t0": ms, "t1": ms}, ...]
+        # Count of wait/step time entries that couldn't be placed for lack of the run's
+        # globals (set by _resolve_waits/_resolve_steps) -> result()['pending_globals'].
+        self._skipped_waits = 0
+        self._skipped_steps = 0
 
     def register(self, dynprops, prefix):
         """Map a ``DynProps`` instance to a path prefix (``""`` = bare config namespace).
@@ -522,10 +526,12 @@ class ProvenanceSession:
     def _resolve_steps(self, globals_map=None):
         """Resolve the deferred top-level step nodes to absolute-time ms spans. Idempotent."""
         self.steps = []
+        self._skipped_steps = 0
         for label, n0, n1 in self._step_pending:
             a0 = _abs_ticks(n0, globals_map)
             a1 = _abs_ticks(n1, globals_map)
             if a0 is None or a1 is None:
+                self._skipped_steps += 1               # unplaceable (global-dependent / dynamic)
                 continue
             t0 = a0 * 1e-9
             t1 = a1 * 1e-9
@@ -542,10 +548,12 @@ class ProvenanceSession:
         regions are skipped (no global -> can't place).
         """
         self.time_regions = {}
+        self._skipped_waits = 0
         for paths, n0, n1 in self._wait_pending:
             a0 = _abs_ticks(n0, globals_map)
             a1 = _abs_ticks(n1, globals_map)
             if a0 is None or a1 is None:          # dynamic / unplaced -> skip the band
+                self._skipped_waits += 1
                 continue
             t0 = a0 * 1e-9                          # ticks -> ms (matches seq_parse's x-axis)
             t1 = a1 * 1e-9
@@ -590,6 +598,12 @@ class ProvenanceSession:
         """
         self._resolve_waits(globals_map)            # local SeqTime nodes -> absolute ms
         self._resolve_steps(globals_map)            # top-level step boundaries -> absolute ms
+        # How many step/wait time entries are still unplaced for lack of the run's globals.
+        # Only meaningful when NO globals were supplied (a live-run build): with globals, a
+        # remaining skip is a genuinely dynamic time (measure/arg), NOT "pending globals". The
+        # viewer uses this to (a) show "N band(s) pending globals" and (b) trigger one rebuild
+        # once globals.json lands (dashboard._maybe_autobuild_xref).
+        pending_globals = 0 if globals_map else (self._skipped_waits + self._skipped_steps)
         return {
             "param_to_channels": {k: sorted(v)
                                   for k, v in sorted(self.param_to_channels.items())},
@@ -607,6 +621,8 @@ class ProvenanceSession:
             "backtraces": {
                 str(pid): [{"file": fn, "name": nm, "line": ln} for (fn, nm, ln) in frames]
                 for pid, frames in sorted(self.pulse_bt.items())},
+            # # of step/wait bands still waiting on the run's globals (0 once globals applied).
+            "pending_globals": pending_globals,
         }
 
 
