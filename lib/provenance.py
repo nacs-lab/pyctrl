@@ -30,11 +30,103 @@ to watch the value flow during the build. Two layers, merged into one ``xref.jso
     channels (pairs with ``manifest.approximate``).
 """
 
+import os
 import re
+import sys
 
 from seq_val import SeqVal
 from seq_val import to_string as _sv_to_string
 from seq_val import _BINARY_STR, _FUNC_STR, _FUNC2_STR
+from seq_time import SeqTime
+
+import math
+try:
+    from mat_utils import mat_round
+except Exception:  # noqa: BLE001 - fallback (round half away from zero)
+    def mat_round(x):
+        return math.floor(x + 0.5) if x >= 0 else math.ceil(x - 0.5)
+
+# Numeric evaluation of a (possibly SeqVal) timing expression, with runtime globals
+# substituted. Sub-sequence OFFSETS are frequently global-dependent (e.g. the 616-EOM
+# ramp duration `round((abs((F - g(0))*2e-8*3) + 0.02)*1e12)`), so absolute placement of
+# a wait region needs g(id) values (from the run's captured globals.json). Returns None
+# on anything we can't resolve to a number (measure/arg heads, unknown op, missing
+# global) -- the region is then skipped rather than mis-placed.
+_SV_BINOP = {
+    SeqVal.OP_ADD: lambda a, b: a + b,
+    SeqVal.OP_SUB: lambda a, b: a - b,
+    SeqVal.OP_MUL: lambda a, b: a * b,
+    SeqVal.OP_DIV: lambda a, b: (a / b) if b else None,
+    SeqVal.OP_POW: lambda a, b: a ** b,
+    SeqVal.OP_HYPOT: math.hypot,
+    SeqVal.OP_ATAN2: math.atan2,
+    SeqVal.OP_MAX: max,
+    SeqVal.OP_MIN: min,
+    SeqVal.OP_MOD: math.fmod,
+}
+_SV_UNOP = {
+    SeqVal.OP_ABS: abs, SeqVal.OP_CEIL: math.ceil, SeqVal.OP_FLOOR: math.floor,
+    SeqVal.OP_RINT: lambda x: float(mat_round(x)), SeqVal.OP_SQRT: math.sqrt,
+    SeqVal.OP_EXP: math.exp, SeqVal.OP_LOG: math.log, SeqVal.OP_LOG2: math.log2,
+    SeqVal.OP_LOG10: math.log10, SeqVal.OP_SIN: math.sin, SeqVal.OP_COS: math.cos,
+    SeqVal.OP_TAN: math.tan, SeqVal.OP_IDENTITY: lambda x: x,
+}
+
+
+def _eval_num(v, gmap):
+    """Evaluate ``v`` (number / TaggedFloat / SeqVal) to a float, or None if unresolvable."""
+    if isinstance(v, SeqVal):
+        h, a = v.head, v.args
+        if h == SeqVal.H_GLOBAL:
+            try:
+                gid = int(a[0])
+            except Exception:  # noqa: BLE001
+                return None
+            return None if not gmap else gmap.get(gid)
+        if h in (SeqVal.H_MEASURE, SeqVal.H_ARG):
+            return None                        # runtime-only, no static value
+        ev = [_eval_num(x, gmap) for x in a]
+        if any(e is None for e in ev):
+            return None
+        try:
+            if h in _SV_BINOP and len(ev) >= 2:
+                return _SV_BINOP[h](ev[0], ev[1])
+            if h in _SV_UNOP and len(ev) >= 1:
+                return _SV_UNOP[h](ev[0])
+        except (ValueError, ZeroDivisionError, OverflowError):
+            return None
+        return None                            # unsupported op -> skip
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _abs_ticks(st, gmap=None):
+    """Absolute time (in ticks) of a ``SeqTime`` node, following sub-sequence offsets up
+    to the root -- the numeric analogue of ``SeqTime.to_string``'s parent/``t_offset``
+    walk. ``SeqTime.get_val`` only sums the node's OWN basic-sequence frame, so a wait
+    built inside a sub-sequence comes out in that sub-sequence's LOCAL time; we add each
+    owning sub-sequence's ``t_offset`` (which lives in its parent's frame, and is often a
+    global-dependent SeqVal) until the root. ``None`` if anything can't be resolved.
+    """
+    total = 0.0
+    node = st
+    for _ in range(4096):                      # depth guard (pathological cycles)
+        if not isinstance(node, SeqTime):
+            return None
+        try:
+            local = _eval_num(node.get_val(), gmap)   # THIS frame's total, globals applied
+        except Exception:                      # noqa: BLE001
+            return None
+        if local is None:
+            return None
+        total += float(local)
+        seq = node.seq
+        if seq is None or getattr(seq, "parent", None) is None:
+            return total                       # reached the root frame -> absolute
+        node = getattr(seq, "t_offset", None)  # ascend into the parent's frame
+    return None
 
 # Lazy numpy (matches seq_dump's optional-numpy pattern); used only to recognise numpy scalars.
 try:  # pragma: no cover - trivial import guard
@@ -278,18 +370,82 @@ def _decorate_channel(name, inverse_chn_map):
 
 
 # --------------------------------------------------------------------------- #
+# Source backtrace capture (B3). Build it HERE, in the offline provenance pass --
+# NOT during the live .seq emit. The pulse hook below already fires per pulse with the
+# verified .seq pulse_id (that's how click->params works), so we hang the source location
+# off it: zero runtime cost (this pass is the engine-free, on-view/after xref build) and no
+# reliance on the live obj_counter (which is why the literal "capture in next_obj_id" plan
+# had a pulse_id<->obj_id unknown -- moot here). Mirrors MATLAB's debug=1 backtrace, but
+# computed offline instead of on the hot path.
+# --------------------------------------------------------------------------- #
+_LIB_DIR = os.path.dirname(os.path.abspath(__file__))                 # pyctrl/lib
+_TOOLS_DIR = os.path.join(os.path.dirname(_LIB_DIR), "tools")         # pyctrl/tools
+
+
+def _is_framework_file(path):
+    """True if ``path`` is pyctrl framework (``lib/``) or the offline harness (``tools/``).
+    Those frames bracket the EXPERIMENT call chain (``YbSeqs``/``YbSteps`` ``.add``/``.add_step``):
+    the inner ones (the pulse machinery) are skipped, the outer ones (the rebuild driver) stop
+    the walk -- so a captured backtrace is exactly the user's experiment frames."""
+    try:
+        ap = os.path.abspath(path)
+    except Exception:  # noqa: BLE001
+        return False
+    return ap.startswith(_LIB_DIR + os.sep) or ap.startswith(_TOOLS_DIR + os.sep)
+
+
+def _capture_pulse_frames(max_frames=24):
+    """Innermost-first ``[(file, name, line)]`` of the EXPERIMENT call chain that built the
+    current pulse. Walks ``f_back`` directly (no source-line lookup -> cheap), skipping the
+    leading framework frames (so the leaf is the user's ``.add``/``.add_step`` line) and
+    stopping at the first framework frame AFTER the experiment block (drops the rebuild
+    driver / runpy noise). ``[]`` if no experiment frame is in scope."""
+    frames = []
+    try:
+        f = sys._getframe(2)                # skip _capture_pulse_frames + record_pulse
+    except (ValueError, AttributeError):    # pragma: no cover - no stack introspection
+        return frames
+    started = False
+    while f is not None and len(frames) < max_frames:
+        co = f.f_code
+        if _is_framework_file(co.co_filename):
+            if started:
+                break                       # past the experiment block -> stop
+        else:
+            started = True
+            frames.append((co.co_filename, co.co_name, f.f_lineno))
+        f = f.f_back
+    return frames
+
+
+# --------------------------------------------------------------------------- #
 # ProvenanceSession -- accumulates param<->channel edges during one build.
 # --------------------------------------------------------------------------- #
 class ProvenanceSession:
     """Collects the param<->channel relation for ONE instrumented sequence build."""
 
-    def __init__(self):
+    def __init__(self, capture_bt=True):
         self._ns = {}                  # id(DynProps) -> dotted-path prefix
         self.param_to_channels = {}    # dotted path -> set(channel)
         self.channel_to_params = {}    # channel     -> set(dotted path)
         self.pulses = {}               # pulse id    -> {"channel": str, "params": set}
         self.param_to_pids = {}        # dotted path -> set(pulse id)
+        # Source backtrace per pulse id (B3): pid -> [(file, name, line), ...] innermost-first.
+        # Captured in record_pulse (offline build only); emitted as result()['backtraces'].
+        self.capture_bt = bool(capture_bt)
+        self.pulse_bt = {}
         self.time_regions = {}         # dotted path -> [[t0_ms, t1_ms], ...]  (waits)
+        # Waits are captured as SeqTime NODES and resolved to ABSOLUTE ms lazily in
+        # result() -- a wait's start/end can only be placed once the whole tree is
+        # built (its sub-sequence t_offset is known). Resolving at wait-time gave
+        # sub-sequence-LOCAL times (bug: GreenMOT.CoolDown.HoldTime landed at ~65ms
+        # instead of ~316ms). [(set(paths), t0_node, t1_node), ...]
+        self._wait_pending = []
+        # Top-level step boundaries: a labeled [start, end] per direct child of the root
+        # (the experiment phases: InitStep/BlueMOTStep/GreenMOTStep/...). Same deferred
+        # absolute-time resolution as waits. [(label, start_node, end_node), ...] -> steps.
+        self._step_pending = []
+        self.steps = []                # [{"label": str, "t0": ms, "t1": ms}, ...]
 
     def register(self, dynprops, prefix):
         """Map a ``DynProps`` instance to a path prefix (``""`` = bare config namespace).
@@ -310,6 +466,12 @@ class ProvenanceSession:
 
     # -- TimeStep pulse hook ------------------------------------------------- #
     def record_pulse(self, toplevel, cid, pulse_id, raw, resolved):
+        # Source backtrace (B3): capture FIRST, before the param early-returns below, so even
+        # a param-less pulse (a constant TTL/voltage set) still records where it was added.
+        if self.capture_bt:
+            frames = _capture_pulse_frames()
+            if frames:
+                self.pulse_bt[int(pulse_id)] = frames
         try:
             name = toplevel.channel_name(cid)
             name = _decorate_channel(name, getattr(toplevel, "inverse_chn_map", None))
@@ -343,17 +505,54 @@ class ProvenanceSession:
 
     # -- Wait/timing hook: a param-driven wait advances time over [t0, t1] with no
     #    channel output, so it maps to a time-axis band rather than a pulse. -- #
-    def record_wait(self, t, t0_ticks, t1_ticks):
+    def record_wait(self, t, t0_node, t1_node):
+        # Defer: stash the param paths + the start/end SeqTime NODES. They're resolved
+        # to absolute ms in result(), once the full tree (and sub-sequence offsets) exist.
         paths = set()
         self._collect(t, paths)
         if not paths:
             return
-        t0 = float(t0_ticks) * 1e-9                # ticks -> ms (matches seq_parse's x-axis)
-        t1 = float(t1_ticks) * 1e-9
-        if t1 < t0:
-            t0, t1 = t1, t0
-        for p in paths:
-            self.time_regions.setdefault(p, []).append([t0, t1])
+        self._wait_pending.append((paths, t0_node, t1_node))
+
+    def record_step(self, label, t0_node, t1_node):
+        # Defer: stash the label + start/end SeqTime NODES; resolved to absolute ms in
+        # result() (same reason as waits -- offsets only exist once the tree is built).
+        self._step_pending.append((label, t0_node, t1_node))
+
+    def _resolve_steps(self, globals_map=None):
+        """Resolve the deferred top-level step nodes to absolute-time ms spans. Idempotent."""
+        self.steps = []
+        for label, n0, n1 in self._step_pending:
+            a0 = _abs_ticks(n0, globals_map)
+            a1 = _abs_ticks(n1, globals_map)
+            if a0 is None or a1 is None:
+                continue
+            t0 = a0 * 1e-9
+            t1 = a1 * 1e-9
+            if t1 < t0:
+                t0, t1 = t1, t0
+            self.steps.append({"label": label, "t0": t0, "t1": t1})
+        self.steps.sort(key=lambda s: (s["t0"], s["t1"]))
+
+    def _resolve_waits(self, globals_map=None):
+        """Resolve the deferred wait nodes to absolute-time ms bands. Idempotent.
+
+        ``globals_map`` (``{global_id: value}``) supplies the run's captured globals so
+        global-dependent sub-sequence offsets resolve to a number; without it, such
+        regions are skipped (no global -> can't place).
+        """
+        self.time_regions = {}
+        for paths, n0, n1 in self._wait_pending:
+            a0 = _abs_ticks(n0, globals_map)
+            a1 = _abs_ticks(n1, globals_map)
+            if a0 is None or a1 is None:          # dynamic / unplaced -> skip the band
+                continue
+            t0 = a0 * 1e-9                          # ticks -> ms (matches seq_parse's x-axis)
+            t1 = a1 * 1e-9
+            if t1 < t0:
+                t0, t1 = t1, t0
+            for p in paths:
+                self.time_regions.setdefault(p, []).append([t0, t1])
 
     def _collect(self, value, paths):
         if isinstance(value, TaggedFloat):
@@ -379,13 +578,18 @@ class ProvenanceSession:
             # interp tables / plain numbers carry no provenance
 
     # -- result -------------------------------------------------------------- #
-    def result(self):
+    def result(self, globals_map=None):
         """The ``xref.json`` ``by_file`` entry: aggregate maps + per-pulse (region) maps.
+
+        ``globals_map`` (optional ``{global_id: value}``) lets wait time_regions resolve
+        global-dependent sub-sequence offsets to absolute time.
 
         ``pulses`` is keyed by the pulse id as a STRING (JSON object keys are strings; the
         ``.seq``'s per-point ``pid`` is the same integer). ``param_to_pids`` is the inverse
         for fast param->region lookup in the viewer.
         """
+        self._resolve_waits(globals_map)            # local SeqTime nodes -> absolute ms
+        self._resolve_steps(globals_map)            # top-level step boundaries -> absolute ms
         return {
             "param_to_channels": {k: sorted(v)
                                   for k, v in sorted(self.param_to_channels.items())},
@@ -395,6 +599,14 @@ class ProvenanceSession:
             "param_to_pids": {k: sorted(v)
                               for k, v in sorted(self.param_to_pids.items())},
             "time_regions": {k: v for k, v in sorted(self.time_regions.items())},
+            "steps": self.steps,
+            # Source backtrace per pulse (B3): {pid(str): [{file, name, line}, ...]}, innermost
+            # (the user's .add/.add_step) first. Keyed by the same .seq pid as `pulses`, so the
+            # viewer maps a clicked point -> its source location. Denormalized (JSON, not the
+            # compact binary .seq backtrace block).
+            "backtraces": {
+                str(pid): [{"file": fn, "name": nm, "line": ln} for (fn, nm, ln) in frames]
+                for pid, frames in sorted(self.pulse_bt.items())},
         }
 
 
@@ -421,12 +633,16 @@ def on_pulse(toplevel, cid, pulse_id, raw, resolved):
 
 
 def wait_start(seq):
-    """``wait()`` pre-hook: the wait's absolute start tick, or None (inert/unresolvable)."""
+    """``wait()`` pre-hook: the wait's start SeqTime NODE, or None (inert).
+
+    Returns the node (NOT its value) so result() can resolve it to ABSOLUTE time once
+    the full tree exists -- ``get_val()`` here would give sub-sequence-local time.
+    """
     if _session is None:
         return None
     try:
-        return seq.cur_seq_time.get_val()
-    except Exception:  # noqa: BLE001 - dynamic (global/measure) timing -> skip this wait
+        return seq.cur_seq_time
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -435,10 +651,34 @@ def wait_end(seq, t, t0):
     if _session is None or t0 is None:
         return
     try:
-        t1 = seq.cur_seq_time.get_val()
+        t1 = seq.cur_seq_time
     except Exception:  # noqa: BLE001
         return
     _session.record_wait(t, t0, t1)
+
+
+def on_step(parent, cb, start_node, step):
+    """``add_custom_step`` post-hook: record a TOP-LEVEL step's [start, end] + label.
+
+    INERT unless a session is active. Only direct children of the root are recorded (the
+    experiment phases -- InitStep/BlueMOTStep/...); nested steps would clutter the ruler.
+    The label is the step callback's ``__name__``. start/end are SeqTime NODES, resolved to
+    absolute ms in result(). Floating (nan) starts and lambdas are skipped.
+    """
+    if _session is None:
+        return
+    try:
+        if getattr(parent, "parent", None) is not None:
+            return                                  # not a top-level step
+        end_node = step.cur_seq_time
+        if not isinstance(start_node, SeqTime) or not isinstance(end_node, SeqTime):
+            return                                  # floating / unplaced -> skip
+        label = getattr(cb, "__name__", None)
+        if not label or label.startswith("<"):      # drop lambdas / unnamed
+            label = None
+    except Exception:  # noqa: BLE001
+        return
+    _session.record_step(label, start_node, end_node)
 
 
 def begin(session):
@@ -460,8 +700,8 @@ class capture:
     Yields the session; read :meth:`ProvenanceSession.result` after the build.
     """
 
-    def __init__(self, consts_dp=None, globals_dp=None):
-        self.session = ProvenanceSession()
+    def __init__(self, consts_dp=None, globals_dp=None, capture_bt=True):
+        self.session = ProvenanceSession(capture_bt=capture_bt)
         self.session.register(globals_dp, "G.")
         self.session.register(consts_dp, "")
 

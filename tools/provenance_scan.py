@@ -52,7 +52,11 @@ XREF_NAME = "xref.json"
 #   1 aggregate maps · 2 + per-pulse regions · 3 + derivation formulas (cleaned)
 #   4 + wait/timing regions (time_regions)
 # Keep in lock-step with SEQ_XREF_VERSION in yb_analysis/plotting/static/dashboard.js.
-XREF_VERSION = 4
+# v5: wait time_regions are now resolved to ABSOLUTE time (were sub-sequence-local).
+# v6: + top-level step boundaries (labeled "steps" -> the phase ruler).
+# v7: + per-pulse source backtraces ("backtraces", keyed by pid -> [{file,name,line}]) -- B3,
+#     captured OFFLINE here (zero live-run cost), not via a live next_obj_id stack capture.
+XREF_VERSION = 7
 _DEFAULT_TICK = 10 ** 12                              # config.yml tick_per_sec (1 ps); engine-free fallback
 _SIDECAR_RE = re.compile(r"^data_\d{8}_\d{6}\.json$")
 # LIVE experiment + lib dirs (NOT the snapshot) so the provenance hooks are loaded.
@@ -93,12 +97,14 @@ def _read_tick(default=_DEFAULT_TICK):
 # --------------------------------------------------------------------------- #
 # Per-point capture (shared with reconstruct_scan via subprocess). Engine-free.
 # --------------------------------------------------------------------------- #
-def capture_point_xref(seqfn, seqparam, exp_seq_cls=None):
+def capture_point_xref(seqfn, seqparam, exp_seq_cls=None, globals_map=None):
     """Build one point with provenance active; return ``{param_to_channels, channel_to_params}``.
 
     A SEPARATE ``ExpSeq`` from any that produces a ``.seq`` (so a waveform build is never
     perturbed by the tagged values). Does NOT call ``generate()`` -- channel names come from
-    the build's channel map, no engine needed.
+    the build's channel map, no engine needed. ``globals_map`` (``{global_id: value}`` for
+    this point, from the run's globals.json) lets wait time_regions resolve global-dependent
+    sub-sequence offsets to ABSOLUTE time.
     """
     import provenance
     if exp_seq_cls is None:
@@ -107,7 +113,7 @@ def capture_point_xref(seqfn, seqparam, exp_seq_cls=None):
     sp = exp_seq_cls(seqparam)
     with provenance.capture(consts_dp=sp.C, globals_dp=sp.G) as sess:
         seqfn(sp)
-    return sess.result()
+    return sess.result(globals_map)
 
 
 def write_xref_json(seq_dir, by_file, *, scan_id=None):
@@ -152,6 +158,30 @@ def _existing_seq_names(seq_dir):
 # --------------------------------------------------------------------------- #
 # Standalone: build xref for a scan from its descriptor (LIVE code, engine-free).
 # --------------------------------------------------------------------------- #
+def _read_globals_by_seqid(seq_dir):
+    """``{seqid_str: {global_id: value}}`` from the run's captured ``sequence/globals.json``.
+
+    Lets wait time_regions resolve global-dependent sub-sequence offsets to absolute time.
+    Missing/old file -> ``{}`` (those regions are then skipped, never mis-placed).
+    """
+    path = os.path.join(seq_dir, "globals.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for seqid, entries in (doc.get("globals") or {}).items():
+        gm = {}
+        for e in entries or []:
+            try:
+                gm[int(e["id"])] = float(e["value"])
+            except (KeyError, TypeError, ValueError):
+                continue
+        out[str(seqid)] = gm
+    return out
+
+
 def build_scan_xref(scan_dir):
     """Build ``xref.json`` for ``scan_dir`` from its ``descriptor`` using the LIVE code."""
     scan_dir = os.path.abspath(scan_dir)
@@ -176,6 +206,7 @@ def build_scan_xref(scan_dir):
 
     seq_dir = os.path.join(scan_dir, SEQ_SUBDIR)
     name_by_seqid = _existing_seq_names(seq_dir)
+    globals_by_seqid = _read_globals_by_seqid(seq_dir)   # for absolute wait time_regions
 
     n_total = int(scangroup.nseq())
     by_file = {}
@@ -190,7 +221,8 @@ def build_scan_xref(scan_dir):
         fname = name_by_seqid.get(key) or (
             "point_%05d__seqid_%s.seq" % (n, re.sub(r"[^A-Za-z0-9._-]", "_", key)))
         try:
-            by_file[fname] = capture_point_xref(seqfn, seqparam)
+            by_file[fname] = capture_point_xref(
+                seqfn, seqparam, globals_map=globals_by_seqid.get(key))
         except Exception:  # noqa: BLE001 - one point's failure never aborts the rest
             failed += 1
 

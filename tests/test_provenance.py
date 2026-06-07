@@ -192,6 +192,47 @@ def test_per_pulse_formula_with_param_names():
     assert exprs[("Gain",)] == "Gain * 2"
 
 
+def test_backtrace_captured_per_pulse():
+    """B3: each pulse records the source backtrace of its ``.add`` call (offline capture),
+    keyed by the same pid as ``pulses``; the leaf frame is the user's call site, NOT the
+    framework (proving the lib/ frames were stripped)."""
+    s = ExpSeq({"A": 1.0})
+    with provenance.capture(consts_dp=s.C) as sess:
+        s.add_step(1).add("Device1/CH1", s.C.A())      # <- this line is the captured leaf
+    res = sess.result()
+    bts = res["backtraces"]
+    assert len(bts) == 1
+    (pid, frames), = bts.items()
+    assert pid in res["pulses"]                         # same pid space as the pulse map
+    leaf = frames[0]
+    assert leaf["file"].endswith("test_provenance.py")  # the user call site, not lib/
+    assert leaf["name"] == "test_backtrace_captured_per_pulse"
+    assert leaf["line"] > 0
+
+
+def test_backtrace_covers_param_less_pulse():
+    """A constant pulse has NO param provenance (absent from ``pulses``) but STILL records a
+    source backtrace -- captured before the param early-return, so clicking any pulse works."""
+    s = ExpSeq()
+    with provenance.capture(consts_dp=s.C) as sess:
+        s.add_step(1).add("Device1/CH1", 4)            # constant -> no params
+    res = sess.result()
+    assert res["pulses"] == {}                          # no param-bearing pulse recorded
+    assert len(res["backtraces"]) == 1                  # ...but its source IS
+    (_pid, frames), = res["backtraces"].items()
+    assert frames[0]["name"] == "test_backtrace_covers_param_less_pulse"
+
+
+def test_backtrace_capture_can_be_disabled():
+    """``capture_bt=False`` skips the per-pulse stack walk (the xref is otherwise unchanged)."""
+    s = ExpSeq({"A": 1.0})
+    with provenance.capture(consts_dp=s.C, capture_bt=False) as sess:
+        s.add_step(1).add("Device1/CH1", s.C.A())
+    res = sess.result()
+    assert res["backtraces"] == {}
+    assert "A" in res["param_to_channels"]              # rest of the capture still works
+
+
 def test_formula_cleanup_simplifies_ramp_noise():
     """The renderer collapses the tick<->second round-trip and names the pulse args, so a
     ramp reads cleanly (arg(0)->t, arg(1)->from, (X*N)/N -> X)."""
@@ -233,6 +274,51 @@ def test_wait_time_region_capture():
         s2.add_step(1).add("Device1/CH1", 4)
         s2.wait(0.3)                                # constant wait -> no provenance
     assert sess2.result()["time_regions"] == {}
+
+
+def test_wait_time_region_absolute_in_subsequence():
+    """A wait built inside an OFFSET sub-sequence must land in ABSOLUTE time, not the
+    sub-sequence's local frame. Regression for the bug where GreenMOT.CoolDown.HoldTime
+    showed at ~65ms (local) instead of ~316ms (absolute). (tick_per_sec=1000; ms=ticks*1e-9.)"""
+    s = ExpSeq({"Hold": 0.4})
+    with provenance.capture(consts_dp=s.C) as sess:
+        s.add_step(1).add("Device1/CH1", 4)        # parent advances to t=1000 ticks
+        def sub(ss):
+            ss.add_step(0.2).add("Device1/CH1", 5)  # +200 ticks LOCAL to the sub-seq
+            ss.wait(s.C.Hold())                     # +400 ticks, tagged Hold
+        s.add_step(sub)                            # sub-seq placed at parent t=1000 (offset)
+    (t0, t1), = sess.result()["time_regions"]["Hold"]
+    # LOCAL would be [200, 600] ticks; ABSOLUTE = offset(1000) + [200, 600] = [1200, 1600].
+    assert t0 == pytest.approx(1200 * 1e-9)
+    assert t1 == pytest.approx(1600 * 1e-9)
+
+
+def test_eval_num_substitutes_globals():
+    """The numeric SeqVal evaluator substitutes captured globals (used to place
+    global-dependent sub-sequence offsets) and bails when a global is unavailable."""
+    s = ExpSeq()
+    g = s.new_global()                              # -> SeqVal head H_GLOBAL, id 0
+    expr = (g - 2.5207e8) * 2.0 + 100              # arithmetic over a runtime global
+    assert provenance._eval_num(expr, {0: 2.5207e8}) == pytest.approx(100.0)
+    assert provenance._eval_num(expr, None) is None       # no globals -> unresolved
+    assert provenance._eval_num(expr, {}) is None         # global 0 missing -> unresolved
+    assert provenance._eval_num(5.0, None) == pytest.approx(5.0)   # plain number
+
+
+def test_step_boundaries_captured():
+    """Top-level steps are recorded as labeled [start, end] absolute-ms spans (the phase
+    ruler). Nested steps are NOT recorded. (tick_per_sec=1000; ms = ticks * 1e-9.)"""
+    s = ExpSeq({"A": 1.0})
+    def PhaseOne(ss):
+        ss.add_step(0.3).add("Device1/CH1", 4)              # nested step (not a phase)
+    def PhaseTwo(ss):
+        ss.add_step(0.2).add("Device1/CH1", 5)
+    with provenance.capture(consts_dp=s.C) as sess:
+        s.add_step(PhaseOne)                                # top-level -> [0, 300] ticks
+        s.add_step(PhaseTwo)                                # top-level -> [300, 500] ticks
+    steps = sess.result()["steps"]
+    got = [(st["label"], round(st["t0"] / 1e-9), round(st["t1"] / 1e-9)) for st in steps]
+    assert got == [("PhaseOne", 0, 300), ("PhaseTwo", 300, 500)]
 
 
 def test_disabled_pulse_contributes_nothing():
