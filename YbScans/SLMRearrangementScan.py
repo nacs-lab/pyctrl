@@ -99,8 +99,8 @@ def SLMRearrangementScan(url=None, reps=None):
     rp.warmup_kwargs.derive_threshold = 0.35
 
     # ---- rearrange_kwargs (g(); per-shot setup, sweepable) -----------------------------
-    g().rearrange_kwargs.nsteps.scan(1, [30, 50, 80, 120, 150])
-    g().rearrange_kwargs.step_period_ms.scan(2, [0.25, 0.5, 0.75, 1, 1.5, 2.5, 3.5, 5])
+    g().rearrange_kwargs.nsteps.scan(1, [50, 100])
+    g().rearrange_kwargs.step_period_ms.scan(2, [1.0, 2.0])
     g().rearrange_kwargs.protocol = "rearrange"
     g().rearrange_kwargs.extras.block_max_size = 256
     g().rearrange_kwargs.extras.pattern = "every-other"
@@ -113,13 +113,22 @@ def SLMRearrangementScan(url=None, reps=None):
     g().rearrange_kwargs.extras.z4 = -5            # MATCH rp.loading_defocus (same focal plane)
 
     # ---- non-rearrangement scan settings ----------------------------------------------
-    g().BlueMOT.LoadingTime = 0.5
-    g().GreenMOT.CoolDown.HoldTime = 0.2
-    g().GreenMOT.BiasCoilCurrent.X = 0.039
-    g().GreenMOT.BiasCoilCurrent.Y = 0.27
+    # MOT/loading: 2026-06-05 loading-rate optimization (copied from YbScans/LACScan.py
+    # Phase-8 g() block; expConfig.py deliberately left untouched). ~1.9x faster cycle at
+    # the same ~0.58 single-atom peak loading rate.
+    g().BlueMOT.LoadingTime = 0.23                    # was 0.5
+    g().BlueMOT.FreqDetuning = -44e6                  # was -40e6 (saturation knee moved left)
+    g().BlueMOT.Amp = 0.6
+    g().GreenMOT.BiasCoilCurrent.X = 0.040            # was 0.039
+    g().GreenMOT.BiasCoilCurrent.Y = 0.268            # was 0.27
     g().GreenMOT.BiasCoilCurrent.Z = 0.18
-    g().LAC.BlueLAC.FreqDetuning = -3.8e6
-    g().LAC.BlueLAC.Amp = 0.17
+    g().GreenMOT.PowerBroaden.HandoverTime = 0.015    # was 0.030
+    g().GreenMOT.CoolDown.FreqDetuning = 0.35e6
+    g().GreenMOT.CoolDown.Amp = 0.25                  # was 0.20
+    g().GreenMOT.CoolDown.HoldTime = 0.12             # was 0.2
+    g().GreenMOT.CoolDown.RampdownTime = 0.05
+    g().LAC.BlueLAC.FreqDetuning = -3.8e6             # LAC kept at config default
+    g().LAC.BlueLAC.Amp = 0.17                        # LAC kept at config default
 
     # ---- run params (runp) ------------------------------------------------------------
     rp.NumPerGroup = 100000

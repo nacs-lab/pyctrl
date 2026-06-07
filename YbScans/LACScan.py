@@ -35,23 +35,31 @@ def LACScan(url=None, reps=None):
     _bootstrap()
     from scan_group import ScanGroup
     from yb_start_scan import ybStartScan
-    import numpy as np   # np.linspace etc. are accepted directly by .scan() (see examples below)
 
     g = ScanGroup()
 
-    # ---- active fixed params (from LACScan.m) -----------------------------
-    g().BlueMOT.LoadingTime = 0.4
-    g().GreenMOT.CoolDown.HoldTime = 0.2
-
-    # ---- sweeps (commented in LACScan.m; uncomment + edit to scan) --------
-    # A sweep is .scan(dim, vals); same dim co-varies, different dims = grid.
-    #   g(1).LAC.FreqDetuning.scan(np.linspace(0.05e6, 1.0e6, 20))   # 1-D, dim 1
-    #   g(1).LAC.Time.scan(np.linspace(1e-3, 51e-3, 11))
-    g(1).GreenMOT.BiasCoilCurrent.Y.scan(1, np.linspace(0.24, 0.32, 17))  # dim 1, 17-pt sweep
+    # ===== PHASE 8: FINAL verify (single point, 50 shots) =================
+    # Phase 7 (id63, 50 shots/pt): Y bias controls the vertical gradient
+    # (corr_y -0.85@0.25 -> +0.61@0.275, zero-crossing ~0.268); mean peaks 0.265-0.27
+    # (~0.576), CV floor ~21% INDEPENDENT of the gradient -> residual non-uniformity
+    # is random per-site (SLM trap depth), not MOT. Adopt Y=0.268 (flat gradient,
+    # peak rate). THIS IS THE FINAL FAST + FLATTENED CONFIG.
+    g().BlueMOT.LoadingTime = 0.23                            # was 0.5
+    g().BlueMOT.FreqDetuning = -44e6                          # was -40e6
+    g().BlueMOT.Amp = 0.6
+    g().GreenMOT.BiasCoilCurrent.Y = 0.268                    # was 0.27 (flat vertical gradient)
+    g().GreenMOT.BiasCoilCurrent.Z = 0.18
+    g().GreenMOT.BiasCoilCurrent.X = 0.040                    # was 0.039
+    g().GreenMOT.PowerBroaden.HandoverTime = 0.015            # was 0.030
+    g().GreenMOT.CoolDown.FreqDetuning = 0.35e6
+    g().GreenMOT.CoolDown.Amp = 0.25                          # was 0.20
+    g().GreenMOT.CoolDown.HoldTime = 0.12                     # was 0.2
+    g().GreenMOT.CoolDown.RampdownTime = 0.05
+    # LAC at default (single-atom verified). No .scan() -> single point.
 
     # ---- run params (runp) ------------------------------------------------
     rp = g.runp()
-    rp.NumPerGroup = 500
+    rp.NumPerGroup = 200          # image-batch cadence; rep (below) sets shots/point
     rp.NumImages = 1
     rp.isInit = 0
     rp.Scramble = 1
@@ -72,7 +80,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit LACScan to the pyctrl backend.")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=None,
-                    help="passes (0 = forever); omit -> StackNum derived from NumPerGroup")
+    ap.add_argument("--reps", type=int, default=8,
+                    help="passes = shots/point (0 = forever); default 8 for ~8 shots/point")
     args = ap.parse_args()
     LACScan(url=args.url, reps=args.reps)
