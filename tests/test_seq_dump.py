@@ -232,6 +232,33 @@ def test_globals_capture_dedup_and_write(tmp_path):
     assert on_disk["globals"]["10"][0]["persist"] is True
 
 
+def test_globals_capture_writes_incrementally(tmp_path):
+    """globals.json is flushed AS each unique seqid is captured (not only at finalize), so
+    the offline xref producer can place a point's bands before the scan ends."""
+    seq_dir = str(tmp_path / "sequence")
+    gpath = os.path.join(seq_dir, "globals.json")
+    sess = seq_dump.GlobalsCaptureSession(seq_dir, scan_id="20250619170317",
+                                          seq_name="RydDetSeq")
+
+    # First seqid -> file exists immediately with exactly 1 seqid.
+    sess.on_globals(1, 10, _fake_seq_with_globals("A", {0: 1.234e8}))
+    assert os.path.exists(gpath)
+    assert set(json.load(open(gpath))["globals"].keys()) == {"10"}
+
+    # Second seqid -> the same file grows to 2 (no finalize() call in between).
+    sess.on_globals(2, 11, _fake_seq_with_globals("B", {0: 9.99e7}))
+    assert set(json.load(open(gpath))["globals"].keys()) == {"10", "11"}
+
+    # A deduped repeat does NOT rewrite/grow the file.
+    sess.on_globals(3, 10, _fake_seq_with_globals("A2", {0: 0.0}))
+    assert set(json.load(open(gpath))["globals"].keys()) == {"10", "11"}
+
+    # finalize() is an idempotent final rewrite matching the accumulated map.
+    doc = sess.finalize()
+    assert set(doc["globals"].keys()) == {"10", "11"}
+    assert set(json.load(open(gpath))["globals"].keys()) == {"10", "11"}
+
+
 def test_globals_capture_skips_when_no_globals(tmp_path):
     """A seq with no runtime globals must not litter an otherwise-absent sequence/ dir."""
     seq_dir = str(tmp_path / "sequence")

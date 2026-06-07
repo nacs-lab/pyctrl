@@ -299,13 +299,21 @@ class GlobalsCaptureSession:
         self.by_seqid[key] = entries
         self._log("[seq_dump] captured %d runtime global(s) for seqid=%s"
                   % (len(entries), key))
+        # Flush INCREMENTALLY: as soon as this seqid's globals are captured, persist the
+        # growing globals.json so the offline xref producer can place this point's
+        # global-dependent step/wait bands BEFORE the scan ends. Bounded to <= one write
+        # per unique seqid (on_globals is deduped above), not per shot -- fine for the
+        # OneDrive-synced folder. Best-effort: a write failure never breaks the run.
+        self._write()
 
-    def finalize(self):
-        """Write ``globals.json`` (keyed by seqid); return the doc, or None.
+    def _write(self):
+        """Atomically (re)write ``globals.json`` from the seqids captured SO FAR; return the
+        doc, or None.
 
         Skips writing entirely when NO seqid captured any global -- so a scan whose
         sequences have no runtime globals doesn't litter an otherwise-absent
-        ``sequence/`` dir (there is nothing to reconstruct-from-globals).
+        ``sequence/`` dir (there is nothing to reconstruct-from-globals). Best-effort:
+        a write failure logs and never raises (so an incremental flush can't break a run).
         """
         if not any(self.by_seqid.values()):
             return None
@@ -323,5 +331,14 @@ class GlobalsCaptureSession:
             self._log("[seq_dump] globals.json: %d unique seq(s)" % len(self.by_seqid))
             return doc
         except Exception as exc:  # noqa: BLE001
-            logger.warning("seq_dump globals finalize failed: %s", exc)
+            logger.warning("seq_dump globals write failed: %s", exc)
             return None
+
+    def finalize(self):
+        """Write the FINAL complete ``globals.json`` (keyed by seqid); return the doc, or None.
+
+        Idempotent with the incremental flushes in ``on_globals`` -- this just re-writes
+        the same accumulated map at scan end (a no-op rewrite if nothing changed since the
+        last seqid landed).
+        """
+        return self._write()
