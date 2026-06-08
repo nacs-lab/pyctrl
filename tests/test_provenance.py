@@ -265,9 +265,11 @@ def test_wait_time_region_capture():
         s.wait(s.C.LoadTime())                      # 0.5 -> +500 ticks, tagged LoadTime
     tr = sess.result()["time_regions"]
     assert list(tr.keys()) == ["LoadTime"]
-    (t0, t1), = tr["LoadTime"]
+    band, = tr["LoadTime"]
+    t0, t1, seq_idx = band                          # v9: bands carry the owning bseq id
     assert t0 == pytest.approx(1000 * 1e-9)
     assert t1 == pytest.approx(1500 * 1e-9)
+    assert seq_idx == 1                             # single basic sequence -> bseq 1
 
     s2 = ExpSeq()
     with provenance.capture(consts_dp=s2.C) as sess2:
@@ -287,7 +289,8 @@ def test_wait_time_region_absolute_in_subsequence():
             ss.add_step(0.2).add("Device1/CH1", 5)  # +200 ticks LOCAL to the sub-seq
             ss.wait(s.C.Hold())                     # +400 ticks, tagged Hold
         s.add_step(sub)                            # sub-seq placed at parent t=1000 (offset)
-    (t0, t1), = sess.result()["time_regions"]["Hold"]
+    band, = sess.result()["time_regions"]["Hold"]
+    t0, t1 = band[0], band[1]
     # LOCAL would be [200, 600] ticks; ABSOLUTE = offset(1000) + [200, 600] = [1200, 1600].
     assert t0 == pytest.approx(1200 * 1e-9)
     assert t1 == pytest.approx(1600 * 1e-9)
@@ -351,6 +354,28 @@ def test_step_boundaries_captured():
     steps = sess.result()["steps"]
     got = [(st["label"], round(st["t0"] / 1e-9), round(st["t1"] / 1e-9)) for st in steps]
     assert got == [("PhaseOne", 0, 300), ("PhaseTwo", 300, 500)]
+    # Single basic sequence -> every step is tagged with bseq_id 1.
+    assert all(st["seq_idx"] == 1 for st in steps)
+
+
+def test_step_boundaries_tagged_per_basic_seq():
+    """A multi-basic-sequence build (e.g. SLM rearrangement: ``s`` + ``s.new_basic_seq()``)
+    tags each top-level step with its basic-sequence id (seq_idx == bseq_id: the ExpSeq is
+    1, the first new_basic_seq() is 2). Without this, the viewer overlaid every bseq's phase
+    ruler on whichever bseq was shown (each bseq's time frame restarts at 0)."""
+    s = ExpSeq({"A": 1.0})
+    def PhaseOne(ss):
+        ss.add_step(0.3).add("Device1/CH1", 4)
+    def PhaseTwo(ss):
+        ss.add_step(0.2).add("Device1/CH1", 5)
+    with provenance.capture(consts_dp=s.C) as sess:
+        s.add_step(PhaseOne)                # top-level step in basic sequence 1
+        s2 = s.new_basic_seq()
+        s.cond_branch(True, s2)
+        s2.add_step(PhaseTwo)               # top-level step in basic sequence 2
+    by_label = {st["label"]: st for st in sess.result()["steps"]}
+    assert by_label["PhaseOne"]["seq_idx"] == 1
+    assert by_label["PhaseTwo"]["seq_idx"] == 2
 
 
 def test_disabled_pulse_contributes_nothing():

@@ -58,6 +58,13 @@ CAMERA_STATUS_REFRESH_S = 2.0
 # pyctrl package root (…/pyctrl/YbExptCtrl/runner.py -> …/pyctrl) for locating config.yml,
 # which now lives inside the submodule (a copy of matlab_new/config.yml) so pyctrl is self-contained.
 PYCTRL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Default loading defocus (ANSI z4) when a scan declares a loading pattern but does NOT set
+# ``runp().loading_defocus``. The loading focal plane is a property of the science camera, not the
+# pattern: until the camera is moved it is a fixed -5 (the plane the global SLM->camera affine is
+# calibrated against). Production SLM scans already set this explicitly; this default keeps every
+# other loading-pattern scan at the SAME plane so the single global affine stays valid. Change this
+# (and re-bootstrap the affine) if/when the camera focus moves.
+DEFAULT_LOADING_DEFOCUS = -5.0
 
 
 # =========================================================================== #
@@ -498,6 +505,15 @@ def make_engine_run(server, camera, seq_config, log=None):
                 log=lambda m: log("[runner] %s" % m)))
         seq_owns_frames = is_rearrange and slm_ses is not None
 
+        # Non-rearrange scans renew the scan-long slm lease per shot too (rearrange scans renew via
+        # RearrangeCommSeq.pre_run -> ensure_held). Without this the lease lapses ~lease_s into the
+        # scan and the server releases slm mid-run. ensure_held is server-authoritative: it
+        # heartbeats to confirm+renew and regrabs on loss (erroring the run if it truly can't).
+        if slm_ses is not None and not is_rearrange:
+            def _slm_pre_cb(_seq_num, _arg0, _ses=slm_ses):
+                _ses.ensure_held()
+            pre.append(_slm_pre_cb)
+
         armed = False
         if camera is not None and num_images > 0:
             try:
@@ -735,7 +751,7 @@ def _first_loading_pattern(rp):
             phase = phase or ""
     if not phase:
         return None
-    z4 = _runp_num(rp, "loading_defocus", 0)
+    z4 = _runp_num(rp, "loading_defocus", DEFAULT_LOADING_DEFOCUS)
     zernike = [0.0, 0.0, 0.0, 0.0, float(z4)] if z4 else []
     name = os.path.splitext(os.path.basename(phase.replace("\\", "/")))[0]
     legacy = bool(baked) and any(b != 0 for b in baked)
@@ -823,7 +839,7 @@ def _initial_setup_rearrangement(client, scangroup, scan_id, log):
     # regardless of whether reload runs/no-ops. SEPARATE from the model zernike
     # (rearrange_kwargs.extras.z*/zernike_coeffs, which only touches model frames). Sent on the
     # DEQUEUE setup (when initial/final_phase are stored), never per-shot, so it can't double-stack.
-    z4 = _runp_num(rp, "loading_defocus", 0)
+    z4 = _runp_num(rp, "loading_defocus", DEFAULT_LOADING_DEFOCUS)
     if z4:
         extras = args.get("extras")
         if not isinstance(extras, dict):
@@ -979,6 +995,10 @@ def serve(url, *, server_factory=None, with_camera=True, with_idle=True, log=pri
     idle DummySeq). Only start it on a confirmed-safe hardware state.
     """
     assert_single_backend(url)
+    from logging_setup import setup_logging                  # mirror terminal output -> log files
+    _logs = setup_logging()
+    if _logs:
+        log("[runner] mirroring terminal output to %s" % _logs["mirror"])
     load_configs(log=lambda m: log("[runner] %s" % m))      # expConfig snapshot + engine config.yml
     from seq_config import SeqConfig
     seq_config = SeqConfig.get()                            # the real config activated above

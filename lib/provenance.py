@@ -434,7 +434,7 @@ class ProvenanceSession:
         # Captured in record_pulse (offline build only); emitted as result()['backtraces'].
         self.capture_bt = bool(capture_bt)
         self.pulse_bt = {}
-        self.time_regions = {}         # dotted path -> [[t0_ms, t1_ms], ...]  (waits)
+        self.time_regions = {}         # dotted path -> [[t0_ms, t1_ms(, seq_idx)], ...]  (waits)
         # Waits are captured as SeqTime NODES and resolved to ABSOLUTE ms lazily in
         # result() -- a wait's start/end can only be placed once the whole tree is
         # built (its sub-sequence t_offset is known). Resolving at wait-time gave
@@ -509,25 +509,29 @@ class ProvenanceSession:
 
     # -- Wait/timing hook: a param-driven wait advances time over [t0, t1] with no
     #    channel output, so it maps to a time-axis band rather than a pulse. -- #
-    def record_wait(self, t, t0_node, t1_node):
+    def record_wait(self, t, t0_node, t1_node, seq_idx=None):
         # Defer: stash the param paths + the start/end SeqTime NODES. They're resolved
         # to absolute ms in result(), once the full tree (and sub-sequence offsets) exist.
+        # ``seq_idx`` is the owning basic-sequence id (== bseq_id) so a multi-basic-seq
+        # build doesn't bleed one bseq's bands onto another (each bseq's frame starts at 0).
         paths = set()
         self._collect(t, paths)
         if not paths:
             return
-        self._wait_pending.append((paths, t0_node, t1_node))
+        self._wait_pending.append((paths, t0_node, t1_node, seq_idx))
 
-    def record_step(self, label, t0_node, t1_node):
+    def record_step(self, label, t0_node, t1_node, seq_idx=None):
         # Defer: stash the label + start/end SeqTime NODES; resolved to absolute ms in
         # result() (same reason as waits -- offsets only exist once the tree is built).
-        self._step_pending.append((label, t0_node, t1_node))
+        # ``seq_idx`` = the owning basic-sequence id (== bseq_id: the ExpSeq is 1, the first
+        # new_basic_seq() is 2, ...) so the viewer shows only the displayed bseq's phase ruler.
+        self._step_pending.append((label, t0_node, t1_node, seq_idx))
 
     def _resolve_steps(self, globals_map=None):
         """Resolve the deferred top-level step nodes to absolute-time ms spans. Idempotent."""
         self.steps = []
         self._skipped_steps = 0
-        for label, n0, n1 in self._step_pending:
+        for label, n0, n1, seq_idx in self._step_pending:
             a0 = _abs_ticks(n0, globals_map)
             a1 = _abs_ticks(n1, globals_map)
             if a0 is None or a1 is None:
@@ -537,8 +541,13 @@ class ProvenanceSession:
             t1 = a1 * 1e-9
             if t1 < t0:
                 t0, t1 = t1, t0
-            self.steps.append({"label": label, "t0": t0, "t1": t1})
-        self.steps.sort(key=lambda s: (s["t0"], s["t1"]))
+            step = {"label": label, "t0": t0, "t1": t1}
+            if seq_idx is not None:                    # which basic sequence this step lives in
+                step["seq_idx"] = int(seq_idx)
+            self.steps.append(step)
+        # Order within each basic sequence by time; keep bseqs grouped (a bseq's frame
+        # restarts at 0, so a bare (t0, t1) sort would interleave the basic sequences).
+        self.steps.sort(key=lambda s: (s.get("seq_idx", 0), s["t0"], s["t1"]))
 
     def _resolve_waits(self, globals_map=None):
         """Resolve the deferred wait nodes to absolute-time ms bands. Idempotent.
@@ -549,7 +558,7 @@ class ProvenanceSession:
         """
         self.time_regions = {}
         self._skipped_waits = 0
-        for paths, n0, n1 in self._wait_pending:
+        for paths, n0, n1, seq_idx in self._wait_pending:
             a0 = _abs_ticks(n0, globals_map)
             a1 = _abs_ticks(n1, globals_map)
             if a0 is None or a1 is None:          # dynamic / unplaced -> skip the band
@@ -559,8 +568,12 @@ class ProvenanceSession:
             t1 = a1 * 1e-9
             if t1 < t0:
                 t0, t1 = t1, t0
+            # [t0, t1] for a single-bseq build; [t0, t1, seq_idx] when the band belongs to a
+            # known basic sequence (so the viewer draws it only on the matching bseq -- each
+            # bseq's time frame restarts at 0, so bands would otherwise overlap).
+            region = [t0, t1] if seq_idx is None else [t0, t1, int(seq_idx)]
             for p in paths:
-                self.time_regions.setdefault(p, []).append([t0, t1])
+                self.time_regions.setdefault(p, []).append(region)
 
     def _collect(self, value, paths):
         if isinstance(value, TaggedFloat):
@@ -612,7 +625,11 @@ class ProvenanceSession:
             "pulses": {str(pid): _pulse_out(e) for pid, e in sorted(self.pulses.items())},
             "param_to_pids": {k: sorted(v)
                               for k, v in sorted(self.param_to_pids.items())},
+            # {param: [[t0_ms, t1_ms(, seq_idx)], ...]} -- wait bands. The optional 3rd entry
+            # is the owning basic-sequence id; the viewer draws a band only on its bseq.
             "time_regions": {k: v for k, v in sorted(self.time_regions.items())},
+            # [{label, t0, t1(, seq_idx)}, ...] -- top-level phase ruler. ``seq_idx`` (== bseq_id)
+            # lets the viewer show only the displayed basic sequence's steps.
             "steps": self.steps,
             # Source backtrace per pulse (B3): {pid(str): [{file, name, line}, ...]}, innermost
             # (the user's .add/.add_step) first. Keyed by the same .seq pid as `pulses`, so the
@@ -663,14 +680,18 @@ def wait_start(seq):
 
 
 def wait_end(seq, t, t0):
-    """``wait()`` post-hook: record the param-driven time region [t0, now] (when a session is on)."""
+    """``wait()`` post-hook: record the param-driven time region [t0, now] (when a session is on).
+
+    Tags the band with the owning basic-sequence id (``seq.root.bseq_id``) so a multi-basic-seq
+    build keeps each bseq's bands on its own timeline."""
     if _session is None or t0 is None:
         return
     try:
         t1 = seq.cur_seq_time
     except Exception:  # noqa: BLE001
         return
-    _session.record_wait(t, t0, t1)
+    seq_idx = getattr(getattr(seq, "root", None), "bseq_id", None)
+    _session.record_wait(t, t0, t1, seq_idx)
 
 
 def on_step(parent, cb, start_node, step):
@@ -692,9 +713,12 @@ def on_step(parent, cb, start_node, step):
         label = getattr(cb, "__name__", None)
         if not label or label.startswith("<"):      # drop lambdas / unnamed
             label = None
+        # ``parent`` is the root of a top-level step (the check above) -> its bseq_id is the
+        # basic-sequence the step lives in (1 for the ExpSeq, 2+ for each new_basic_seq()).
+        seq_idx = getattr(parent, "bseq_id", None)
     except Exception:  # noqa: BLE001
         return
-    _session.record_step(label, start_node, end_node)
+    _session.record_step(label, start_node, end_node, seq_idx)
 
 
 def begin(session):

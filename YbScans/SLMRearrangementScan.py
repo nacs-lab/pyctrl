@@ -99,17 +99,18 @@ def SLMRearrangementScan(url=None, reps=None):
     rp.warmup_kwargs.derive_threshold = 0.35
 
     # ---- rearrange_kwargs (g(); per-shot setup, sweepable) -----------------------------
-    g().rearrange_kwargs.nsteps.scan(1, [50, 100])
-    g().rearrange_kwargs.step_period_ms.scan(2, [1.0, 2.0])
+    g().rearrange_kwargs.nsteps = 100   # pinned for clean diagnostic
+    g().rearrange_kwargs.step_period_ms = 1.0   # pinned
     g().rearrange_kwargs.protocol = "rearrange"
     g().rearrange_kwargs.extras.block_max_size = 256
     g().rearrange_kwargs.extras.pattern = "every-other"
     g().rearrange_kwargs.extras.kagome_crop = 0.88
-    g().rearrange_kwargs.extras.model_bookend_pre = True
-    g().rearrange_kwargs.extras.model_bookend_post = True
+    g().rearrange_kwargs.extras.model_bookend_pre = False   # default: no full-grid model bookend
+    g().rearrange_kwargs.extras.model_bookend_post = False
     g().rearrange_kwargs.extras.ifEnhanced = True
     g().rearrange_kwargs.extras.precompute = True
-    g().rearrange_kwargs.extras.hw_sequence = False
+    g().rearrange_kwargs.extras.precompute_host = True   # host-resident precompute / pre-pin
+    g().rearrange_kwargs.extras.hw_sequence = True
     g().rearrange_kwargs.extras.z4 = -5            # MATCH rp.loading_defocus (same focal plane)
 
     # ---- non-rearrangement scan settings ----------------------------------------------

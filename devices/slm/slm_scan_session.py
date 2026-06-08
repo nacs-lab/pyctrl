@@ -11,10 +11,14 @@ callbacks, not here). The server's ``rearrange_actual`` requires the caller hold
 scan-long hold under the same ``X-Client-Id`` satisfies that.
 
 Differences from the MATLAB original (per the user spec):
-  * **No background heartbeat timer.** The lease is renewed by a per-shot :meth:`keepalive`
-    (a single ``/lock/heartbeat`` call, no phase write) so the inter-shot critical path is one
-    cheap HTTP round-trip. A shot that outruns the 10 s lease lets it lapse; :meth:`ensure_held`
-    on the NEXT shot regrabs + rewrites the WGS phase.
+  * **No background heartbeat timer.** The lease is renewed on the per-shot path by a single
+    ``/lock/heartbeat``. :meth:`ensure_held` is SERVER-AUTHORITATIVE -- it heartbeats every shot
+    to BOTH confirm ownership and renew, and regrabs (+ rewrites the WGS phase) the moment the
+    heartbeat fails. It never trusts a local timestamp, so a server-side release (lease lapse
+    during a long shot / warmup, or a stolen lock) can't silently wedge the scan. Because the
+    lease is renewed ONLY while shots run, a pause / hung shot / crashed runner lets it lapse
+    within ``lease_s`` and the server auto-releases ``slm`` -- the SLM is never wedged for longer
+    than one (short) lease after a stop. Keep ``lease_s`` modest for that reason.
   * **Active, immediate pause drop.** :meth:`on_pause` releases the lock the instant the scan
     pauses (so the SLM can be adjusted); :meth:`on_resume` reacquires + rewrites the phase.
   * **Acquire is mandatory.** :meth:`begin` / :meth:`ensure_held` / :meth:`on_resume`-via-shot
@@ -42,7 +46,7 @@ class SlmLockUnavailable(RuntimeError):
 
 
 class SlmScanSession:
-    def __init__(self, client, lease_s=10.0, acquire_block_s=5.0,
+    def __init__(self, client, lease_s=15.0, acquire_block_s=5.0,
                  description="yb scan", clock=time.monotonic, log=None):
         self.c = client
         self.lease_s = float(lease_s)             # lock lease (timeout_s); renewed by keepalive
@@ -89,26 +93,39 @@ class SlmScanSession:
         self._write_if_new()
 
     def ensure_held(self):
-        """Per-shot guard. NORMAL path: a timestamp compare, NO SLM comm. If the lease lapsed
-        (e.g. a shot outran it), regrab + rewrite the WGS phase before the next shot (the SLM
-        could have been touched while we were unlocked). Raises if the regrab fails."""
-        if self.held and (self._clock() - self._last_ok_t) < self.lease_s:
-            return
+        """Per-shot guard. SERVER-AUTHORITATIVE: one heartbeat that BOTH confirms we still own
+        ``slm`` and renews the lease. On heartbeat failure (lapsed lease / server restart / lock
+        stolen) regrab + rewrite the WGS phase before the next shot (the SLM could have been
+        touched while we were unlocked). A mid-scan regrab that fails within the block budget
+        raises :class:`SlmLockUnavailable` -> the run errors (a scan that cannot own the SLM must
+        not silently spin). The old purely-local timestamp compare is gone: it could not see a
+        server-side release (lease lapse during a long shot / warmup), which silently wedged the
+        scan -- the heartbeat is the single source of truth for ownership."""
+        if self.held:
+            try:
+                self.c.heartbeat("slm")
+                self._last_ok_t = self._clock()
+                return
+            except Exception as e:  # noqa: BLE001 - lost the lock; re-acquire below
+                self._log("[SlmScanSession] lost slm lock (heartbeat: %s); re-acquiring" % e)
+                self.held = False
         self._acquire(mandatory=True)
         self._last_written = None       # force a rewrite -- the SLM may have changed
         self._write_if_new()
 
     def keepalive(self):
         """Renew the lease with a SINGLE heartbeat call -- no phase write while we still hold the
-        lock (keeps the inter-shot time minimal). A failed heartbeat leaves ``_last_ok_t`` stale
-        so the next :meth:`ensure_held` regrabs."""
+        lock (keeps the inter-shot time minimal). A failed heartbeat means we LOST the lock, so
+        clear ``held`` -> the next :meth:`ensure_held` deterministically regrabs (rather than
+        trusting a stale local timestamp)."""
         if not self.held:
             return
         try:
             self.c.heartbeat("slm")
             self._last_ok_t = self._clock()
-        except Exception as e:  # noqa: BLE001 - keepalive is best-effort; ensure_held recovers
+        except Exception as e:  # noqa: BLE001 - lost the lock; ensure_held regrabs next shot
             self._log("[SlmScanSession] keepalive failed: %s" % e)
+            self.held = False
 
     def on_pause(self):
         """Active, immediate drop so the SLM is free to be adjusted while paused."""

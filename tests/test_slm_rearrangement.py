@@ -144,9 +144,10 @@ def test_acquire_lock_raises_after_deadline():
 # slm_scan_session: state machine
 # =========================================================================== #
 class FakeClient:
-    def __init__(self, acquire_fail=False):
+    def __init__(self, acquire_fail=False, heartbeat_fail=False):
         self.log = []
         self.acquire_fail = acquire_fail
+        self.heartbeat_fail = heartbeat_fail
 
     def acquire_lock(self, device, description="", timeout_s=60, block_timeout=30):
         self.log.append(("acquire", device, timeout_s, block_timeout))
@@ -158,6 +159,8 @@ class FakeClient:
 
     def heartbeat(self, device="all"):
         self.log.append(("heartbeat", device))
+        if self.heartbeat_fail:
+            raise SlmHTTPError(423, "lost")
 
     def write_loading_phase(self, phase_path, loading_zernike=None, name=None,
                             legacy_zerniked=False, baked_zernike=None):
@@ -208,19 +211,42 @@ def test_keepalive_is_single_heartbeat_no_write():
     assert c.log == [("heartbeat", "slm")]          # exactly one call, no phase write
 
 
-def test_ensure_held_noop_when_fresh_regrab_when_lapsed():
+def test_ensure_held_heartbeats_when_owned_no_regrab():
+    # Server-authoritative: while we still own the lock, ensure_held confirms+renews with exactly
+    # one heartbeat and does NOT re-acquire or rewrite -- regardless of the local clock.
     c = FakeClient()
-    clk = StepClock()
-    s = _session(c, clk)
+    s = _session(c, StepClock())
     s.begin()
     c.log.clear()
-    clk.t = 5.0                                     # within the 10 s lease
     s.ensure_held()
-    assert c.log == []                              # NO SLM comm on the fresh path
-    clk.t = 25.0                                    # lease lapsed
+    assert c.log == [("heartbeat", "slm")]          # confirm + renew only
+    assert ("acquire", "slm", 10.0, 5.0) not in c.log
+    assert ("write", "phase/33.pt") not in c.log
+
+
+def test_ensure_held_regrabs_when_heartbeat_lost():
+    # A failed heartbeat == we lost the lock (lease lapse / server restart / stolen): ensure_held
+    # detects it server-side and re-acquires + rewrites the WGS phase before the next shot.
+    c = FakeClient(heartbeat_fail=True)
+    s = _session(c, StepClock())
+    s.begin()
+    c.log.clear()
     s.ensure_held()
+    assert ("heartbeat", "slm") in c.log            # tried to confirm -> failed
     assert ("acquire", "slm", 10.0, 5.0) in c.log   # regrab
     assert ("write", "phase/33.pt") in c.log        # + rewrite the WGS phase
+    assert s.is_held() is True
+
+
+def test_ensure_held_raises_when_regrab_fails():
+    # Lost the lock AND can't get it back within the block budget -> error the run loudly rather
+    # than silently spin lockless (the wedge this whole change fixes).
+    c = FakeClient(acquire_fail=True, heartbeat_fail=True)
+    s = _session(c, StepClock())
+    s.held = True                                   # pretend we held it, then lost it
+    with pytest.raises(SlmLockUnavailable):
+        s.ensure_held()
+    assert s.is_held() is False
 
 
 def test_pause_drops_and_resume_regrabs():

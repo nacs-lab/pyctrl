@@ -79,16 +79,11 @@ def build(mj=0):
     else:
         raise ValueError("mj must be 0 or 1, got %r" % (mj,))
 
-    # ---- optimized fast-loading MOT config (2026-06-05) -------------------
-    # Match the optimized array state. LoadingTime 0.23 = the optimized full-rate
-    # value (loading saturates by ~0.21 at -44 MHz; longer just wastes time).
-    g().BlueMOT.LoadingTime = 0.23
-    g().BlueMOT.FreqDetuning = -44e6
-    g().GreenMOT.BiasCoilCurrent.Y = 0.268
-    g().GreenMOT.BiasCoilCurrent.X = 0.040
-    g().GreenMOT.PowerBroaden.HandoverTime = 0.015
-    g().GreenMOT.CoolDown.Amp = 0.25
-    g().GreenMOT.CoolDown.HoldTime = 0.12
+    # ---- fast-loading MOT config now lives in expConfig defaults ----------
+    # The 2026-06-05 fast-loading optimum (BlueMOT.LoadingTime 0.23 / FreqDetuning
+    # -44e6, GreenMOT bias X 0.040 / Y 0.268, HandoverTime 0.015, CoolDown Amp 0.25 /
+    # HoldTime 0.12) is the apparatus default in expConfig.py/.m, so the scan no
+    # longer overrides it here.
 
     # ---- swept param: Pushout.Green.Freq ----------------------------------
     if mj == 0:

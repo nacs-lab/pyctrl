@@ -128,7 +128,7 @@ def _consts():
     c["Orca"] = {"ROI": [1000, 100, 2100, 2100], "ExposureTime": 0.050004}
 
     # 556nm resonance (calibrate daily by spectroscopy; 3P1 mj=0 near-magic)
-    c["Resonance556mj0Freq"] = 107.735e6   # fit 2026-06-05 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.97); was 107.717e6
+    c["Resonance556mj0Freq"] = 107.7503e6  # fit 2026-06-08 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.97, FWHM 55 kHz, 246 shots); was 107.735e6 (06-05); 107.717e6
     c["Resonance399Freq"] = 310e6              # not magic; changes with trap depth
 
     # Init: 2D MOT & Zeeman, electric fields, SLM servo
@@ -144,19 +144,22 @@ def _consts():
     c["BlueMOT"] = {
         "BFieldGradient": 30,                  # G/cm maximum
         "BiasCoilCurrent": {"Ryd": 3, "X": 0.1, "Y": 0, "Z": 0},
-        "FreqDetuning": -40e6,
+        "FreqDetuning": -44e6,                 # fast-loading opt 2026-06-05; was -40e6
         "Amp": 0.6,
-        "LoadingTime": 500e-3,
+        "LoadingTime": 230e-3,                 # fast-loading opt 2026-06-05 (loading saturates ~0.21); was 500e-3
     }
 
     # GreenMOT
     c["GreenMOT"] = {
         "BFieldRampTime": 100e-6,              # blue->green B-field ramp
         "BFieldGradient": 3,
-        "BiasCoilCurrent": {"Ryd": 0, "X": 0.039, "Y": 0.27, "Z": 0.18},
-        "PowerBroaden": {"HandoverTime": 30e-3, "FreqDetuning": 0.7e6, "Amp": 0.8},
-        "CoolDown": {"RampdownTime": 50e-3, "HoldTime": 200e-3,
-                     "FreqDetuning": 0.35e6, "Amp": 0.2},
+        # fast-loading opt 2026-06-05: X was 0.039, Y was 0.27
+        "BiasCoilCurrent": {"Ryd": 0, "X": 0.040, "Y": 0.268, "Z": 0.18},
+        # fast-loading opt 2026-06-05: HandoverTime was 30e-3
+        "PowerBroaden": {"HandoverTime": 15e-3, "FreqDetuning": 0.7e6, "Amp": 0.8},
+        # fast-loading opt 2026-06-05: HoldTime was 200e-3, Amp was 0.2
+        "CoolDown": {"RampdownTime": 50e-3, "HoldTime": 120e-3,
+                     "FreqDetuning": 0.35e6, "Amp": 0.25},
     }
 
     # Absorption imaging
@@ -209,10 +212,14 @@ def _consts():
         "Green": {"Freq": 118.1e6, "Amp": 0},
         "Blue": {"Freq": 320e6, "Amp": 0},
         "Ryd308": {"Freq": 200e6, "Amp": 0},
+        "Ionization": {"Amp": 0},              # 369 ionization-beam amp default (RydbergPushoutStep)
         "STIRAP": {"delay": 1e-6, "reverse_delay": 1e-6, "gap": 10e-6},
         "MRabi": {"Freq": 4000, "Gain": 0},
         "Ramsey": {"Phase": 0},
     }
+
+    # 616 AOM diverted/idle amplitude (RydbergPushoutStep restores this after pushout)
+    c["AOM616Divert"] = {"Amp": 0.11}
 
     # SLM trap modulation
     c["SLMTrapModulation"] = {
@@ -300,7 +307,7 @@ def _default_vals(consts):
     d["FreqEOM616"] = 200e6
     d["AmpEOM616"] = 0.7
     d["FreqAOM616"] = 120e6
-    d["AmpAOM616"] = 0.11
+    d["AmpAOM616"] = consts["AOM616Divert"]["Amp"]  # default AOM616 to the divert amplitude
     d["FreqAODs"] = 80e6
     d["AmpAODs"] = 0
     d["FreqAODv"] = 89.3e6

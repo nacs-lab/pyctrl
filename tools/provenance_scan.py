@@ -58,7 +58,10 @@ XREF_NAME = "xref.json"
 #     captured OFFLINE here (zero live-run cost), not via a live next_obj_id stack capture.
 # v8: + "pending_globals" (# of step/wait bands not yet placed for lack of the run's globals);
 #     drives the viewer's "N bands pending globals" note + the once-globals-land rebuild.
-XREF_VERSION = 8
+# v9: + per-basic-sequence tagging -- "steps" carry "seq_idx" and "time_regions" bands carry an
+#     optional 3rd element (== bseq_id), so a multi-basic-seq scan (e.g. SLM rearrangement) shows
+#     only the displayed basic sequence's phase ruler / wait bands (was: every bseq's, overlaid).
+XREF_VERSION = 9
 _DEFAULT_TICK = 10 ** 12                              # config.yml tick_per_sec (1 ps); engine-free fallback
 _SIDECAR_RE = re.compile(r"^data_\d{8}_\d{6}\.json$")
 # LIVE experiment + lib dirs (NOT the snapshot) so the provenance hooks are loaded.
