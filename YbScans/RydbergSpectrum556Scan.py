@@ -70,11 +70,11 @@ def build(field_G=0):
 
     # mj=0 resonance (MHz) -- expConfig Resonance556mj0Freq -- and its Zeeman shift per Gauss.
     # Slope 1.18 derived from the retired Spectrum556Scan.m windows (20 G ~131.3, 30 G ~143.1).
-    RES0_MHZ = 105.75 #107.7503
+    RES0_MHZ = 107.7503
     ZEEMAN_SLOPE_MHZ_PER_G = 1.18
 
     # Window half-width + step (MHz): coarse + wide at field (locate), fine + narrow at 0 G (known).
-    COARSE_HALF_MHZ, COARSE_STEP_MHZ = 5, 0.5
+    COARSE_HALF_MHZ, COARSE_STEP_MHZ = 15, 0.5
     FINE_HALF_MHZ, FINE_STEP_MHZ = 0.50, 0.03
 
     center_mhz = RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G
@@ -84,7 +84,7 @@ def build(field_G=0):
     g = ScanGroup()
 
     # ---- high-field push-out params (RydbergPushoutStep reads these) -------
-    g().Pushout.Green.Amp = 0.3
+    g().Pushout.Green.Amp = 0.2
     g().Pushout.Time = 10e-3
     g().Pushout.BiasCoilCurrent.Ryd = field_G      # Gauss -> Ryd coil current (30 -> 30 G)
 

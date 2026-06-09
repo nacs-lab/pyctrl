@@ -185,7 +185,7 @@ def _encode_value(v):
 
 
 def _encode_scalar(x):
-    """Encode one element of a vector / sweep value array (no nested lists allowed)."""
+    """Encode one element of a vector / sweep value array."""
     if callable(x):
         raise ValueError("function handles are not allowed inside a value array")
     if isinstance(x, bool):
@@ -194,8 +194,10 @@ def _encode_scalar(x):
         return float(x)
     if x is None or isinstance(x, str):
         return x
+    if isinstance(x, (list, tuple)):
+        return [_encode_scalar(e) for e in x]
     sc = _maybe_numpy_to_list(x)
-    if isinstance(sc, float) or isinstance(sc, (str,)):
+    if sc is not None:
         return sc
     raise ValueError("unsupported array element type for export: %r" % type(x).__name__)
 

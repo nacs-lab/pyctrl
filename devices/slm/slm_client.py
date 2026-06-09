@@ -208,6 +208,25 @@ class SlmClient:
         return self._post_json("/slm/cancel_last", body)
 
     # ----------------------------------------------------------------------- #
+    # server-side Python execution
+    # ----------------------------------------------------------------------- #
+    def eval_python(self, code, timeout_s=60.0):
+        """Run a Python snippet on the SLM server via /eval and return the response dict.
+
+        Pre-bound server-side names: ``client``, ``hw``, ``tools``, ``np``, ``server``.
+        Raises :class:`SlmHTTPError` on HTTP error; raises :class:`RuntimeError` if the
+        server reports a Python exception in ``response["error"]``."""
+        body = {"code": code, "session": self.client_id}
+        resp = self._post_json("/eval", body,
+                               extra_headers={"X-Eval-Timeout": str(float(timeout_s))})
+        if resp.get("error"):
+            raise RuntimeError("SLM /eval error: %s\nstdout: %s\nstderr: %s"
+                               % (resp["error"],
+                                  resp.get("stdout", ""),
+                                  resp.get("stderr", "")))
+        return resp
+
+    # ----------------------------------------------------------------------- #
     # loading phase (scan-long SLM session)
     # ----------------------------------------------------------------------- #
     def write_loading_phase(self, phase_path, loading_zernike=None, name=None,
