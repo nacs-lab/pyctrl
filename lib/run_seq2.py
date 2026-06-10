@@ -48,6 +48,8 @@ Design inspired by the MATLAB original; no brassboard-seq code.
 
 import time
 
+import run_timing
+
 
 def run_bseq(seq, idx, nidaq=None):
     """Run one basic sequence; return ``(next_idx, bseq_len)``.
@@ -60,42 +62,52 @@ def run_bseq(seq, idx, nidaq=None):
         raise RuntimeError("Sequence must be generated before running.")
     bseq = seq if idx == 1 else seq.basic_seqs[idx - 2]
 
-    for cb in bseq.before_bseq_cbs:
-        cb(seq)
-    pyseq.pre_run()
+    with run_timing.stage("before_bseq"):
+        for cb in bseq.before_bseq_cbs:
+            cb(seq)
+    with run_timing.stage("pre_run"):
+        pyseq.pre_run()
 
     # --- NI DAQ: arm BEFORE start (FPGA TTL0 then triggers it). Per-bseq None-guard. ---
     ni_armed = False
     ni_channels = getattr(seq, "ni_channels", None)
     if ni_channels:
-        ni_data = pyseq.get_nidaq_data("NiDAQ")
-        if ni_data is not None:                 # analog-free bseq -> skip arm AND wait
-            ni_nchns = len(ni_channels)
-            ni_ndata = len(ni_data)
-            if ni_ndata % ni_nchns != 0:
-                raise ValueError(
-                    "NI DAQ data length %d is not a multiple of channel count %d"
-                    % (ni_ndata, ni_nchns))
-            if nidaq is None:
-                from devices.nidaq import NiDAQRunner as nidaq  # lazy: needs hardware pkg
-            data = _reshape_sample_major(ni_data, ni_nchns)
-            nidaq.run(ni_channels, seq.config.ni_clocks, seq.config.ni_start, data)
-            ni_armed = True
+        with run_timing.stage("ni_arm"):
+            ni_data = pyseq.get_nidaq_data("NiDAQ")
+            if ni_data is not None:                 # analog-free bseq -> skip arm AND wait
+                ni_nchns = len(ni_channels)
+                ni_ndata = len(ni_data)
+                if ni_ndata % ni_nchns != 0:
+                    raise ValueError(
+                        "NI DAQ data length %d is not a multiple of channel count %d"
+                        % (ni_ndata, ni_nchns))
+                if nidaq is None:
+                    from devices.nidaq import NiDAQRunner as nidaq  # lazy: needs hardware pkg
+                data = _reshape_sample_major(ni_data, ni_nchns)
+                nidaq.run(ni_channels, seq.config.ni_clocks, seq.config.ni_start, data)
+                ni_armed = True
 
-    pyseq.start()
-    while not pyseq.wait(100):                   # poll-loop (MATLAB: while ~wait(pyseq,100))
-        pass
+    with run_timing.stage("start"):
+        pyseq.start()
+    with run_timing.stage("wait"):               # the HARDWARE sequence time (the ~700 ms floor)
+        while not pyseq.wait(100):               # poll-loop (MATLAB: while ~wait(pyseq,100))
+            pass
     if ni_armed:
         if nidaq is None:
             from devices.nidaq import NiDAQRunner as nidaq
-        nidaq.wait()
+        with run_timing.stage("ni_wait"):
+            nidaq.wait()
 
-    for cb in bseq.after_bseq_cbs:
-        cb(seq)
-    bseq_len = pyseq.cur_bseq_length()           # real engine call (easy to miss)
-    next_idx = int(pyseq.post_run())
-    for cb in bseq.after_branch_cbs:
-        cb(seq)
+    with run_timing.stage("after_bseq"):
+        for cb in bseq.after_bseq_cbs:
+            cb(seq)
+    with run_timing.stage("bseq_len"):
+        bseq_len = pyseq.cur_bseq_length()       # real engine call (easy to miss)
+    with run_timing.stage("post_run"):
+        next_idx = int(pyseq.post_run())
+    with run_timing.stage("after_branch"):
+        for cb in bseq.after_branch_cbs:
+            cb(seq)
     return next_idx, bseq_len
 
 
@@ -118,26 +130,31 @@ def run_real(seq, nidaq=None, clock=None, sleep=None):
     bseq_len = 0
     start_t = clock()
     try:
-        for cb in seq.before_start_cbs:
-            cb(seq)
-        seq.pyseq.init_run()
+        with run_timing.stage("before_start"):
+            for cb in seq.before_start_cbs:
+                cb(seq)
+        with run_timing.stage("init_run"):
+            seq.pyseq.init_run()
         idx = 1
         while idx != 0:
             start_t = clock()                    # captured PER-BSEQ; last value is used below
-            idx, bseq_len = run_bseq(seq, idx, nidaq=nidaq)
-        for cb in seq.after_end_cbs:             # inside the try (MATLAB ExpSeq.m:445-447)
-            cb(seq)
+            idx, bseq_len = run_bseq(seq, idx, nidaq=nidaq)  # times its own per-bseq stages
+        with run_timing.stage("after_end"):      # inside the try (MATLAB ExpSeq.m:445-447)
+            for cb in seq.after_end_cbs:
+                cb(seq)
     except BaseException:
         seq.reset_globals(False)                 # error path: reset then re-raise
         raise
     # success path: reset globals AFTER the shot (so values set before the run are observable)
-    seq.reset_globals(False)
+    with run_timing.stage("reset_globals"):
+        seq.reset_globals(False)
 
     # Tail wall-clock pause: wait until the LAST bseq's start_t + its length (- 50 ms).
-    end_after = start_t + bseq_len / seq.time_scale - 50e-3
-    end_t = clock()
-    if end_t < end_after:
-        sleep(end_after - end_t)
+    with run_timing.stage("tail_pause"):
+        end_after = start_t + bseq_len / seq.time_scale - 50e-3
+        end_t = clock()
+        if end_t < end_after:
+            sleep(end_after - end_t)
 
 
 def _reshape_sample_major(ni_data, ni_nchns):

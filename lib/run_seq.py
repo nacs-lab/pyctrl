@@ -44,6 +44,7 @@ Design inspired by the MATLAB original; no brassboard-seq code.
 
 import time
 
+import run_timing
 from seq_config import SeqConfig
 
 
@@ -111,6 +112,7 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
             seqlist[idx] = seqlist[prev2]               # compiled-id reuse (none in prod)
             return
         seqid_map[seqid] = idx
+        run_timing.mark("compiled", 1)              # this shot paid a real compile (cache miss)
         seqlist[idx] = compile_point(seqfn, seqparam)
         # After-end hooks: ARM (don't fire) per-unique-sequence work in run_real's
         # after_end window -- after before_start injected this shot's runtime globals
@@ -133,30 +135,40 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
 
     def run_one(idx):
         """The per-shot body (MATLAB nested ``run_seq``). Returns True to ABORT."""
+        run_timing.begin_shot(indices[idx - 1])         # opt-in per-shot timing (inert when OFF)
         while True:                                     # C.RESTART retry loop
-            if control is not None and control.check_pause_abort():
+            with run_timing.stage("gate"):
+                abort = control is not None and control.check_pause_abort()
+            if abort:
                 return True                             # gate: abort at this boundary
-            prepare_seq(idx)
+            with run_timing.stage("compile"):
+                prepare_seq(idx)
             if tstartwait > 0:
-                sleep(tstartwait)                       # NI-DAQ driver-timing workaround
-            run_cb(pre_cb, idx)
+                with run_timing.stage("tstartwait"):
+                    sleep(tstartwait)                   # NI-DAQ driver-timing workaround
+            with run_timing.stage("pre_cb"):
+                run_cb(pre_cb, idx)
             cur = seqlist[idx]
             # set_global for scan vars: usevar dormant -> empty -> no-op (kept for fidelity).
-            run_real(cur)
-            run_cb(post_cb, idx)
+            run_real(cur)                               # run_seq2.run_real times its own substages
+            with run_timing.stage("post_cb"):
+                run_cb(post_cb, idx)
             if not _restart(cur):
                 break
         counter["cur_seq_num"] += 1                     # AFTER a successful shot, not on abort
         _publish(on_seq_num, counter["cur_seq_num"])
         _bump_seq_id(seq_config)
+        run_timing.end_shot()                           # emit the shot's stage line + CSV row
         return False
 
+    run_timing.reset_scan()                             # drop any stale (prior aborted-scan) timing
     try:
         if new_run is not None:
             new_run()                                   # SeqManager.new_run() (engine reset)
         aborted = _scan_loop(run_one, nseq, rep, is_random, rng)
         return {"status": "aborted" if aborted else "ok", "nseq": counter["cur_seq_num"]}
     finally:
+        run_timing.scan_summary()                       # log mean/median/max per stage (no-op if OFF)
         # End-of-run reset (CurrentSeqNum -> 0). Abort/Pause are NOT cleared here -- the
         # single-clear-point (clear-at-job-start) policy clears them at the next begin_scan, so
         # a stale flag is cured by the next job, not by end-of-run (control_channel.py). Config
