@@ -37,7 +37,8 @@ INIT_PATTERN = "33x33_uniform"
 TARGET_PATTERN = "33x33_uniform"
 # ------------------------------------------------------------------------------------ #
 
-MODEL_FILENAME = "slmnet/checkpoints/experiment_sinc_ampmap_v3/best_model.pth"
+MODEL_FILENAME = "SLMnet/checkpoints/sinc_3x3_experiment/models/direct/direct_best.pth"
+# MODEL_FILENAME = "slmnet/checkpoints/experiment_sinc_ampmap_v3/best_model.pth"
 
 
 def _pattern_cfg(name):
@@ -99,15 +100,15 @@ def SLMRearrangementScan(url=None, reps=None):
     rp.warmup_kwargs.derive_threshold = 0.35
 
     # ---- rearrange_kwargs (g(); per-shot setup, sweepable) -----------------------------
-    g().rearrange_kwargs.nsteps = 150
-    g().rearrange_kwargs.step_period_ms = 1.0   # pinned
+    g().rearrange_kwargs.nsteps.scan(1, [50, 100, 150, 200])   # sweep (timing-vs-nsteps)
+    g().rearrange_kwargs.step_period_ms = 1.0   # pinned (period = 1 ms)
     g().rearrange_kwargs.protocol = "rearrange"
     g().rearrange_kwargs.extras.block_max_size = 256
-    g().rearrange_kwargs.extras.pattern = "smiley"
+    g().rearrange_kwargs.extras.pattern = "sunflower"
     g().rearrange_kwargs.extras.kagome_crop = 0.88
     g().rearrange_kwargs.extras.model_bookend_pre = False   # default: no full-grid model bookend
     g().rearrange_kwargs.extras.model_bookend_post = False
-    g().rearrange_kwargs.extras.ifEnhanced = True
+    g().rearrange_kwargs.extras.ifEnhanced = False
     g().rearrange_kwargs.extras.precompute = True
     g().rearrange_kwargs.extras.precompute_host = True   # host-resident precompute / pre-pin
     g().rearrange_kwargs.extras.hw_sequence = False
@@ -117,19 +118,19 @@ def SLMRearrangementScan(url=None, reps=None):
     # MOT/loading: 2026-06-05 loading-rate optimization (copied from YbScans/LACScan.py
     # Phase-8 g() block; expConfig.py deliberately left untouched). ~1.9x faster cycle at
     # the same ~0.58 single-atom peak loading rate.
-    g().BlueMOT.LoadingTime = 0.23                    # was 0.5
-    g().BlueMOT.FreqDetuning = -44e6                  # was -40e6 (saturation knee moved left)
-    g().BlueMOT.Amp = 0.6
-    g().GreenMOT.BiasCoilCurrent.X = 0.040            # was 0.039
-    g().GreenMOT.BiasCoilCurrent.Y = 0.268            # was 0.27
-    g().GreenMOT.BiasCoilCurrent.Z = 0.18
-    g().GreenMOT.PowerBroaden.HandoverTime = 0.015    # was 0.030
-    g().GreenMOT.CoolDown.FreqDetuning = 0.35e6
-    g().GreenMOT.CoolDown.Amp = 0.25                  # was 0.20
-    g().GreenMOT.CoolDown.HoldTime = 0.12             # was 0.2
-    g().GreenMOT.CoolDown.RampdownTime = 0.05
-    g().LAC.BlueLAC.FreqDetuning = -3.8e6             # LAC kept at config default
-    g().LAC.BlueLAC.Amp = 0.17                        # LAC kept at config default
+    # g().BlueMOT.LoadingTime = 0.23                    # was 0.5
+    # g().BlueMOT.FreqDetuning = -44e6                  # was -40e6 (saturation knee moved left)
+    # g().BlueMOT.Amp = 0.6
+    # g().GreenMOT.BiasCoilCurrent.X = 0.040            # was 0.039
+    # g().GreenMOT.BiasCoilCurrent.Y = 0.268            # was 0.27
+    # g().GreenMOT.BiasCoilCurrent.Z = 0.18
+    # g().GreenMOT.PowerBroaden.HandoverTime = 0.015    # was 0.030
+    # g().GreenMOT.CoolDown.FreqDetuning = 0.35e6
+    # g().GreenMOT.CoolDown.Amp = 0.25                  # was 0.20
+    # g().GreenMOT.CoolDown.HoldTime = 0.12             # was 0.2
+    # g().GreenMOT.CoolDown.RampdownTime = 0.05
+    # g().LAC.BlueLAC.FreqDetuning = -3.8e6             # LAC kept at config default
+    # g().LAC.BlueLAC.Amp = 0.17                        # LAC kept at config default
 
     # ---- run params (runp) ------------------------------------------------------------
     rp.NumPerGroup = 100000

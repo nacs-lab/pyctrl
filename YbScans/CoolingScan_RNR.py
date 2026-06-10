@@ -67,6 +67,12 @@ def _runp(g):
     rp.isGrid2 = 0
     rp.isInit = 0
     rp.isHC = 0
+    # --- optional per-scan SLM loading-pattern override (default from expConfig
+    #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
+    #     hologram for THIS scan (writes it + holds the SLM lock + detects with
+    #     that pattern's per-pattern thresholds):
+    # g.runp().loading_phase = "phase/33x33_uniform.pt"   # server-side WGS phase path
+    # g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
 
 
 def build(beam="h", fdet=DEF_FDET, famp=DEF_AMP, x_pin=DEF_X_PIN, h_pin=DEF_H_PIN,
