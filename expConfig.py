@@ -128,7 +128,7 @@ def _consts():
     c["Orca"] = {"ROI": [1000, 100, 2100, 2100], "ExposureTime": 0.050004}
 
     # 556nm resonance (calibrate daily by spectroscopy; 3P1 mj=0 near-magic)
-    c["Resonance556mj0Freq"] = 107.7503e6  # fit 2026-06-08 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.97, FWHM 55 kHz, 246 shots); was 107.735e6 (06-05); 107.717e6
+    c["Resonance556mj0Freq"] = 107.7677e6  # fit 2026-06-10 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.980, FWHM 49.3 kHz, 200 shots, scan 20260610123024); +12.5 kHz vs prior (within linewidth). was 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
     c["Resonance399Freq"] = 310e6              # not magic; changes with trap depth
 
     # Init: 2D MOT & Zeeman, electric fields, SLM servo
@@ -146,7 +146,7 @@ def _consts():
         "BiasCoilCurrent": {"Ryd": 3, "X": 0.1, "Y": 0, "Z": 0},
         "FreqDetuning": -44e6,                 # fast-loading opt 2026-06-05; was -40e6
         "Amp": 0.6,
-        "LoadingTime": 230e-3,                 # fast-loading opt 2026-06-05 (loading saturates ~0.21); was 500e-3
+        "LoadingTime": 300e-3,                 # fast-loading opt 2026-06-05 (loading saturates ~0.21); was 500e-3
     }
 
     # GreenMOT
@@ -158,7 +158,7 @@ def _consts():
         # fast-loading opt 2026-06-05: HandoverTime was 30e-3
         "PowerBroaden": {"HandoverTime": 15e-3, "FreqDetuning": 0.7e6, "Amp": 0.8},
         # fast-loading opt 2026-06-05: HoldTime was 200e-3, Amp was 0.2
-        "CoolDown": {"RampdownTime": 50e-3, "HoldTime": 120e-3,
+        "CoolDown": {"RampdownTime": 50e-3, "HoldTime": 200e-3,
                      "FreqDetuning": 0.35e6, "Amp": 0.25},
     }
 
@@ -172,6 +172,12 @@ def _consts():
         "VServo": None,                        # cross-ref -> Init.VSLMServo (set below)
         "Modulation": {"Time": 10e-3, "Freq": 100e3, "Amp": 0},
     }
+    # NOTE: the every-scan default loading pattern + defocus + AllScansLoadPattern
+    # toggle are NOT stored here. These ``consts`` are governed by the config drift
+    # oracle (THE ONE RULE: byte-identical to the MATLAB reference), so runtime SLM
+    # defaults must not live in them. They live alongside the existing
+    # DEFAULT_LOADING_DEFOCUS in pyctrl/YbExptCtrl/runner.py (DEFAULT_LOADING_PATTERN_PHASE
+    # / ALL_SCANS_LOAD_PATTERN); per-scan override is runp().loading_phase / loading_defocus.
 
     # LAC
     c["LAC"] = {
