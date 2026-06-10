@@ -5,12 +5,14 @@ and AWG/Orca defaults. This replaces the frozen ``tests/reference/config_referen
 for the live runner (the snapshot is demoted to the MATLAB-ground-truth reference for the drift
 oracle), curing the silent staleness of the captured config -- the config is now CODE.
 
-Because pyctrl serializes byte-identically to MATLAB, this module MUST stay numerically identical
-to ``matlab_new/expConfig.m``. While MATLAB is still production, ``expConfig.m`` remains the
-human-edited source and ``tests/test_exp_config.py`` (the drift oracle) asserts this module
-resolves to the SAME config as the committed MATLAB capture; recalibrate ``expConfig.m``,
-re-capture (``tools/capture_config_reference.m``), and mirror the change here until the oracle
-passes. At cutover (scenario 3, MATLAB retired) this becomes the single source.
+expConfig.py is pyctrl's live, executable config source -- the runner reloads it each job, and
+calibration edits (e.g. the daily ``Resonance556mj0Freq`` update) land here directly. Its values
+feed the serialize path, so ``tests/test_exp_config.py`` (the drift oracle) asserts this module
+still resolves to the SAME config as the frozen MATLAB capture
+(``tools/capture_config_reference.m``) -- a regression guard, not a live-MATLAB tracking
+requirement. ``matlab_new/expConfig.m`` is the reference the snapshot came from; if a scan still
+runs under MATLAB keep the change in sync there too, and re-capture the snapshot when you
+deliberately change a value.
 
 :func:`build_config` returns the raw dict ``SeqConfig`` consumes (same shape
 ``capture_config_reference.m`` emits). The long-lived runner reloads this module once per job

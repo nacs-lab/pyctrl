@@ -24,9 +24,9 @@ NOTE on the narrow window: the rigid shift keeps the 0.4 MHz / 10 kHz 0-field wi
 ~0.05 MHz/G slope error already walks the 0.4 MHz window off the line. Tune ``ZEEMAN_SLOPE_MHZ_PER_G``
 in build() if the dip isn't bracketed.
 
-Byte-equality note: the 0.01-MHz colon step is not integer-valued in float64, so the swept window is
-built with :func:`scan_export.matlab_colon` (bit-identical to MATLAB's colon; a naive ``a+k*step``
-differs by 1 ULP). The constant field shift is added in MHz before the ``*1e6``.
+The 0.01-MHz colon step is not integer-valued, so the swept window uses
+:func:`scan_export.matlab_colon` (a naive ``a+k*step`` drifts 1 ULP); the field shift is added
+in MHz before the ``*1e6``.
 
 This only BUILDS the ScanGroup + sends the descriptor JSON; it does NOT load the engine, so any
 interpreter with pyctrl importable + zmq works.

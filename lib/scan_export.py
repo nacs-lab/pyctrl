@@ -126,7 +126,7 @@ def matlab_colon(start, step, stop):
     symmetric build that minimises round-off. Naive ``start + k*step`` therefore differs from
     MATLAB by 1 ULP at some points (e.g. ``2:0.6:9`` at index 7: MATLAB yields
     ``6.199999999999999`` where the naive sum gives exactly ``6.2``). That 1-ULP gap WOULD
-    break THE ONE RULE, because a swept parameter is serialized as a raw float64 -- so for any
+    change the serialized bytes, because a swept parameter is serialized as a raw float64 -- so for any
     ported scan whose MATLAB sweep is written ``a:d:b`` with a non-integer step, build the
     value array with this, not a list comprehension.
 

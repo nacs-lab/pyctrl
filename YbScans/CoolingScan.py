@@ -15,11 +15,10 @@ optimisation campaign needs, each on the SAME byte-verified seq:
     Amp on dim 2). Find the X-beam cooling optimum.
   * ``h2d``       -- 2-D ``Pushout.Green.h.{Freq,Amp}`` (same structure). Find the h-beam optimum.
 
-Byte-equality (THE ONE RULE): every fixed freq/amp is read from ``Consts()`` exactly as the .m;
-the swept detunings/amps are built with ``scan_export.matlab_colon`` (MATLAB-exact colon) and the
-X/h frequency is ``Resonance556mj0Freq + detuning*1e6`` in the SAME order MATLAB evaluates it.
-``float(...)`` wraps the bare-Consts-leaf amps (a bare leaf would store a SubProps proxy -- see the
-pyctrl skill findings.md). Verify a representative config per point with the A/B oracle.
+Notes: fixed freq/amp are read from ``Consts()``; swept detunings/amps use
+``scan_export.matlab_colon`` (MATLAB-exact colon), and the X/h frequency is
+``Resonance556mj0Freq + detuning*1e6``. ``float(...)`` wraps the bare-Consts-leaf amps -- a bare
+leaf would store a SubProps proxy instead of a number (see the pyctrl skill findings.md).
 
 Run (pyctrl backend must be live at --url; reps drive passes, 0 = forever):
     cd pyctrl

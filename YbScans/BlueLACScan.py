@@ -14,10 +14,8 @@ reads ``LAC.BlueLAC.FreqDetuning`` via ``BlueLACStep`` (BlueLACStep.m:26 ->
 Freq556RydbergMOTh, :37), so sweeping it changes the serialized DDS frequency per point.
 One ``Imag399Step`` => NumImages=1 (loading image).
 
-Byte-equality note: ``-(2:0.6:9)*1e6`` has a non-integer (0.6-MHz) colon step whose float64
-values are NOT reproduced by a naive ``a+k*step`` (MATLAB's colon differs by 1 ULP at index 7).
-The detunings are built with :func:`scan_export.matlab_colon` (bit-identical to MATLAB), and the
-exact 12 values are byte-verified per point by ``tools/check_ab_byte_equality.py``.
+``-(2:0.6:9)*1e6`` has a non-integer (0.6-MHz) step, so it uses :func:`scan_export.matlab_colon`
+-- a naive ``a+k*step`` drifts 1 ULP (at index 7) and the swept value goes straight into the bytes.
 
 Run it (pyctrl backend must already be live at --url):
     cd pyctrl

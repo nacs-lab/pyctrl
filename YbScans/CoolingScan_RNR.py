@@ -21,12 +21,10 @@ the resonance, so the SWEPT value here is the bare detuning in Hz -- *1e6 is app
 not the resonance offset). ``ReleaseRecaptureStep`` reads ``ReleaseRecapture.Time`` (the 25 us
 release window); ``ReleaseRecapture.SLMAOMAmp`` is left at its ``Consts().SLM.AOM.Amp`` default.
 
-Byte-equality (THE ONE RULE): the swept detuning/amp colons have non-integer steps (0.01, 0.02),
-so they are built with ``scan_export.matlab_colon`` (bit-identical to MATLAB's colon operator -- a
-naive ``a+k*step`` differs by 1 ULP and a swept value serializes as a raw float64). The detuning
-``*1e6`` is applied per element in the SAME order MATLAB evaluates ``(a:d:b)*1e6``. The fixed
-scalars are plain float literals (no ``Consts()`` SubProps proxy to coerce). Verified per point by
-the A/B oracle (``tools/check_ab_byte_equality.py`` <-> ``tools/scan_point_list_ab.m`` build_coolingrnr).
+The swept detuning/amp colons have non-integer steps (0.01, 0.02), so they use
+``scan_export.matlab_colon`` (a naive ``a+k*step`` drifts 1 ULP from MATLAB's colon, and the
+swept value goes straight into the bytes); the ``*1e6`` is applied per element. The fixed scalars
+are plain float literals (no ``Consts()`` SubProps proxy to coerce).
 
 ``runp`` (NumPerGroup/NumImages/Scramble/...) drives the live run only; it never enters per-seq bytes.
 

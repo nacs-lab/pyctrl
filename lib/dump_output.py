@@ -10,12 +10,11 @@ the engine call and packs the result into the ``.seq`` byte layout. The byte
 packing itself is delegated to ``compare_seq_bytes.encode`` so the reader and the
 writer can never drift apart (one source of truth for the format).
 
-THE ONE RULE scope: ``.seq`` is an OUTPUT-ONLY plotting artifact consumed by
-SeqPlotter, *not* fed to the engine. So unlike ``serialize()`` it is not bound by
-byte-equality with MATLAB as a correctness requirement -- byte-equality is still
-a useful *validation* (see tests), but it also frees us to optionally enrich the
+``.seq`` is an OUTPUT-ONLY plotting artifact consumed by SeqPlotter, *not* fed to the
+engine -- so it is not on the serialize path and not bound by byte-equality. (Byte-equality
+is still a handy *validation*; see tests.) That freedom lets us optionally enrich the
 parameters block with a ``scanned`` marker for the dashboard's scanned-parameter
-highlighting (see ``mark_scanned``). Strict-parity callers simply omit the marker.
+highlighting (see ``mark_scanned``); strict-parity callers simply omit the marker.
 
 Where this lands: when ``ExpSeq`` is ported (Phase 2), ``dump_output(...)`` becomes
 ``ExpSeq.dump_output_to_file``; the channel-alias decoration needs the channel map

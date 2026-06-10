@@ -15,11 +15,9 @@ directions. ``PushoutStep`` reads Pushout.Green.Freq/Amp + Pushout.Time
 (PushoutStep.m:5,9,10); two ``Imag399Step`` calls => NumImages=2 (image before + after
 push-out => survival vs freq).
 
-Byte-equality note: the 0.1-MHz colon step is NOT integer-valued in float64, so the swept
-frequency is generated with :func:`scan_export.matlab_colon` -- a bit-identical reproduction of
-MATLAB's colon operator (a naive ``a+k*step`` differs by 1 ULP and would break THE ONE RULE,
-since the swept value serializes as a raw float64). The exact 31 frequencies this build emits
-are byte-verified against MATLAB per point by ``tools/check_ab_byte_equality.py``.
+The swept frequency uses :func:`scan_export.matlab_colon` because the 0.1-MHz step is not
+integer-valued in float64 -- a naive ``a+k*step`` drifts 1 ULP from MATLAB's colon, and the
+swept value goes straight into the seq bytes. (Integer-step sweeps don't need it.)
 
 This only BUILDS the ScanGroup + sends the descriptor JSON; it does NOT load the engine, so any
 interpreter with pyctrl importable + zmq works (yb_analysis env, base, or .venv-engine).
@@ -55,7 +53,7 @@ def build(mj=0):
     ``mj`` selects which Spectrum556Scan.m block to reproduce (both at 0 field):
       * ``mj=0`` -- "check ULE shift": weak/short push-out (Amp 0.10, 5 ms), 41 pts @ 10 kHz
         over (107.5:0.01:107.9) MHz, bracketing the 107.735 MHz mj=0 resonance (FWHM ~58 kHz).
-        This path is BYTE-IDENTICAL to the original mj=0 build (THE ONE RULE / A-B oracle).
+        This path reproduces the original mj=0 build.
       * ``mj=1`` -- "check trap depth": stronger/longer push-out (Amp 0.18, 20 ms), 31 pts @
         100 kHz over (103.5:0.1:106.5) MHz, the broader |mj|=1 trap-shifted feature.
     """

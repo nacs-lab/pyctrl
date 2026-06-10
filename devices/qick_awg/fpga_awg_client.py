@@ -8,9 +8,8 @@ length-prefixed protocol; the upstream Python client is ``FPGA_AWG_client.py`` f
 1:1 ``tcpclient`` reimplementation of that client (identical method set + wire format), so this
 module reproduces that exact wire protocol in pure Python (stdlib ``socket`` only -- no vendor dep).
 
-⚠ QICK output is **out-of-band** -- it is NOT in the serialized seq byte blob, so THE ONE RULE
-(byte-equality) does not apply here. This is a runtime device driver, like the Orca camera or the
-Siglent AWG recall path.
+⚠ QICK output is **out-of-band** (not in the serialized seq byte blob) -- a runtime device driver
+like the Orca camera or the Siglent AWG recall path, developed Python-first.
 
 Wire protocol (verified against ``FPGA_ABS_Client.m``):
   * ints  -- 4-byte **big-endian** uint32.

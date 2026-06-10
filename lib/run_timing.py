@@ -10,9 +10,7 @@ the tail pause -- is overhead this module attributes stage by stage so the gap b
 
 **Zero-cost when OFF (the default).** The fast path is a single ``is None`` check: when
 no shot is active (timing disabled), :func:`stage` / :func:`substage` yield immediately
-without touching the clock. So instrumenting the byte-critical-adjacent run loop costs
-nothing on a normal run. (The run loop is NOT the serialize path, so THE ONE RULE is not
-at stake here -- but keeping it inert keeps normal-run behavior byte-for-byte unchanged.)
+without touching the clock -- so instrumenting the run loop costs nothing on a normal run.
 
 **Turn it on** either way:
   * env ``YB_RUN_TIMING=1`` before launching the backend (inherited by the PyctrlLauncher

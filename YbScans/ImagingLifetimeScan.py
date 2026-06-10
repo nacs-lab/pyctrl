@@ -18,16 +18,12 @@ the hold and this measures the IMAGING lifetime):
 (PushouthXStep.m:5-13); two ``Imag399Step`` calls => NumImages=2 (image before + after the
 push-out => survival vs hold Time, with imaging light ON during the hold).
 
-Byte-equality notes (THE ONE RULE):
-  * The push-out freqs AND amps are computed FROM ``Consts()`` exactly as the .m does -- so they
-    track the live expConfig (e.g. Resonance556mj0Freq, refit 2026-06-05; the Imag399/Cool556
-    amplitudes) instead of being frozen here. This requires the real config active, so
-    ``build()`` loads it (the empty default test config would give wrong/zero consts).
-  * The swept ``Pushout.Time = [0.005, 0.1, 1, 2, 4, 8]`` is an explicit list (NOT a
-    colon/logspace expression): every value is the same float64 in Python and MATLAB (``0.1`` is
-    the identical inexact double on both sides; 1/2/4/8 are exact), so it is wired directly and
-    byte-verified per point by the A/B oracle (``tools/check_ab_byte_equality.py`` against the
-    MATLAB twin in ``tools/scan_point_list_ab.m``).
+Notes:
+  * The push-out freqs AND amps are read FROM ``Consts()`` so they track the live expConfig
+    (e.g. Resonance556mj0Freq, refit 2026-06-05) instead of being frozen here -- which is why
+    ``build()`` loads the real config (the empty test config would give wrong/zero consts).
+  * The swept ``Pushout.Time = [0.005, 0.1, 1, 2, 4, 8]`` is an explicit list, wired directly
+    (no colon needed; the values are the same float64 in both stacks).
 
 This only BUILDS the ScanGroup + sends the descriptor JSON; it does NOT load the engine, so any
 interpreter with pyctrl importable + zmq works (yb_analysis env, base, or .venv-engine).

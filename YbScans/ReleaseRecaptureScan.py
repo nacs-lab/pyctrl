@@ -15,20 +15,15 @@ Active scan (ReleaseTimeScan, the un-commented block):
     g().Cool556.Time                   = 5e-3
 => a 1-D 51-point sweep of the free-flight release time, 0 .. 50 us in 1 us steps.
 
-Byte-affecting reads (THE ONE RULE): the swept ``ReleaseRecapture.Time`` reaches
-``ReleaseRecaptureStep`` as ``t_release`` -> ``s.wait(t_release)`` (a per-point free-flight
-gap). ``Imag399.ExposureTime`` -> ``Imag399Step`` ``s.wait(t_Imag399)`` and ``SLM.VServo`` ->
-``SLMStep`` ``s.add('VSLMservo', V)`` and ``Cool556.Time`` -> ``Cool556hXStep`` ``s.wait`` are
-the fixed byte-affecting scalars. ``ReleaseRecapture.Hold`` is NOT read by
-``ReleaseRecaptureStep`` (it reads only ``Time`` + ``SLMAOMAmp``), so it never enters the bytes;
-it is mirrored here only for faithfulness to the .m. ``ReleaseRecapture.SLMAOMAmp`` is left at
-its ``Consts().SLM.AOM.Amp`` default.
+Param wiring: the swept ``ReleaseRecapture.Time`` reaches ``ReleaseRecaptureStep`` as
+``t_release`` -> ``s.wait(t_release)`` (the per-point free-flight gap). The fixed scalars:
+``Imag399.ExposureTime`` -> ``Imag399Step`` ``s.wait``; ``SLM.VServo`` -> ``SLMStep``
+``s.add('VSLMservo', V)``; ``Cool556.Time`` -> ``Cool556hXStep`` ``s.wait``.
+``ReleaseRecapture.Hold`` is set for faithfulness to the .m but unread by the step (which reads
+only ``Time`` + ``SLMAOMAmp``); ``SLMAOMAmp`` stays at its ``Consts().SLM.AOM.Amp`` default.
 
-Byte-equality note: the sweep is ``(0:1:50)*1e-6``. The colon ``0:1:50`` is INTEGER-valued, so
-``matlab_colon(0, 1, 50)`` returns exact integer-valued floats and the per-element ``*1e-6``
-(applied in MATLAB's order) is a bit-identical IEEE-754 double multiply -- no 1-ULP colon trap
-here (unlike the non-integer-step sweeps in BlueLAC/Spectrum556). Verified per point by the A/B
-oracle (``tools/check_ab_byte_equality.py`` <-> ``tools/scan_point_list_ab.m`` build_releasetime).
+The sweep ``(0:1:50)*1e-6`` is integer-valued, so it needs no special colon handling (no 1-ULP
+trap, unlike the non-integer steps in BlueLAC/Spectrum556).
 
 ``runp`` (NumPerGroup/NumImages/Scramble/...) drives the live run only; it never enters per-seq
 bytes. The .m sets ``NumPerGroup = numel(ScannedTime)*rep`` with ``rep=2`` => 102 (=> StackNum

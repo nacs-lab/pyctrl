@@ -12,12 +12,9 @@ Active scan (the ``AbsImg beam probing mj=0`` block from Spectrum399Scan.m):
 the two ``Imag399Step`` calls in PushoutSurvival399Seq => NumImages=2 (image before + after
 push-out => survival vs the 399 absorption-imaging frequency).
 
-Byte-equality note: the colon ``220:3:360`` is INTEGER-valued, so ``*1e6`` is an exact
-per-element scalar multiply (every value is an integer-valued float64, exactly representable)
--- there is no 1-ULP colon trap. We still generate it via :func:`scan_export.matlab_colon`
-for robustness + parity with the 556 sibling; for an integer sweep it is bit-identical to a
-plain list comprehension. The exact 47 frequencies are byte-verified against MATLAB per point
-by ``tools/check_ab_byte_equality.py``.
+The colon ``220:3:360`` is integer-valued, so ``*1e6`` is exact -- no 1-ULP trap. It still uses
+:func:`scan_export.matlab_colon` for parity with the 556 sibling (for an integer sweep that is
+equivalent to a plain list).
 
 This only BUILDS the ScanGroup + sends the descriptor JSON; it does NOT load the engine, so any
 interpreter with pyctrl importable + zmq works (yb_analysis env, base, or .venv-engine).

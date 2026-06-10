@@ -7,11 +7,11 @@ the argument/measure/global node factories. It is the *value-level* half of the
 serializer; the top-level + per-basic-sequence byte layout (``ExpSeq``/``RootSeq``)
 lands in Phase 2.
 
-THE ONE RULE: the bytes produced here (``node_serialized`` / ``data_serialized`` /
-``global_serialized`` and the per-arg encoding in ``serialize_arg``) must equal
-what MATLAB's ``SeqContext`` produces. All packing is little-endian (``struct '<'``)
-to match MATLAB ``typecast(...,'int8')`` on x86 -- the single most common
-serialization bug.
+Byte gate: the bytes produced here (``node_serialized`` / ``data_serialized`` /
+``global_serialized`` and the per-arg encoding in ``serialize_arg``) must match the
+blessed golden master -- a regression guard now; matched against MATLAB's
+``SeqContext`` at the port. All packing is little-endian (``struct '<'``) to match
+the ``typecast(...,'int8')`` layout on x86 -- the single most common serialization bug.
 
 Naming: MATLAB has both a private property ``node_serialized`` (the storage) and a
 method ``nodeSerialized()``. They collide under snake_case, so the storage is

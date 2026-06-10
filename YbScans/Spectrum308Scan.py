@@ -47,10 +47,10 @@ ramp duration), ``Pushout.Green.Freq``/``Green.Amp`` (556 push-out beam), ``Push
 against MATLAB per point by ``tools/check_ab_byte_equality.py`` (all 21 points identical).
 ==============================================================================
 
-Byte-equality note: the 0.2 colon step ``(10813:0.2:10817)`` is NOT integer-valued in float64,
-so it is generated with :func:`scan_export.matlab_colon` (bit-identical to MATLAB's colon; a
-naive ``a+k*step`` differs by 1 ULP). Even though MRabi.Freq is not byte-affecting today, we
-keep the exact MATLAB sweep values so the scanned-axis metadata + future AWG wiring stay exact.
+The 0.2-MHz colon step ``(10813:0.2:10817)`` is not integer-valued, so it uses
+:func:`scan_export.matlab_colon` (a naive ``a+k*step`` drifts 1 ULP). MRabi.Freq is not
+byte-affecting today, but the exact values are kept for the scanned-axis metadata + future
+AWG wiring.
 
 This only BUILDS the ScanGroup + sends the descriptor JSON; it does NOT load the engine, so any
 interpreter with pyctrl importable + zmq works (yb_analysis env, base, or .venv-engine).

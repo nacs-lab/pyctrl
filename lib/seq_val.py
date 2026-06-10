@@ -10,9 +10,10 @@ in ``seq_context.py`` (``SeqContext.serialize_arg`` / ``ensure_serialize``).
 
 Design note (brassboard-seq, https://github.com/euriqa-brassboard/brassboard-seq):
 the build/eval split is inspired by ``src/rtval.h`` + ``src/rtval_interp.h``; no
-code is copied. THE ONE RULE (byte-identical ``serialize()`` vs MATLAB) is the
-acceptance gate; this file reproduces MATLAB's construction-time constant folding
-exactly so the node graph -- and therefore the bytes -- match.
+code is copied. The serialize path is byte-gated: ``serialize()`` must match the
+blessed golden master byte-for-byte (a regression guard now; it matched MATLAB at
+the port). This file reproduces MATLAB's construction-time constant folding exactly
+so the node graph -- and therefore the bytes -- match.
 
 Type mapping (so the serialized constant tags match MATLAB's isfloat/islogical/
 isinteger dispatch):

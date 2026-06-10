@@ -8,7 +8,7 @@ number (in ticks) or a ``SeqVal``, and carries its own ``sign`` and obj-counter
 
 This is deliberately NOT the brassboard ``EventTime{static|rt}`` model: collapsing
 the chain into a single offset slot would lose the per-term ``id``/``sign`` bytes.
-THE ONE RULE depends on reproducing ``create``/``combine``'s exact term-splitting
+Byte stability depends on reproducing ``create``/``combine``'s exact term-splitting
 and obj-id consumption (see PYTHON_FRONTEND_PLAN.md Phase-2 resolved design).
 
 NOTE: the caller rounds ``term`` before calling ``create`` (MATLAB ``round`` is

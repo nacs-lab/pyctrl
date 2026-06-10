@@ -1,55 +1,39 @@
 # pyctrl — Python front-end for the Yb experiment control system
 
-A Python front-end that builds experiment sequences, serializes them to the
-**same byte format** the MATLAB stack uses, and drives the same `libnacs`
-engine. It runs **in parallel** with `matlab_new/` (no changes to MATLAB code)
-and is intended to be added to the `experiment-control` superproject as a git
-submodule. See `../PYTHON_FRONTEND_PLAN.md` for the full phased plan.
+pyctrl builds experiment sequences, serializes them to the byte format the
+`libnacs` engine consumes, runs the scan loop (run / abort / pause), and drives
+the FPGA / NI-DAQ / camera / AWG / SLM hardware. **It is the live runtime in
+practice** — the scenario-3 backend (`python -m launcher.run_loop.runner <url>`)
+drives real hardware; MATLAB (`matlab_new/`) still runs for the scans not yet
+ported. pyctrl is a git submodule of the `experiment-control` superproject.
 
-## Status: Phase 4 (ScanGroup) — complete
+It began as a byte-identical re-implementation of the MATLAB `lib/` sequence
+builder, and that heritage still governs the **serialize path**: a sequence's
+`serialize()` bytes must match the blessed golden master (the single
+MATLAB↔engine contract). That byte-equality is now a **regression guard** against
+pyctrl's own reference, and a **one-time gate** when porting a new scan — it does
+**not** constrain the run loop, the device drivers, provenance / `.seq` dumps, or
+anything off the serialize path. Develop those Python-first. Full plan + porting
+workflow: `../PYTHON_FRONTEND_PLAN.md` and the `pyctrl` skill.
 
-Phases 0–4 are done; **Phase 5 (run loop) is next**. Everything through ScanGroup
-serializes **byte-identically** to MATLAB, verified against `TestSeqContext.m` /
-`TestScanGroup.m` reference bytes, against live-MATLAB hex diffs, and by per-point
-byte oracles over the real `YbScans` corpus.
+## Status
+
+Phases 0–5 done (value math; tree/timing; config/globals; ScanGroup; run loop —
+live-verified end-to-end on real hardware). Phase 6 (experiment migration) is in
+progress: scans are ported and blessed against the per-point byte oracle, then
+confirmed with live A/B physics.
 
 | Phase | What | State |
 |------|------|-------|
 | 0 | Bootstrap & format pinning (`compare_bytes.py`, `seq_manager.py`, reference capture) | ✅ |
-| 1 | Value math & serializer (`SeqVal` + `SeqContext`, NODES/DATA/GLOBAL tables) | ✅ byte-verified |
-| 2 | Sequence tree & timing (`ExpSeq`/`RootSeq`/`SubSeq`/`TimeStep`) | ✅ byte-verified |
-| 3 | Config & globals (`SeqConfig` from real `expConfig`, `DynProps`/`SubProps`, `Consts()`); 15/16 ok `YbSeqs` build byte-identical | ✅ byte-verified |
-| 4 | `ScanGroup` (EnableScan, core model + DSL, materialization, `usevar`, `ScanAccessTracker`), full `TestScanGroup` parity | ✅ byte-verified |
-| 5 | Run loop (ExptServer / abort / pause; first phase touching the server and hardware) | ⬜ next |
-| 6 | Experiment migration | ⬜ |
+| 1 | Value math & serializer (`SeqVal` + `SeqContext`, NODES/DATA/GLOBAL tables) | ✅ |
+| 2 | Sequence tree & timing (`ExpSeq`/`RootSeq`/`SubSeq`/`TimeStep`) | ✅ |
+| 3 | Config & globals (`SeqConfig`, `DynProps`/`SubProps`, `Consts()`) | ✅ |
+| 4 | `ScanGroup` (EnableScan, DSL, materialization, `usevar`, `ScanAccessTracker`) | ✅ |
+| 5 | Run loop (ExptServer / abort / pause; drives the engine + hardware) | ✅ |
+| 6 | Experiment migration (`YbScans` ported + blessed) | 🔄 in progress |
 
-Walkthroughs of the completed phases live in `docs/phase{2,3,4}_walkthrough.html`.
-
-Phase 0 files:
-
-| File | Role |
-|------|------|
-| `tools/compare_bytes.py` | Reader/encoder for the serialized byte format; field-level diff; `--selftest` |
-| `lib/seq_manager.py` | Lazy wrapper over the `libnacs` engine (compile-only; no hardware) |
-| `tools/capture_matlab_reference.m` | Engine-free MATLAB capture of `serialize()` output |
-| `tools/reference_list.m` | Registry of ~12 sequences to capture (placeholder names, byte round-trip) |
-| `tools/reference_list_engine.m` | Registry of sequences with **real `config.yml` channel names** (engine-accepts check) |
-| `tools/dummy_libnacs.py` | Board-free stand-in for the engine; lets byte-equality CI run with no Zynq board |
-
-Phase 1 files (port of `matlab_new/lib/`; class names kept, methods snake_case):
-
-| File | MATLAB source | Role |
-|------|---------------|------|
-| `lib/seq_val.py` | `SeqVal.m` | Build-time value AST: opcodes, operator overloading, math fns, construction-time constant folding, `to_string`, `seqval_isequal` |
-| `lib/seq_context.py` | `SeqContext.m` | Node/value table + the node serializer (`serialize_arg`, `ensure_serialize`, `node_serialized`/`data_serialized`/`global_serialized`, constant interning) |
-| `lib/num_to_str.py` | `num_to_str.m` | Shortest round-tripping decimal string (used by `to_string`) |
-| `lib/interpolate.py` | `interpolate.m` | `OP_INTERP` node builder + numeric interpolation |
-| `lib/ifelse.py` | `ifelse.m` + `SeqVal.ifelse` | `OP_SELECT` node builder + numeric select |
-| `lib/fld.py` `lib/cld.py` `lib/rabi_line.py` | `fld.m` `cld.m` `rabiLine.m` | Numeric helpers |
-| `tests/test_seq_context.py` | `TestSeqContext.m` | AST + folding + **byte-equality** of the serialized tables |
-| `tests/test_num_to_str.py` `tests/test_math.py` | `TestNumToStr.m` `TestMath.m` | Numeric helper specs |
-| `tests/test_serialize.py` | (new) | Byte-order (little-endian) + constant-reuse guards |
-| `tests/test_compare_canonical.py` | (new) | Swappable-comparison canonicalization in `compare_bytes` |
+Phase walkthroughs: `docs/phase{0,1,2,3,4,5}_walkthrough.html`.
 
 **Comparison operators reflect — and that's OK.** Python has no `__rlt__`, so a
 constant on the *left* of a comparison reflects: `3 < g` dispatches to
