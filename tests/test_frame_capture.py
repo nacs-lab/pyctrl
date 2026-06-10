@@ -1,15 +1,16 @@
-"""Phase-5 frame_capture: feed a shot's frames to the ExptServer (run-loop capture core).
+"""frame_capture: the default per-shot ACQUIRE side (read frames -> hand to the persister).
 
-NO-HARDWARE: a fake camera (scripted read_frames batches) + a fake ExptServer record the
-store_imgs / seq_finish / seq_cancel calls. Verifies the column-major [s1,s2,s3,pixels] format,
-the per-shot publish, the short-read seq_cancel guard, and the post_cb wiring (scan_id holder +
-seq_id read from seq_config before the loop bumps it).
+NO-HARDWARE: a fake camera (scripted read_frames batches) + a fake server that records
+``publish_shot`` calls. Verifies the read loop (all-at-once / trickle / short-read / surplus) and
+the post_cb wiring (scan_id holder, seq_id read before the bump, async_ passthrough, short-read
+drops the shot). Persistence itself (encode + store + finish) is ExptServer's job, tested in
+test_exptserver_image_publish.py.
 """
 
 import numpy as np
 import pytest
 
-from frame_capture import make_capture_post_cb, store_shot_frames
+from frame_capture import make_capture_post_cb, read_shot_frames
 
 pytestmark = pytest.mark.no_hardware
 
@@ -26,18 +27,10 @@ class FakeCamera:
 
 class FakeServer:
     def __init__(self):
-        self.stored = []           # [(arr, scan_id, seq_id), ...]
-        self.finished = 0
-        self.cancelled = 0
+        self.published = []        # [(frames, scan_id, seq_id, async_), ...]
 
-    def store_imgs(self, arr, scan_id, seq_id):
-        self.stored.append((np.asarray(arr), scan_id, seq_id))
-
-    def seq_finish(self):
-        self.finished += 1
-
-    def seq_cancel(self):
-        self.cancelled += 1
+    def publish_shot(self, frames, scan_id, seq_id, *, async_=True):
+        self.published.append((list(frames), scan_id, seq_id, async_))
 
 
 def _frame(v):
@@ -45,46 +38,33 @@ def _frame(v):
 
 
 # --------------------------------------------------------------------------- #
-# store_shot_frames
+# read_shot_frames
 # --------------------------------------------------------------------------- #
-class TestStoreShotFrames:
-    def test_publishes_all_frames_then_finishes(self):
-        cam = FakeCamera([[_frame(1), _frame(2)]])     # both frames in one batch
-        srv = FakeServer()
-        n = store_shot_frames(cam, srv, 2, scan_id=111, seq_id=7, sleep=lambda dt: None)
-        assert n == 2
-        assert len(srv.stored) == 2 and srv.finished == 1 and srv.cancelled == 0
-        # ids stamped on each stored image; format = [s1,s2,s3, pixels col-major]
-        arr0, sid, qid = srv.stored[0]
-        assert sid == 111 and qid == 7
-        assert (int(arr0[0]), int(arr0[1]), int(arr0[2])) == (2, 3, 1)
-        assert arr0.size == 3 + 2 * 3 * 1
+class TestReadShotFrames:
+    def test_all_frames_in_one_batch(self):
+        cam = FakeCamera([[_frame(1), _frame(2)]])
+        frames = read_shot_frames(cam, 2, sleep=lambda dt: None)
+        assert frames is not None and len(frames) == 2
 
     def test_frames_arriving_across_batches(self):
-        cam = FakeCamera([[_frame(1)], [], [_frame(2)]])   # trickle in
-        srv = FakeServer()
-        n = store_shot_frames(cam, srv, 2, 1, 1, sleep=lambda dt: None)
-        assert n == 2 and srv.finished == 1
+        cam = FakeCamera([[_frame(1)], [], [_frame(2)]])
+        frames = read_shot_frames(cam, 2, sleep=lambda dt: None)
+        assert frames is not None and len(frames) == 2
 
-    def test_short_read_cancels_and_publishes_nothing(self):
-        # Only 1 of 2 frames ever arrives -> timeout -> seq_cancel, no store/finish.
-        cam = FakeCamera([[_frame(1)]])
-        srv = FakeServer()
+    def test_short_read_returns_none(self):
+        cam = FakeCamera([[_frame(1)]])                 # only 1 of 2 ever arrives
         clock = _fake_clock([0.0, 0.0, 5.0, 11.0])      # advance past timeout
-        n = store_shot_frames(cam, srv, 2, 1, 1, timeout=10.0,
-                              sleep=lambda dt: None, clock=clock)
-        assert n == 1
-        assert srv.stored == [] and srv.finished == 0 and srv.cancelled == 1
+        frames = read_shot_frames(cam, 2, timeout=10.0, sleep=lambda dt: None, clock=clock)
+        assert frames is None
 
-    def test_extra_frames_ignored(self):
-        cam = FakeCamera([[_frame(1), _frame(2), _frame(3)]])   # 3 arrive, only 2 wanted
-        srv = FakeServer()
-        n = store_shot_frames(cam, srv, 2, 1, 1, sleep=lambda dt: None)
-        assert n == 2 and len(srv.stored) == 2
+    def test_surplus_truncated_to_num_images(self):
+        cam = FakeCamera([[_frame(1), _frame(2), _frame(3)]])
+        frames = read_shot_frames(cam, 2, sleep=lambda dt: None)
+        assert len(frames) == 2
 
 
 # --------------------------------------------------------------------------- #
-# make_capture_post_cb -- scan_id holder + seq_id from seq_config
+# make_capture_post_cb -- scan_id holder + seq_id from seq_config + async passthrough
 # --------------------------------------------------------------------------- #
 class _G:
     def __init__(self, seq_id):
@@ -100,22 +80,33 @@ class _SeqConfig:
 
 
 class TestCapturePostCb:
-    def test_post_cb_uses_scan_and_seq_ids(self):
+    def test_post_cb_publishes_with_ids(self):
         cam = FakeCamera([[_frame(5)]])
         srv = FakeServer()
         cb = make_capture_post_cb(cam, srv, 1, scan_id=999, seq_config=_SeqConfig(seq_id=4))
-        cb(0, 1)                                        # run_scan_group's post_cb(cur, arg0)
-        assert srv.finished == 1
-        _, sid, qid = srv.stored[0]
-        assert sid == 999 and qid == 4
+        cb(0, 1)
+        assert len(srv.published) == 1
+        frames, sid, qid, async_ = srv.published[0]
+        assert sid == 999 and qid == 4 and async_ is True and len(frames) == 1
 
-    def test_scan_id_callable(self):
+    def test_scan_id_callable_and_sync_passthrough(self):
         cam = FakeCamera([[_frame(5)]])
         srv = FakeServer()
         cb = make_capture_post_cb(cam, srv, 1, scan_id=lambda: 1234,
-                                  seq_config=_SeqConfig(seq_id=2))
+                                  seq_config=_SeqConfig(seq_id=2), async_=False)
         cb(0, 1)
-        assert srv.stored[0][1] == 1234
+        _, sid, _, async_ = srv.published[0]
+        assert sid == 1234 and async_ is False           # kill-switch flows through to publish_shot
+
+    def test_short_read_drops_shot_no_publish(self):
+        cam = FakeCamera([[_frame(5)]])                  # 1 frame, need 2 -> short read
+        srv = FakeServer()
+        # timeout=0 -> the read deadline is already past, so read_shot_frames returns None
+        # immediately and the post_cb publishes nothing (the shot is dropped).
+        cb = make_capture_post_cb(cam, srv, 2, scan_id=1, seq_config=_SeqConfig(seq_id=1),
+                                  timeout=0.0)
+        cb(0, 1)
+        assert srv.published == []
 
 
 def _fake_clock(times):

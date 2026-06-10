@@ -66,6 +66,39 @@ class ScanContext:
         caller bails without rearranging on a stale grid)."""
         return self._detector.bits(img)
 
+    # ----------------------------------------------------------------------- #
+    # shot-error reporting (feeds the dashboard's "shots failing" banner)
+    # ----------------------------------------------------------------------- #
+    def record_error(self, message, kind=None, seq_id=None):
+        """Log ``message`` (exactly as ``self.log`` would) AND record it as a failed shot on the
+        ExptServer, so the live monitor can surface "shots are failing" instead of a bare
+        "Running / no data" when every rearrange shot errors. Best-effort on both halves -- a
+        callback must never crash on its own error reporting."""
+        try:
+            self.log(message)
+        except Exception:  # noqa: BLE001
+            pass
+        _safe_server_call(self.server, "record_shot_error", message, self.scan_id, seq_id, kind)
+
+    def record_ok(self):
+        """Mark that a rearrange shot completed without error, so the dashboard sees a recovery
+        (clears the "shots failing" banner promptly rather than waiting out the staleness window).
+        Best-effort -- a missing method (older/MATLAB server) is a harmless no-op."""
+        _safe_server_call(self.server, "record_shot_ok")
+
+
+def _safe_server_call(server, method, *args):
+    """Call ``server.method(*args)`` best-effort (missing hook / failure never crashes a callback)."""
+    if server is None:
+        return
+    fn = getattr(server, method, None)
+    if fn is None:
+        return
+    try:
+        fn(*args)
+    except Exception:  # noqa: BLE001
+        pass
+
 
 _CTX = None   # the active ScanContext, or None when no rearrangement-capable scan is running
 

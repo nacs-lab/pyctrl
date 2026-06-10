@@ -384,6 +384,12 @@ class _StoreServer:
     def seq_finish(self):
         self.finished += 1
 
+    def publish_shot(self, frames, scan_id, seq_id, *, async_=True):
+        # mirror ExptServer: stage each (raw) frame then finish the shot
+        for f in frames:
+            self.store_imgs(f, scan_id, seq_id)
+        self.seq_finish()
+
 
 class _G:
     def __init__(self, seq_id):

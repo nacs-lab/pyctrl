@@ -16,11 +16,14 @@ from InitStep import InitStep
 from LACStep import LACStep
 from SLMStep import SLMStep
 
+from seq_capability import seq_capabilities
+
 
 def _noop(s1):
     pass
 
 
+@seq_capabilities(owns_frames=True)   # grabs + stores its own frames mid-sequence (the handoffs)
 def RearrangeCommSeq2(s):
     # Per-seq coordination flags.
     s.G.rearrange_img1_ok = False

@@ -1,14 +1,23 @@
-"""ExptServer.py -- the ZMQ hub hosted by whichever backend is live.
+"""ExptServer.py -- the ZMQ hub hosted by the pyctrl backend.
 
-VERBATIM COPY of ``matlab_new/YbExptCtrl/ExptServer.py`` (do not diverge the body):
-the ExptServer ZMQ protocol is the SINGLE cross-backend contract shared by the MATLAB
-runner, the pyctrl run loop, and the yb_analysis monitor (references/runtime-design.md:
-"one contract ... hosted by whichever backend is live"). In scenario 3 (new monitor +
-pyctrl, MATLAB off) the pyctrl run loop (``runner.py``) instantiates this and drains the
-queue via ``pop_next_descriptor`` / ``pop_next_job``; the wire format (verbs, the
-``get_imgs`` column-major/shape-prefix/0-separated flat-double format ``_process_imgs``
-parses, ``ping``->``pong``) must stay byte-identical to the MATLAB-hosted copy or the
-monitor mis-reads it. Keep this file a faithful copy and re-sync if the MATLAB one changes.
+The ExptServer ZMQ protocol is the contract between the backend and the yb_analysis monitor
+(references/runtime-design.md: "one contract ... hosted by whichever backend is live"). The
+pyctrl run loop (``runner.py``) instantiates this and drains the queue via
+``pop_next_descriptor`` / ``pop_next_job``. The **WIRE FORMAT** must stay compatible with the
+monitor -- the verb names, ``ping``->``pong``, and the ``get_imgs`` column-major /
+shape-prefix / 0-separated flat-double layout ``_process_imgs`` parses -- or the monitor
+mis-reads it. The IMPLEMENTATION is free to diverge: this is NO LONGER kept as a verbatim copy
+of the MATLAB ``ExptServer.py`` (only the wire format is load-bearing).
+
+This hub OWNS image persistence. ``store_imgs`` / ``seq_finish`` / ``seq_cancel`` are the
+low-level wire-format sink (stage encoded frames into ``temp_imgs``, then publish/drop the shot).
+On top of them, ``publish_shot`` / ``stage_frame`` / ``finish_shot`` / ``cancel_shot`` +
+``drain_images`` run encode+stage+finish on a **single FIFO worker thread**, so the per-shot save
+overlaps the next shot's hardware (the run loop hands raw frames here and moves on). The worker is
+the SOLE writer of ``temp_imgs`` -> single-writer by construction, so no caller locks/joins are
+needed; FIFO ordering preserves (img1 -> img2 -> finish) and shot order. Pass ``async_=False``
+(the ``YB_ASYNC_FRAME_SAVE=0`` kill-switch, applied per-scan by the runner) to run a call inline
+on the caller thread -- byte-for-byte the pre-async behaviour, for an A/B or a rollback.
 
 Scenario-3 note: only TWO submission paths exist today -- a JSON ``submit_scan_descriptor``
 (the new monitor) and the MATLAB ".m run-button" ``submit_job`` (a MATLAB byte-stream
@@ -20,6 +29,7 @@ JSON job payload it produces and consumes itself -- see runner.py).
 import errno
 import json
 import os
+import queue
 import tempfile
 import threading
 import time
@@ -127,6 +137,13 @@ class ExptServer(object):
             self.nseq_imgs = 0  # number of sequences of images stored
         self.temp_imgs = []  # stored mid sequence
 
+        # Image-persistence worker: a single FIFO thread that runs encode+stage+finish OFF the
+        # run-loop thread (see publish_shot / stage_frame). One worker => temp_imgs has exactly
+        # one writer => no caller locks/joins. Started here; stopped in stop_worker.
+        self.__img_q = queue.Queue()
+        self.__img_worker = None
+        self.__start_img_worker()
+
         # status of seq
         with self.__seq_lock:
             self.__seq_req = self.SeqRequest.NoRequest
@@ -215,10 +232,18 @@ class ExptServer(object):
             with self.__worker_lock:
                 self.__worker_req = self.WorkerRequest.Stop
             self.__worker.join()
-        else:
-            return
+        # Stop the image-persistence worker too (drains by FIFO: the None sentinel is processed
+        # after all queued work). Best-effort so teardown never hangs/raises.
+        if getattr(self, '_ExptServer__img_worker', None) is not None:
+            try:
+                self.__img_q.put(None)
+                self.__img_worker.join(timeout=10)
+            except Exception:
+                pass
+            self.__img_worker = None
 
     def start_worker(self):
+        self.__start_img_worker()       # idempotent: (re)start the image worker too
         if hasattr(self, '_ExptServer__worker'):
             if self.__worker.is_alive():
                 return
@@ -226,6 +251,15 @@ class ExptServer(object):
             self.__worker_req = self.WorkerRequest.NoRequest
         self.__worker = threading.Thread(target=self.__worker_func)
         self.__worker.start()
+
+    def __start_img_worker(self):
+        """(Re)start the single FIFO image-persistence worker if it isn't already running."""
+        if getattr(self, '_ExptServer__img_worker', None) is not None \
+                and self.__img_worker.is_alive():
+            return
+        self.__img_worker = threading.Thread(
+            target=self.__img_worker_func, name="ExptServer-img", daemon=True)
+        self.__img_worker.start()
 
     def handle_msg(self, addr, msg_str: str) -> bool:
         # Method to handle different requests from external clients
@@ -680,6 +714,74 @@ class ExptServer(object):
 
     def seq_cancel(self):
         self.temp_imgs.clear()
+
+    # ------------------------------------------------------------------ #
+    # async image persistence -- encode + stage + finish on the FIFO worker
+    # ------------------------------------------------------------------ #
+    def publish_shot(self, frames, scan_id=-1, seq_id=-1, *, async_=True):
+        """Encode + stage ALL raw ``frames`` + ``seq_finish`` as one ordered unit.
+
+        ``async_`` (default) enqueues the work on the image worker so it overlaps the next shot's
+        hardware; ``async_=False`` runs it inline (the ``YB_ASYNC_FRAME_SAVE=0`` kill-switch / A/B
+        "before" mode). The whole-shot path used by the default capture post_cb."""
+        self.__submit_img(lambda: self.__publish_frames(frames, scan_id, seq_id), async_)
+
+    def stage_frame(self, frame, scan_id=-1, seq_id=-1, *, async_=True):
+        """Encode + stage ONE raw frame into the current shot (no finish). The incremental path
+        the rearrangement seq uses to stage frame-by-frame across its handoffs."""
+        self.__submit_img(
+            lambda: self.store_imgs(self.__encode_frame(frame), scan_id, seq_id), async_)
+
+    def finish_shot(self, *, async_=True):
+        """Publish the staged shot (``seq_finish``), ordered after any pending stage_frame."""
+        self.__submit_img(self.seq_finish, async_)
+
+    def cancel_shot(self, *, async_=True):
+        """Drop the staged shot (``seq_cancel``), ordered after any pending stage_frame."""
+        self.__submit_img(self.seq_cancel, async_)
+
+    def drain_images(self):
+        """Block until the image worker has processed every queued unit (call at scan end)."""
+        if getattr(self, '_ExptServer__img_worker', None) is not None:
+            self.__img_q.join()
+
+    def __submit_img(self, work, async_):
+        if async_:
+            self.__img_q.put(work)
+        else:
+            self.__run_img_work(work)       # inline (kill-switch / tests)
+
+    def __img_worker_func(self):
+        while True:
+            work = self.__img_q.get()
+            try:
+                if work is None:            # FIFO sentinel from stop_worker
+                    return
+                self.__run_img_work(work)
+            finally:
+                self.__img_q.task_done()
+
+    def __run_img_work(self, work):
+        try:
+            work()
+        except Exception as ex:  # a persist failure DROPS the shot, never crashes the worker
+            print("[ExptServer] image persist failed: %s" % ex)
+            try:
+                self.seq_cancel()           # no half-staged shot left in temp_imgs
+            except Exception:
+                pass
+
+    def __publish_frames(self, frames, scan_id, seq_id):
+        """Stage every raw frame then finish the shot (the publish_shot work unit)."""
+        for f in frames:
+            self.store_imgs(self.__encode_frame(f), scan_id, seq_id)
+        self.seq_finish()
+
+    @staticmethod
+    def __encode_frame(frame):
+        """Raw camera frame -> the column-major ``[s1,s2,s3, pixels]`` store_imgs wire array."""
+        from devices.orca import to_store_array
+        return to_store_array(frame)
 
     def set_config(self, date: str, time: str):
         with self.__data_lock:

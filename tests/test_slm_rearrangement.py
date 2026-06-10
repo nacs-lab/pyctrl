@@ -362,8 +362,145 @@ def test_pause_resume_hooks_route_to_session(monkeypatch):
 
 
 # =========================================================================== #
-# rearrange_runtime: the ported atom detector (sparse matvec bits)
+# RearrangeCommSeq callbacks -> the ExptServer persister (stage_frame/finish_shot/cancel_shot)
 # =========================================================================== #
+class FakeImgServer:
+    """Sync stand-in for the ExptServer persister (the real one is async on a FIFO worker; sync
+    here makes the rearrange callback-ordering tests deterministic). ``stage_frame`` stages a
+    frame, ``finish_shot`` publishes the staged shot as one pair, ``cancel_shot`` drops it."""
+
+    def __init__(self):
+        self.temp = []
+        self.finished = []      # list of published shots (each a list of staged frames)
+        self.cancelled = 0
+
+    def stage_frame(self, frame, scan_id=-1, seq_id=-1, *, async_=True):
+        self.temp.append((frame, scan_id, seq_id))
+
+    def finish_shot(self, *, async_=True):
+        self.finished.append(list(self.temp))
+        self.temp = []
+
+    def cancel_shot(self, *, async_=True):
+        self.cancelled += 1
+        self.temp = []
+
+
+class FakeReClient:
+    def __init__(self, rearrange_result=None, raise_rearrange=False):
+        self.calls = []
+        self._r = rearrange_result if rearrange_result is not None else {"ok": True}
+        self._raise = raise_rearrange
+
+    def rearrange(self, bits, **kw):
+        self.calls.append(("rearrange", bits, kw))
+        if self._raise:
+            raise RuntimeError("rearrange boom")
+        return self._r
+
+    def update_rearrange(self, bits, **kw):
+        self.calls.append(("update", bits, kw))
+
+    def cancel_last_shot(self, **kw):
+        self.calls.append(("cancel_last", kw))
+
+    def release_lock(self, device="all"):
+        self.calls.append(("release", device))
+
+
+class FakeReCam:
+    """read_frames returns exactly one frame per grab; current_roi for the detector roi_provider."""
+
+    def __init__(self, frame):
+        self._frame = frame
+
+    def read_frames(self):
+        return [self._frame]
+
+    def current_roi(self):
+        return [0, 0, int(self._frame.shape[1]), int(self._frame.shape[0])]
+
+
+def _fake_s1(lock_ok=True):
+    from dyn_props import DynProps
+    s1 = type("S1", (), {})()
+    s1.G = DynProps({})
+    s1.G.rearrange_lock_ok = lock_ok
+    s1.G.rearrange_img1_ok = False
+    s1.G.seq_id = 7
+    return s1
+
+
+def _rearrange_ctx(server, client, cam, detect="1"):
+    ctx = rearrange_runtime.ScanContext(session=None, camera=cam, server=server,
+                                        client=client, scan_id="20260609120000")
+    ctx.detect_bits = lambda _img: detect          # bypass the real detector/calibration
+    return ctx
+
+
+def test_hand_over_then_post_run_stages_aligned_pair():
+    np = pytest.importorskip("numpy")
+    import RearrangeCommSeq as R
+    frame = np.zeros((8, 8), dtype=np.uint16)
+    server, client = FakeImgServer(), FakeReClient({"ok": True})
+    ctx = _rearrange_ctx(server, client, FakeReCam(frame))
+    rearrange_runtime.set_context(ctx)
+    try:
+        s1 = _fake_s1(lock_ok=True)
+        R.hand_over_slm(s1)                          # stage img1 -> rearrange()
+        assert s1.G.rearrange_img1_ok(False) is True
+        assert any(c[0] == "rearrange" for c in client.calls)
+        R.post_run(s1)                               # stage img2 -> finish_shot
+    finally:
+        rearrange_runtime.clear_context()
+    assert len(server.finished) == 1                # one published shot
+    assert len(server.finished[0]) == 2             # img1 then img2, aligned + in order
+    assert server.cancelled == 0
+    assert ("release", "compute") in client.calls   # compute lock released in finally
+
+
+def test_hand_over_rearrange_failure_cancels_shot():
+    np = pytest.importorskip("numpy")
+    import RearrangeCommSeq as R
+    frame = np.zeros((8, 8), dtype=np.uint16)
+    server, client = FakeImgServer(), FakeReClient(raise_rearrange=True)
+    ctx = _rearrange_ctx(server, client, FakeReCam(frame))
+    rearrange_runtime.set_context(ctx)
+    try:
+        s1 = _fake_s1(lock_ok=True)
+        R.hand_over_slm(s1)                          # rearrange raises -> stage img1 then cancel
+        assert s1.G.rearrange_img1_ok(False) is False
+        assert any(c[0] == "cancel_last" for c in client.calls)
+        assert server.cancelled >= 1
+        assert server.temp == []                     # staged img1 dropped, no leak
+        R.post_run(s1)
+    finally:
+        rearrange_runtime.clear_context()
+    assert server.finished == []                     # nothing published
+
+
+def test_hand_over_img1_unavailable_cancels():
+    np = pytest.importorskip("numpy")
+    import RearrangeCommSeq as R
+
+    class _NoFrameCam:
+        def read_frames(self):
+            return []                                # never yields a frame -> short read
+        def current_roi(self):
+            return [0, 0, 8, 8]
+
+    server, client = FakeImgServer(), FakeReClient({"ok": True})
+    ctx = _rearrange_ctx(server, client, _NoFrameCam())
+    rearrange_runtime.set_context(ctx)
+    try:
+        s1 = _fake_s1(lock_ok=True)
+        R.hand_over_slm(s1)                          # img1 grab fails -> cancel, no rearrange
+    finally:
+        rearrange_runtime.clear_context()
+    assert server.cancelled >= 1
+    assert not any(c[0] == "rearrange" for c in client.calls)
+
+
 def test_detector_bits_day_folder(tmp_path):
     np = pytest.importorskip("numpy")
     pytest.importorskip("scipy")

@@ -34,8 +34,10 @@ from LACStep import LACStep
 from SLMStep import SLMStep
 
 import rearrange_runtime
+from seq_capability import seq_capabilities
 
 
+@seq_capabilities(owns_frames=True)   # grabs + stores its own frames mid-sequence (the handoff)
 def RearrangeCommSeq(s):
     # Per-seq coordination flags (DynProps reads return a bool, not a SubProps).
     s.G.rearrange_img1_ok = False
@@ -130,11 +132,13 @@ def pre_run(s1):
     try:
         c.setup_rearrangement(**args)
     except Exception as err:  # noqa: BLE001
-        ctx.log("[pre_run] setup_rearrangement failed: %s" % err)
+        ctx.record_error("[pre_run] setup_rearrangement failed: %s" % err,
+                         kind="setup_rearrangement", seq_id=_seq_id(s1))
     try:
         c.reload_rearrange()
     except Exception as err:  # noqa: BLE001
-        ctx.log("[pre_run] reload_rearrange failed: %s" % err)
+        ctx.record_error("[pre_run] reload_rearrange failed: %s" % err,
+                         kind="reload_rearrange", seq_id=_seq_id(s1))
 
 
 def hand_over_slm(s1):
@@ -148,7 +152,7 @@ def hand_over_slm(s1):
     img, ok = rearrange_runtime.grab_one_frame(ctx.camera, timeout=0.1)
     if not ok:
         ctx.log("[hand_over_slm] seq %d: img1 unavailable; cancelling" % _seq_id(s1))
-        _safe(ctx.server, "seq_cancel")
+        _safe(ctx.server, "cancel_shot")
         return
 
     bits = ctx.detect_bits(img)
@@ -157,19 +161,28 @@ def hand_over_slm(s1):
 
     c = ctx.client
     runid = _runid_kwargs(ctx.scan_id, _seq_id(s1))
+    # Hand img1 to the ExptServer persister (async): the encode + store runs on the server's single
+    # FIFO worker, so it overlaps rearrange()'s SLM round-trip AND the next basic sequence's
+    # hardware instead of adding ~100 ms to the held-atom critical path. FIFO + single worker keep
+    # (img1 -> img2 -> finish) ordered and temp_imgs single-writer; post_run enqueues img2 +
+    # finish_shot. A persist failure is handled by the worker (it cancels the shot), so there is no
+    # synchronous result to reconcile here -- the live signal we gate on is the rearrange() result.
+    _safe(ctx.server, "stage_frame", img, ctx.scan_id, _seq_id(s1))
     try:
         r = c.rearrange(bits, **runid)
         if isinstance(r, dict) and r.get("handoff_idle"):
             ctx.log("[hand_over_slm] seq %d: server idle; cancelling shot, waiting 1 s"
                     % _seq_id(s1))
-            _safe(ctx.server, "seq_cancel")
+            _safe(ctx.server, "cancel_shot")   # ordered after the staged img1 -> drops it
             s1.G.rearrange_img1_ok = False
             time.sleep(1.0)
             return
-        _store_img(ctx, img, _seq_id(s1))
         s1.G.rearrange_img1_ok = True
         if isinstance(r, dict) and not r.get("ok", True):
-            ctx.log("[hand_over_slm] rearrange returned ok=false")
+            ctx.record_error("[hand_over_slm] rearrange returned ok=false",
+                             kind="rearrange", seq_id=_seq_id(s1))
+        else:
+            ctx.record_ok()             # healthy shot -> clears the "failing" banner on recovery
     except Exception as err:  # noqa: BLE001
         # rearrange() may have committed server-side before a downstream failure; drop the
         # phantom diag ledger row so the SLM ledger stays aligned with the lab seq_ids.
@@ -178,7 +191,9 @@ def hand_over_slm(s1):
                 c.cancel_last_shot(**runid)
         except Exception:  # noqa: BLE001 - older server lacks /slm/cancel_last; non-fatal
             pass
-        ctx.log("[hand_over_slm] rearrange call failed: %s" % err)
+        _safe(ctx.server, "cancel_shot")   # drop the staged img1 (ordered after it)
+        ctx.record_error("[hand_over_slm] rearrange call failed: %s" % err,
+                         kind="rearrange", seq_id=_seq_id(s1))
 
 
 def post_run(s1):
@@ -188,17 +203,21 @@ def post_run(s1):
     if ctx is None:
         return
 
+    # Pair alignment gates on the rearrange() result (rearrange_img1_ok), the live signal. img1's
+    # persist is fire-and-forget on the server's FIFO worker; a persist failure is handled there
+    # (the worker cancels the shot), and FIFO ordering means img2 + finish_shot below queue AFTER
+    # the staged img1, so no join is needed here.
     try:
         if not s1.G.rearrange_img1_ok(False):
-            # hand_over_slm did not store img1 -> drain the final frame + cancel so the .h5 stays
-            # in aligned (img1, img2) pairs.
+            # img1 not rearranged -> drain the final frame + cancel so the .h5 stays in aligned
+            # (img1, img2) pairs.
             rearrange_runtime.grab_one_frame(ctx.camera, timeout=0.2)
-            _safe(ctx.server, "seq_cancel")
+            _safe(ctx.server, "cancel_shot")
         else:
             img, ok = rearrange_runtime.grab_one_frame(ctx.camera, timeout=0.1)
             if not ok:
                 ctx.log("[post_run] seq %d: img2 unavailable; cancelling" % _seq_id(s1))
-                _safe(ctx.server, "seq_cancel")
+                _safe(ctx.server, "cancel_shot")
             else:
                 bits2 = ctx.detect_bits(img)
                 if bits2 and ctx.client is not None:
@@ -207,8 +226,8 @@ def post_run(s1):
                             bits2, **_runid_kwargs(ctx.scan_id, _seq_id(s1)))
                     except Exception as err:  # noqa: BLE001
                         ctx.log("[post_run] update_rearrange failed: %s" % err)
-                _store_img(ctx, img, _seq_id(s1))
-                _safe(ctx.server, "seq_finish")
+                _safe(ctx.server, "stage_frame", img, ctx.scan_id, _seq_id(s1))   # img2
+                _safe(ctx.server, "finish_shot")                                  # publish the pair
     finally:
         # Release the per-shot compute lock; keepalive (renew) the scan-long slm lock. The
         # scan-long session owns slm and releases it at scan end -- never release slm here.
@@ -224,17 +243,6 @@ def post_run(s1):
 # =========================================================================== #
 # helpers
 # =========================================================================== #
-def _store_img(ctx, img, seq_id):
-    """Store one frame via the ExptServer in the column-major store_imgs wire format."""
-    if ctx.server is None:
-        return
-    try:
-        from devices.orca import to_store_array
-        ctx.server.store_imgs(to_store_array(img), ctx.scan_id, seq_id)
-    except Exception as err:  # noqa: BLE001
-        ctx.log("[store_img] failed: %s" % err)
-
-
 def _seq_id(s1):
     try:
         return int(s1.G.seq_id(1))

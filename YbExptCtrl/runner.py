@@ -444,6 +444,16 @@ def make_engine_run(server, camera, seq_config, log=None):
         post = list(opts.pop("post_cb", []) or [])
         pre = list(opts.pop("pre_cb", []) or [])
         scan_id = _new_scan_id()        # 14-digit YYYYMMDDHHMMSS (the monitor/MATLAB convention)
+        # Async image-save toggle (default ON): off via YB_ASYNC_FRAME_SAVE=0 or a runtime
+        # <log>/ASYNC_FRAME_SAVE_OFF file (flip between scans, no restart -> A/B). Label the
+        # per-shot timing rows with the scan + mode so an async-on vs -off A/B separates cleanly.
+        async_save = _async_frame_save_enabled()
+        try:
+            import run_timing
+            run_timing.set_scan_label("%s %s async=%d"
+                                      % (scan_name or "seq", scan_id, int(async_save)))
+        except Exception:  # noqa: BLE001
+            pass
         # The pre-built run order (sequence_runner._build_run_kwargs) IS ybBuildScanJob's
         # Scan.Params -- persist it so the monitor's scan curve can bucket each shot's result.
         params_order = opts.get("indices")
@@ -503,7 +513,11 @@ def make_engine_run(server, camera, seq_config, log=None):
                 scan_id=scan_id, is_rearrange=is_rearrange, n_rounds=_n_rounds(scangroup),
                 pattern_name=(pat0 or {}).get("name"),
                 log=lambda m: log("[runner] %s" % m)))
-        seq_owns_frames = is_rearrange and slm_ses is not None
+        # Capture ownership comes from the SEQ's own declaration (@seq_capabilities(owns_frames=
+        # True)), NOT a runp sniff: the seq that does the mid-sequence grab is the source of truth.
+        # Still gated on an active SLM session (the rearrange context the seq's callbacks need).
+        from seq_capability import has_capability
+        seq_owns_frames = has_capability(seq, "owns_frames") and slm_ses is not None
 
         # Non-rearrange scans renew the scan-long slm lease per shot too (rearrange scans renew via
         # RearrangeCommSeq.pre_run -> ensure_held). Without this the lease lapses ~lease_s into the
@@ -521,11 +535,13 @@ def make_engine_run(server, camera, seq_config, log=None):
                 camera.start_video(external=True, nframes=max(num_images * 4, 16))
                 armed = True
                 if not seq_owns_frames:
-                    # Normal scan: the runner captures + publishes frames after each shot.
+                    # Normal scan: read frames after each shot, then hand them to the ExptServer
+                    # persister. async_save=True publishes on the server's FIFO worker (the ~80 ms
+                    # encode+store overlaps the next shot's hardware); the kill-switch runs inline.
                     # Rearrangement scans read + store frames mid-shot in their own callbacks.
                     from frame_capture import make_capture_post_cb
                     post.append(make_capture_post_cb(
-                        camera, server, num_images, scan_id, seq_config))
+                        camera, server, num_images, scan_id, seq_config, async_=async_save))
             except Exception:  # noqa: BLE001 - camera arm failure must not crash the job pre-run
                 armed = False
         # --- Sequence auto-dump (SeqPlotter), gated by the dashboard toggle ---------------- #
@@ -548,6 +564,14 @@ def make_engine_run(server, camera, seq_config, log=None):
                                   on_compile=seq_on_compile,
                                   on_globals=seq_on_globals, **opts)
         finally:
+            # Flush any in-flight async image saves BEFORE teardown, so the last shots' frames are
+            # published before we stop the camera / release locks. No-op for sync/legacy servers.
+            try:
+                drain = getattr(server, "drain_images", None)
+                if drain is not None:
+                    drain()
+            except Exception:  # noqa: BLE001 - a drain failure must not break teardown
+                pass
             if seq_dump_session is not None:
                 try:
                     seq_dump_session.finalize()                  # write manifest.json
@@ -577,6 +601,22 @@ def make_engine_run(server, camera, seq_config, log=None):
             rearrange_runtime.clear_context()
 
     return run
+
+
+def _async_frame_save_enabled():
+    """Whether the default capture publishes ASYNC (on the ExptServer worker). Default ON.
+
+    Off when ``YB_ASYNC_FRAME_SAVE`` is a falsey env value OR the runtime toggle file
+    ``<log>/ASYNC_FRAME_SAVE_OFF`` exists -- the latter lets you flip async off/on BETWEEN scans
+    (no restart) for an A/B, beside the ``RUN_TIMING_ON`` toggle. Any probe failure -> ON."""
+    try:
+        if os.environ.get("YB_ASYNC_FRAME_SAVE", "1").strip().lower() in (
+                "0", "false", "no", "off"):
+            return False
+        import run_timing
+        return not os.path.exists(os.path.join(run_timing.log_dir(), "ASYNC_FRAME_SAVE_OFF"))
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _num_images(scangroup):
