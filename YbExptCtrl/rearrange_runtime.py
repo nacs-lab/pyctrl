@@ -35,6 +35,12 @@ _DATA_ROOT = os.environ.get(
 _BOX = 9
 _SIGMA = 2
 
+# Sentinel scan_id for FAILING-shot frames published for LIVE DISPLAY ONLY (never persisted /
+# accumulated). Distinct from dummy-mode's -1 so the monitor can label these "failing" (red chip)
+# rather than "dummy". Mirrored on the lab side in
+# yb_analysis/gui/control_panel.py (FAILING_DISPLAY_SCAN_ID) -- keep the two in sync.
+FAILING_DISPLAY_SCAN_ID = -2
+
 
 # =========================================================================== #
 # the process-global scan context
@@ -85,6 +91,33 @@ class ScanContext:
         (clears the "shots failing" banner promptly rather than waiting out the staleness window).
         Best-effort -- a missing method (older/MATLAB server) is a harmless no-op."""
         _safe_server_call(self.server, "record_shot_ok")
+
+    def publish_failed_shot(self, frames, seq_id=None):
+        """Publish whatever frames a FAILING shot captured for LIVE DISPLAY ONLY.
+
+        A failing shot used to ``cancel_shot`` (drop its staged frames) so the live view froze on
+        the last good pair. Instead we re-publish the captured frame(s) under the
+        :data:`FAILING_DISPLAY_SCAN_ID` sentinel so the monitor still flashes img1 (+ img2 if it was
+        captured, else "no data") while the shot-health chip stays red -- WITHOUT persisting to HDF5
+        or feeding the accumulators (the negative scan_id routes to the lab's show-without-persist
+        path). The shot-health "failing" state is driven separately via :meth:`record_error`.
+
+        ``frames`` is the ordered list of captured raw frames (img1 first, img2 if present); ``None``
+        entries are dropped. Leading ``cancel_shot`` discards any real-scan_id frames still staged
+        for this shot (FIFO-ordered before the re-stage), so a partially-staged real shot is cleanly
+        converted to a display-only one. No-op if nothing was captured."""
+        srv = self.server
+        if srv is None:
+            return
+        _safe_server_call(srv, "cancel_shot")          # drop any real-scan_id staged frames first
+        frames = [f for f in (frames or []) if f is not None]
+        if not frames:
+            return
+        sid = FAILING_DISPLAY_SCAN_ID
+        sq = int(seq_id) if seq_id is not None else -1
+        for f in frames:
+            _safe_server_call(srv, "stage_frame", f, sid, sq)
+        _safe_server_call(srv, "finish_shot")
 
 
 def _safe_server_call(server, method, *args):
@@ -150,11 +183,18 @@ def on_resume():
 # camera frame grab (port of grab_one_frame / the nFrames==1 guard)
 # =========================================================================== #
 def grab_one_frame(camera, timeout=0.1, sleep=time.sleep, clock=time.monotonic):
-    """Wait for EXACTLY one frame and return ``(img, True)``; ``(None, False)`` on timeout or a
-    stale-frame surplus (>1). Mirrors the MATLAB ``nFrames ~= 1`` cancel-and-drain guard: any
-    surplus is consumed by ``read_frames`` so it can't pollute the next shot."""
+    """Wait for EXACTLY one frame and return ``(img, True, 1)``; ``(None, False, n_seen)`` on a
+    timeout or a stale-frame surplus. Mirrors the MATLAB ``nFrames ~= 1`` cancel-and-drain guard:
+    any surplus is consumed by ``read_frames`` so it can't pollute the next shot.
+
+    ``n_seen`` is the number of frames drained, so callers can SURFACE the two failure modes
+    distinctly: ``0`` = nothing arrived within ``timeout`` (readout latency / a missed trigger),
+    ``>=2`` = a surplus, i.e. the frame stream has DESYNCED (a straggler from a prior shot or a
+    spurious trigger). A desync is what flips img1/img2: the one-frame-per-grab pairing in
+    ``hand_over_slm`` (img1) / ``post_run`` (img2) slips by one and the loading frame lands in img2.
+    """
     if camera is None:
-        return None, False
+        return None, False, 0
     collected = []
     deadline = clock() + float(timeout)
     while clock() < deadline:
@@ -167,8 +207,8 @@ def grab_one_frame(camera, timeout=0.1, sleep=time.sleep, clock=time.monotonic):
             break
         sleep(0.001)
     if len(collected) != 1:
-        return None, False
-    return collected[0], True
+        return None, False, len(collected)
+    return collected[0], True, 1
 
 
 # =========================================================================== #

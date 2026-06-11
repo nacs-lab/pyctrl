@@ -36,6 +36,12 @@ from SLMStep import SLMStep
 import rearrange_runtime
 from seq_capability import seq_capabilities
 
+# Single-slot stash for the current shot's img1 frame. hand_over_slm captures img1 but post_run
+# (a separate callback) is where a failing shot is finalized, and img1 is out of scope there --
+# so it's stashed here. Shots run strictly sequentially (one shot's callbacks at a time), so one
+# slot suffices; hand_over_slm resets it each shot. Display-only use; never serialized.
+_LAST_IMG1 = {"frame": None}
+
 
 @seq_capabilities(owns_frames=True)   # grabs + stores its own frames mid-sequence (the handoff)
 def RearrangeCommSeq(s):
@@ -104,6 +110,31 @@ def pre_run(s1):
     if ctx is None or ctx.client is None:
         return                          # no rearrangement context -> nothing to do
 
+    # Per-shot frame-buffer resync. The Orca free-runs into a circular buffer armed ONCE per scan
+    # (runner.py: flush + start_video); the run loop only flushes it at scan start. Within a scan
+    # img1 (hand_over_slm) and img2 (post_run) are grabbed one frame at a time, so a single
+    # straggler -- a frame whose readout landed after its grab timed out, a cancelled pair, or a
+    # spurious trigger -- offsets the stream by one and img1/img2 come out SWAPPED (img1 shows the
+    # prior shot's sparse post-rearrangement frame, img2 shows this shot's full loading frame) for
+    # the rest of the scan. pre_run runs reg_before_start, BEFORE this shot's Imag399 #1 triggers,
+    # so anything in the buffer now is stale: drop it and surface a nonzero count (the previous
+    # shot(s) were misaligned). This is the per-shot analog of the scan-start flush.
+    cam = ctx.camera
+    if cam is not None:
+        try:
+            stale = int(cam.frames_available())
+        except Exception:  # noqa: BLE001 - not acquiring / older driver -> assume clean
+            stale = 0
+        if stale:
+            try:
+                cam.flush()
+            except Exception:  # noqa: BLE001 - best-effort drain
+                pass
+            ctx.record_error(
+                "[pre_run] seq %d: %d stale frame(s) in the camera buffer at shot start -- "
+                "flushed; img1/img2 on the prior shot(s) were likely misaligned (flipped)"
+                % (_seq_id(s1), stale), kind="frame_desync", seq_id=_seq_id(s1))
+
     # The scan-long slm lock is mandatory: ensure_held re-acquires + rewrites the WGS phase if the
     # 10 s lease lapsed (a shot longer than the lease). A failure raises -> the run errors.
     ctx.session.ensure_held()
@@ -143,17 +174,29 @@ def pre_run(s1):
 
 def hand_over_slm(s1):
     """Read img1 (Imag399 #1), detect bits, rearrange(bits), and store img1."""
+    # Reset the per-shot img1 stash (post_run re-publishes it for DISPLAY on a failing shot).
+    _LAST_IMG1["frame"] = None
     ctx = rearrange_runtime.context()
     if ctx is None or ctx.client is None:
         return
     if not s1.G.rearrange_lock_ok(False):
         return                          # pre_run couldn't get the compute lock -> skip
 
-    img, ok = rearrange_runtime.grab_one_frame(ctx.camera, timeout=0.1)
+    img, ok, n_seen = rearrange_runtime.grab_one_frame(ctx.camera, timeout=0.1)
     if not ok:
-        ctx.log("[hand_over_slm] seq %d: img1 unavailable; cancelling" % _seq_id(s1))
+        if n_seen >= 2:
+            ctx.record_error(
+                "[hand_over_slm] seq %d: img1 grab saw %d frames (desynced buffer) -- drained + "
+                "cancelling" % (_seq_id(s1), n_seen), kind="frame_desync", seq_id=_seq_id(s1))
+        else:
+            ctx.record_error(
+                "[hand_over_slm] seq %d: img1 unavailable (timeout, 0 frames) -- cancelling"
+                % _seq_id(s1), kind="frame_timeout", seq_id=_seq_id(s1))
         _safe(ctx.server, "cancel_shot")
         return
+    # Stash img1 so post_run can re-publish it for DISPLAY ONLY if the shot fails (img1 is captured
+    # here but isn't in post_run's scope). Cleared above each shot; success path persists it normally.
+    _LAST_IMG1["frame"] = img
 
     bits = ctx.detect_bits(img)
     if not bits:
@@ -209,15 +252,30 @@ def post_run(s1):
     # the staged img1, so no join is needed here.
     try:
         if not s1.G.rearrange_img1_ok(False):
-            # img1 not rearranged -> drain the final frame + cancel so the .h5 stays in aligned
-            # (img1, img2) pairs.
-            rearrange_runtime.grab_one_frame(ctx.camera, timeout=0.2)
-            _safe(ctx.server, "cancel_shot")
+            # img1 not rearranged (failing shot) -> the .h5 must NOT get a half pair, but we still
+            # want the captured frames to flash by on the live view. Drain the final frame (img2)
+            # and re-publish [img1, img2] for DISPLAY ONLY under the failing sentinel (no persist);
+            # the shot-health chip already shows "failing" via the earlier record_error.
+            img2, ok2, _n2 = rearrange_runtime.grab_one_frame(ctx.camera, timeout=0.2)
+            ctx.publish_failed_shot(
+                [_LAST_IMG1.get("frame"), img2 if ok2 else None], _seq_id(s1))
         else:
-            img, ok = rearrange_runtime.grab_one_frame(ctx.camera, timeout=0.1)
+            img, ok, n_seen = rearrange_runtime.grab_one_frame(ctx.camera, timeout=0.1)
             if not ok:
-                ctx.log("[post_run] seq %d: img2 unavailable; cancelling" % _seq_id(s1))
-                _safe(ctx.server, "cancel_shot")
+                # rearrange succeeded but img2 was lost -> show img1 + "no data" for img2 (display
+                # only), rather than freezing the live view. Don't persist a half pair. Surface a
+                # surplus (desync) distinctly from a readout-latency timeout; either way the next
+                # shot's pre_run flush resyncs the buffer.
+                if n_seen >= 2:
+                    ctx.record_error(
+                        "[post_run] seq %d: img2 grab saw %d frames (desynced buffer) -- drained; "
+                        "display-only img1" % (_seq_id(s1), n_seen),
+                        kind="frame_desync", seq_id=_seq_id(s1))
+                else:
+                    ctx.record_error(
+                        "[post_run] seq %d: img2 unavailable (timeout, 0 frames) -- display-only "
+                        "img1" % _seq_id(s1), kind="frame_timeout", seq_id=_seq_id(s1))
+                ctx.publish_failed_shot([_LAST_IMG1.get("frame")], _seq_id(s1))
             else:
                 bits2 = ctx.detect_bits(img)
                 if bits2 and ctx.client is not None:
