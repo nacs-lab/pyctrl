@@ -66,6 +66,35 @@ PYCTRL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # (and re-bootstrap the affine) if/when the camera focus moves.
 DEFAULT_LOADING_DEFOCUS = -5.0
 
+# Every-scan default loading pattern + toggle. Operative defaults live HERE (not in
+# expConfig consts, which are governed by the config drift oracle / THE ONE RULE and
+# must stay byte-identical to the MATLAB reference) — same home as DEFAULT_LOADING_DEFOCUS
+# above. When ALL_SCANS_LOAD_PATTERN is True, a scan that declares no pattern falls back
+# to DEFAULT_LOADING_PATTERN_PHASE: it writes that WGS phase + holds the SLM lock for the
+# whole scan and detects with the per-pattern threshold registry (so thresholds are never
+# shared across patterns / with the day folder). OFF by default because it changes what
+# EVERY scan writes to the SLM — flip to True and verify in a hardware window. Per-scan
+# override (any scan, no toggle needed): runp().loading_phase / loading_defocus.
+DEFAULT_LOADING_PATTERN_PHASE = "phase/33x33_uniform.pt"
+ALL_SCANS_LOAD_PATTERN = False
+
+
+def _loading_defaults(seq_config):
+    """(default_phase, all_scans_on) for the no-pattern loading fallback — the module
+    constants above. An OPTIONAL ``consts["SLM"]["Loading"]`` (DefaultPhase /
+    AllScansLoadPattern) overrides them if some deployment chooses to add it (not set by
+    default, to keep the config drift oracle green)."""
+    phase, all_on = DEFAULT_LOADING_PATTERN_PHASE, ALL_SCANS_LOAD_PATTERN
+    try:
+        consts = getattr(seq_config, "consts", None) or {}
+        ld = (consts.get("SLM", {}) or {}).get("Loading", {}) or {}
+        if ld:
+            phase = str(ld.get("DefaultPhase", phase) or phase)
+            all_on = bool(ld.get("AllScansLoadPattern", all_on))
+    except Exception:  # noqa: BLE001
+        pass
+    return phase, all_on
+
 
 # =========================================================================== #
 # URL resolution + single-backend guard (startup mutual exclusion)
@@ -501,13 +530,24 @@ def make_engine_run(server, camera, seq_config, log=None):
         # own their camera frames per shot (so the standard capture post_cb is skipped for them).
         import rearrange_runtime
         is_rearrange = _is_rearrange_scan(scangroup)
-        slm_ses = _make_slm_session(scangroup, scan_id, log)
+        _ld_phase, _ld_all = _loading_defaults(seq_config)   # expConfig SLM.Loading
+        slm_ses = _make_slm_session(scangroup, scan_id, log,
+                                    default_phase=_ld_phase, all_scans=_ld_all)
+        # Fresh per-shot health for this scan, so a failing previous scan can't
+        # bleed its "shots failing" banner into a healthy new one (and vice
+        # versa). Best-effort -- a missing method (older/MATLAB server) is fine.
+        try:
+            server.reset_shot_health(scan_id)
+        except Exception:  # noqa: BLE001
+            pass
         if slm_ses is not None:
             slm_client = slm_ses.c
             if is_rearrange:
-                _initial_setup_rearrangement(slm_client, scangroup, scan_id, log)
+                _initial_setup_rearrangement(slm_client, scangroup, scan_id, log,
+                                             server=server)
             slm_ses.begin()                                      # grab slm lock + write WGS phase
-            pat0 = _first_loading_pattern(scangroup.runp())
+            pat0 = _first_loading_pattern(scangroup.runp(),
+                                          default_phase=_ld_phase, all_scans=_ld_all)
             rearrange_runtime.set_context(rearrange_runtime.ScanContext(
                 session=slm_ses, camera=camera, server=server, client=slm_client,
                 scan_id=scan_id, is_rearrange=is_rearrange, n_rounds=_n_rounds(scangroup),
@@ -557,6 +597,24 @@ def make_engine_run(server, camera, seq_config, log=None):
         # globals.json so a never-dumped scan stays faithfully reconstructable offline.
         globals_session = _make_globals_session(scan_id, scan_name, log)
         seq_on_globals = globals_session.on_globals if globals_session is not None else None
+
+        # 60 Hz line trigger (scan-wide): wrap the default compile leaf so each compiled ExpSeq
+        # waits for the AC-line edge before generate(). Kept HERE (Yb layer), not in
+        # lib/run_seq.py, so the framework stays experiment-agnostic / byte-faithful. None ->
+        # disabled/unconfigured -> leave compile_point at its engine default (byte-identical).
+        lt = _line_trigger_config(scangroup, seq_config, log)
+        if lt is not None:
+            def _compile_point(seqfn, seqparam, _lt=lt):
+                from exp_seq import ExpSeq
+                s = ExpSeq(seqparam)
+                seqfn(s)
+                if getattr(s, "trigger_device", "") == "":   # don't double-enable if the seq did
+                    s.enable_global_wait_trigger(_lt["device"], _lt["channel"],
+                                                 _lt["raise_"], _lt["timeout"])
+                s.generate()
+                return s
+            opts.setdefault("compile_point", _compile_point)
+
         try:
             return run_scan_group(seq, scangroup, control=control,
                                   pre_cb=pre, post_cb=post,
@@ -694,6 +752,64 @@ def _runp_num(runp, name, default=0):
         return default
 
 
+def _runp_get(runp, name, default):
+    """Read a runp flag (``runp.<name>(default)``, DynProps fallback) WITHOUT coercion,
+    tolerant of an absent runp/field. For non-numeric flags (bool/int channel/device str)."""
+    if runp is None:
+        return default
+    try:
+        return getattr(runp, name)(default)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+# Conservative 60 Hz line-trigger fallback, used ONLY if expConfig consts lacks a ``LineTrigger``
+# subtree (older snapshot / a fake seq_config in tests): OFF, so an absent config never silently
+# starts gating shots on a line edge. The operative default lives in expConfig consts
+# (``consts["LineTrigger"]``, Enable=True); per-scan overrides come from ``runp().LineTrigger*``.
+_LINE_TRIGGER_DEFAULTS = {"Enable": False, "Device": "FPGA1", "Channel": None,
+                          "Raise": True, "Timeout": 0.02}
+
+
+def _line_trigger_config(scangroup, seq_config, log=None):
+    """Resolve the 60 Hz line-trigger config for this scan, or ``None`` to skip enabling.
+
+    Source of truth is expConfig ``consts["LineTrigger"]`` (Enable/Device/Channel/Raise/Timeout);
+    per-scan ``runp().LineTrigger*`` flags win. Returns ``{device, channel, raise_, timeout}``
+    when enabled with a real channel, else ``None`` -- disabled, OR enabled-but-no-channel
+    (``Channel`` unset), in which case we log once and skip rather than guess a TTL line that
+    might be an output. Defensive: any error -> ``None`` (never breaks a run)."""
+    cfg = dict(_LINE_TRIGGER_DEFAULTS)
+    try:
+        consts = getattr(seq_config, "consts", None) or {}
+        lt = consts.get("LineTrigger") or {}
+        for k in cfg:
+            if k in lt:
+                cfg[k] = lt[k]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        rp = scangroup.runp()
+    except Exception:  # noqa: BLE001
+        rp = None
+    if not bool(_runp_get(rp, "LineTriggerEnable", cfg["Enable"])):
+        return None
+    channel = _runp_get(rp, "LineTriggerChannel", cfg["Channel"])
+    if channel is None:
+        if log is not None:
+            try:
+                log("[runner] 60 Hz line trigger enabled but no input channel set "
+                    "(consts['LineTrigger']['Channel'] / runp().LineTriggerChannel) -- skipping; "
+                    "set it to your line-sync FPGA TTL input line to activate.")
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+    return {"device": str(_runp_get(rp, "LineTriggerDevice", cfg["Device"])),
+            "channel": int(channel),
+            "raise_": bool(_runp_get(rp, "LineTriggerRaise", cfg["Raise"])),
+            "timeout": float(_runp_get(rp, "LineTriggerTimeout", cfg["Timeout"]))}
+
+
 def _awg_names(scangroup):
     """The AWGs this scan activates: ``runp().AWGs`` (e.g. ``["AWG556"]``), [] if unset.
 
@@ -746,11 +862,13 @@ def _n_rounds(scangroup):
         return 1
 
 
-def _make_slm_session(scangroup, scan_id, log):
+def _make_slm_session(scangroup, scan_id, log, default_phase=None, all_scans=False):
     """Construct (do NOT begin) the :class:`SlmScanSession` for this scan + declare its loading
     pattern. Returns None when ``runp().useScanLongSlmLock`` is disabled (default ON). The caller
     runs ``begin()`` after the optional initial setup_rearrangement, mirroring the user spec order
-    (setup -> grab lock -> write WGS phase)."""
+    (setup -> grab lock -> write WGS phase). ``default_phase``/``all_scans`` come from
+    expConfig SLM.Loading (see _loading_defaults): when ``all_scans`` is on, a scan that declares
+    no pattern falls back to ``default_phase`` (writes it + holds the lock)."""
     try:
         rp = scangroup.runp()
     except Exception:  # noqa: BLE001
@@ -760,21 +878,24 @@ def _make_slm_session(scangroup, scan_id, log):
     from devices.slm import get_client, SlmScanSession
     ses = SlmScanSession(get_client(), description="scan %s" % scan_id,
                          log=lambda m: log("[runner] %s" % m))
-    pat = _first_loading_pattern(rp)
+    pat = _first_loading_pattern(rp, default_phase=default_phase, all_scans=all_scans)
     if pat is not None:
         ses.set_loading_pattern(pat["name"], pat["phase_path"], pat["zernike"],
                                 legacy_zerniked=pat["legacy"], baked_zernike=pat["baked"])
     return ses
 
 
-def _first_loading_pattern(rp):
+def _first_loading_pattern(rp, default_phase=None, all_scans=False):
     """Resolve the img1 loading pattern + loading defocus (port of ybFirstLoadingPattern.m).
 
     Priority: an explicit ``runp().loading_phase`` (any scan), else a rearrangement scan's
     ``warmup_kwargs.initial_phase`` (+ ``extras.initial_phase_zernike`` baked). The generic
     ``runp().loading_defocus`` (ANSI z4, radians) is layered on top as ``[0 0 0 0 z4]`` (absolute;
     the server strips ``baked`` first). Returns a dict, or None when no pattern is declared (the
-    session then holds the lock but writes nothing -- preserving whatever phase is on the SLM)."""
+    session then holds the lock but writes nothing -- preserving whatever phase is on the SLM).
+
+    When ``all_scans`` is on (expConfig SLM.Loading.AllScansLoadPattern) a scan that declares no
+    pattern falls back to ``default_phase`` so EVERY scan writes a known loading hologram."""
     phase = ""
     baked = []
     try:
@@ -789,6 +910,8 @@ def _first_loading_pattern(rp):
                 baked = [float(x) for x in wk.extras.initial_phase_zernike([])]
         except Exception:  # noqa: BLE001
             phase = phase or ""
+    if not phase and all_scans and default_phase:
+        phase = str(default_phase).strip()      # every-scan default loading pattern
     if not phase:
         return None
     z4 = _runp_num(rp, "loading_defocus", DEFAULT_LOADING_DEFOCUS)
@@ -799,12 +922,20 @@ def _first_loading_pattern(rp):
             "zernike": zernike, "legacy": legacy, "baked": baked}
 
 
-def _loading_patterns_json(rp, num_images):
+def _loading_patterns_json(rp, num_images, default_phase=None, all_scans=False):
     """Per-image loading-pattern declaration (port of ybLoadingPatternsJson.m). One entry per
     camera frame: frame-0 <- ``warmup_kwargs.initial_phase``, final frame <- ``final_phase``, with
     ``extras.*_phase_zernike`` as the baked Zernike to strip. An explicit ``runp().imagePatternsJson``
     wins. Each entry: ``{name, base_phase_path, order, legacy_zerniked, [baked_zernike]}``. Returns
-    the list, or None when the scan declares no loading pattern (legacy day-folder behaviour)."""
+    the list, or None when the scan declares no loading pattern (legacy day-folder behaviour).
+
+    When ``all_scans`` is on (expConfig SLM.Loading.AllScansLoadPattern) a scan that declares no
+    pattern falls back to a single ``default_phase`` entry, so imagePatternsJson is ALWAYS present
+    and the monitor uses + updates the per-pattern threshold registry for every scan."""
+    def _fallback():
+        if all_scans and default_phase:
+            return [_pattern_item(str(default_phase), None)]
+        return None
     # (1) explicit override wins.
     try:
         explicit = str(rp.imagePatternsJson("")).strip()
@@ -818,14 +949,14 @@ def _loading_patterns_json(rp, num_images):
                 return items
         except Exception:  # noqa: BLE001
             pass
-    # (2) synthesise from rearrange warmup_kwargs.
+    # (2) synthesise from rearrange warmup_kwargs, else the every-scan default.
     try:
         wk = rp.warmup_kwargs
         ip = str(wk.initial_phase("")).strip()
     except Exception:  # noqa: BLE001
-        return None
+        return _fallback()
     if not ip:
-        return None
+        return _fallback()
     try:
         fp = str(wk.final_phase("")).strip()
     except Exception:  # noqa: BLE001
@@ -858,7 +989,7 @@ def _baked_zern(wk, field):
     return None
 
 
-def _initial_setup_rearrangement(client, scangroup, scan_id, log):
+def _initial_setup_rearrangement(client, scangroup, scan_id, log, server=None):
     """Dequeue-time setup_rearrangement: load the model + patterns from ``runp().warmup_kwargs``
     with ``reset_params=True`` (new run + factory-default the sticky cache). Per-shot setup calls
     (in the seq pre_run) then run WITHOUT reset_params so they stay sticky on top of this."""
@@ -891,6 +1022,13 @@ def _initial_setup_rearrangement(client, scangroup, scan_id, log):
         log("[runner] initial setup_rearrangement (%d field(s), reset_params)" % len(args))
     except Exception as e:  # noqa: BLE001
         log("[runner] initial setup_rearrangement failed: %s" % e)
+        if server is not None:
+            try:
+                server.record_shot_error(
+                    "initial setup_rearrangement failed: %s" % e,
+                    scan_id=scan_id, kind="setup_rearrangement")
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _scan_descriptor(scangroup, seq, log):
@@ -928,7 +1066,8 @@ def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
         num_per_group = len(params) if params is not None else int(_runp_num(rp, "NumPerGroup", 0))
         # Per-image loading-pattern declaration (port of ybLoadingPatternsJson): drives the live
         # monitor's per-pattern grids/thresholds + the offline analysis's per-pattern calibration.
-        image_patterns = _loading_patterns_json(rp, num_images)
+        # With SLM.Loading.AllScansLoadPattern on, scans that declare none fall back to the default.
+        image_patterns = _loading_patterns_json(rp, num_images, *_loading_defaults(seq_config))
         descriptor = _scan_descriptor(scangroup, seq, log) if seq is not None else None
         path = write_scan_config(
             scan_id, (roi[2], roi[3]), num_images,

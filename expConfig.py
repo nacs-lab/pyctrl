@@ -252,6 +252,31 @@ def _consts():
         "amplitude_scale": 1.0,
     }
 
+    # 60 Hz AC-line trigger. When enabled, the FPGA waits for an edge on a TTL INPUT line at the
+    # start of each basic sequence (ExpSeq.enable_global_wait_trigger -> a version-2 ZYNQZYNQ
+    # block -> libnacs emits a WaitTrigger bytecode op), so every shot begins at the same mains
+    # phase (B-field stability). Consumed ONLY by the runner's compile_point
+    # (YbExptCtrl/runner.py) -- it is never read by a sequence step, so it does NOT enter the
+    # serialized bytes (the MATLAB byte oracles are unaffected; only this config snapshot needs
+    # re-capturing). Per-scan override: runp().LineTriggerEnable / LineTriggerChannel /
+    # LineTriggerRaise / LineTriggerTimeout.
+    #   Channel: RAW FPGA TTL line number of the line-sync input (same numbering as the TTL
+    #            outputs, e.g. FPGA1/TTL14 -> 14) -- NOT a channel alias. Must be 0..max_ttl_chn
+    #            (config.yml), must NOT equal start_ttl_chn, and must NOT be driven as an output.
+    #            None = unset -> the runner SKIPS enabling (and logs once) rather than guess a
+    #            line; SET it to your physical line-sync input to activate for every scan.
+    #   Raise:   True = wait for a rising edge, False = falling edge.
+    #   Timeout: seconds. FPGA clock is 100 MHz and the bytecode timeout field is 24-bit, so the
+    #            max is ~0.168 s; ~0.02 s = one 60 Hz period + margin (catches the next edge, then
+    #            proceeds if the signal is absent -- it does not hang the shot).
+    c["LineTrigger"] = {
+        "Enable": False,
+        "Device": "FPGA1",
+        "Channel": None,                       # <-- SET to your line-sync FPGA TTL input line
+        "Raise": True,                         # True = rising edge, False = falling edge
+        "Timeout": 0.02,                       # seconds (~one 60 Hz period + margin)
+    }
+
     # ---- cross-references (mirror expConfig.m's const-to-const assignments) ----
     c["SLM"]["VServo"] = c["Init"]["VSLMServo"]
     c["LAC"]["BlueLAC"]["Resonance556mj0Freq"] = c["Resonance556mj0Freq"]

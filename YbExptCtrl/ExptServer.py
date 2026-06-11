@@ -38,7 +38,30 @@ from collections import deque
 from enum import Enum
 import array
 
-QUEUE_PATH = os.path.join(tempfile.gettempdir(), 'nacsctl', 'runner_queue.json')
+def _state_dir():
+    """Stable per-user dir for runtime state (the runner-queue persistence file).
+
+    Deliberately NOT ``tempfile.gettempdir()``: the OS temp dir gets wiped by
+    Windows Storage Sense / disk-cleanup (and anything that clears %TEMP%), which
+    silently reset the scan queue + history on restart. An explicit override wins
+    (``YB_NACSCTL_DIR``); else %LOCALAPPDATA%\\nacsctl (Windows) / ~/.nacsctl (POSIX).
+    """
+    env = os.environ.get('YB_NACSCTL_DIR')
+    if env:
+        return env
+    base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+    return os.path.join(base, 'nacsctl')
+
+
+QUEUE_PATH = os.path.join(_state_dir(), 'runner_queue.json')
+# The un-overridden default. Legacy migration (below) applies ONLY when QUEUE_PATH
+# still equals this — so a test that monkeypatches QUEUE_PATH to a tmp file does
+# NOT accidentally migrate the operator's real legacy queue into the test.
+_DEFAULT_QUEUE_PATH = QUEUE_PATH
+# Pre-2026-06-09 location (OS temp dir). Loaded once if QUEUE_PATH is absent so an
+# in-flight queue/history migrates to the stable path instead of vanishing on the
+# upgrade restart. (After the first save, everything lives at QUEUE_PATH.)
+_LEGACY_QUEUE_PATH = os.path.join(tempfile.gettempdir(), 'nacsctl', 'runner_queue.json')
 # Max history rows retained (the dashboard "Recent history" list). pyctrl reuses
 # the descriptor id for its job and drops the descriptor row, so this is one row
 # PER SCAN -- 500 comfortably holds a full day's scans. (The matlab backend still
@@ -190,6 +213,22 @@ class ExptServer(object):
             'captured_at': None,
         }
         self.__last_fallback_active = False
+
+        # Per-shot health (pyctrl ADDITION; the MATLAB copy lacks the
+        # 'shot_health' verb -- a benign divergence, the monitor degrades to
+        # "no health info" against MATLAB). A bounded ring of recent per-shot
+        # ERROR events (e.g. a rearrange shot that failed setup/handoff) plus a
+        # session/scan total, so the dashboard can show "shots are FAILING"
+        # instead of a misleading "Running / no data" when every shot errors.
+        # Reset per scan (reset_shot_health) so a fresh scan starts clean.
+        self.__health_lock = threading.Lock()
+        self.__shot_errors = deque(maxlen=50)   # [{ts, message, kind, scan_id, seq_id}]
+        self.__shot_error_total = 0             # errors since the last reset (this scan)
+        self.__shot_last_error_ts = None
+        self.__shot_last_error_msg = ''
+        self.__shot_last_error_kind = ''
+        self.__shot_last_ok_ts = None
+        self.__shot_health_scan_id = None
 
         # job queue (NEW)
         with self.__queue_lock:
@@ -434,6 +473,10 @@ class ExptServer(object):
                 status['fallback_active'] = self.__last_fallback_active
                 status['mode'] = self.__dummy_mode
             self.safe_send(addr, json.dumps(status).encode('utf-8'))
+        elif msg_str == "shot_health":
+            # pyctrl ADDITION: recent per-shot error rollup so the monitor can
+            # show "shots are failing" instead of a bare "Running / no data".
+            self.safe_send(addr, json.dumps(self.shot_health()).encode('utf-8'))
         else:
             self.safe_send_string(addr, f'')
             return False
@@ -928,6 +971,11 @@ class ExptServer(object):
                         and e.get('kind', 'job') == 'job'):
                     e['state'] = 'running'
                     e['start_ts'] = time.time()
+                    # Baseline for the per-scan "sequences run" counter. nseq is a
+                    # CUMULATIVE count (bumped in seq_finish for every scan type,
+                    # only zeroed at init/reset -- never per scan), so this scan's
+                    # progress = current nseq - this baseline.
+                    e['nseq_start'] = self.nseq
                     self.__save_queue_locked()
                     return {'id': e['id'], 'payload': e['payload'], 'seqName': e['seqName']}
             return None
@@ -940,6 +988,12 @@ class ExptServer(object):
                     e['state'] = 'done' if status == 'ok' else 'error'
                     e['finish_ts'] = time.time()
                     e['status'] = status
+                    # Freeze the per-scan sequence count (sequences whose images
+                    # were published via seq_finish) so the history row keeps it
+                    # after nseq has moved on to the next scan.
+                    base = e.get('nseq_start')
+                    if base is not None:
+                        e['seq_num'] = max(0, self.nseq - base)
                     self.__history.insert(0, e)
                     del self.__history[HISTORY_CAP:]
                     self.__queue.pop(i)
@@ -1253,6 +1307,71 @@ class ExptServer(object):
         with self.__dummy_lock:
             self.__last_fallback_active = bool(active)
 
+    # ------------------------------------------------------------------ #
+    # per-shot health (pyctrl ADDITION) -- surface "shots are failing"
+    # ------------------------------------------------------------------ #
+    def reset_shot_health(self, scan_id=None):
+        """Clear the per-shot error tracker at the start of a new scan, so each
+        scan's failing/healthy state is judged fresh (the run loop calls this
+        when it installs a new scan context). Best-effort, never raises."""
+        with self.__health_lock:
+            self.__shot_errors.clear()
+            self.__shot_error_total = 0
+            self.__shot_last_error_ts = None
+            self.__shot_last_error_msg = ''
+            self.__shot_last_error_kind = ''
+            self.__shot_health_scan_id = scan_id
+
+    def record_shot_error(self, message, scan_id=None, seq_id=None, kind=None):
+        """Record one failed shot (e.g. a rearrange shot whose setup/handoff
+        errored). Bounded ring + a per-scan total; the dashboard reads this via
+        the ``shot_health`` verb. Never raises (a health-record failure must not
+        perturb the run loop)."""
+        try:
+            with self.__health_lock:
+                self.__shot_error_total += 1
+                self.__shot_last_error_ts = time.time()
+                self.__shot_last_error_msg = str(message)
+                self.__shot_last_error_kind = str(kind or '')
+                self.__shot_errors.append({
+                    'ts': self.__shot_last_error_ts,
+                    'message': self.__shot_last_error_msg,
+                    'kind': self.__shot_last_error_kind,
+                    'scan_id': scan_id,
+                    'seq_id': seq_id,
+                })
+        except Exception:  # noqa: BLE001 - health tracking is advisory
+            pass
+
+    def record_shot_ok(self):
+        """Mark that a shot completed without a recorded error (lets the
+        dashboard distinguish 'recovered' from 'still failing'). Never raises."""
+        try:
+            with self.__health_lock:
+                self.__shot_last_ok_ts = time.time()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def shot_health(self):
+        """Snapshot of recent per-shot health for the dashboard. Times are
+        server-computed (``seconds_since_last`` / ``seconds_since_ok``) so the
+        consumer doesn't have to reconcile clock skew across processes."""
+        now = time.time()
+        with self.__health_lock:
+            since_err = (now - self.__shot_last_error_ts
+                         if self.__shot_last_error_ts is not None else None)
+            since_ok = (now - self.__shot_last_ok_ts
+                        if self.__shot_last_ok_ts is not None else None)
+            return {
+                'total': self.__shot_error_total,
+                'last_message': self.__shot_last_error_msg,
+                'last_kind': self.__shot_last_error_kind,
+                'seconds_since_last': since_err,
+                'seconds_since_ok': since_ok,
+                'scan_id': self.__shot_health_scan_id,
+                'errors': list(self.__shot_errors)[-10:],
+            }
+
     def clear_pending_imgs(self):
         """Drop any unread image batches sitting in the deques. Used by
         the dummy/replay path to bound memory when no client is draining."""
@@ -1292,11 +1411,19 @@ class ExptServer(object):
         return [0, 0, 4096, 2304], None
 
     def __public_entry(self, e):
+        # Per-scan "sequences run" count: live delta (current cumulative nseq -
+        # the baseline snapshotted at job start) while running, the frozen value
+        # for finished jobs, None for queued/not-yet-run entries.
+        if e['state'] == 'running' and e.get('nseq_start') is not None:
+            seq_num = max(0, self.nseq - e['nseq_start'])
+        else:
+            seq_num = e.get('seq_num')
         return {
             'id': e['id'],
             'kind': e.get('kind', 'job'),     # NEW: 'job' (default) or 'descriptor'
             'seqName': e.get('seqName', ''),
             'state': e['state'],
+            'seq_num': seq_num,               # sequences run this scan (live/frozen)
             'enqueued_ts': e.get('enqueued_ts'),
             'start_ts': e.get('start_ts'),
             'finish_ts': e.get('finish_ts'),
@@ -1353,13 +1480,21 @@ class ExptServer(object):
         same-machine restart reloads the full history whether or not it crosses
         midnight."""
         import base64
-        if not os.path.exists(QUEUE_PATH):
-            return
+        # Prefer the stable path; fall back ONCE to the legacy temp-dir location
+        # (one-time migration on upgrade — the next save rewrites to QUEUE_PATH).
+        path = QUEUE_PATH
+        if not os.path.exists(path):
+            if (QUEUE_PATH == _DEFAULT_QUEUE_PATH
+                    and os.path.exists(_LEGACY_QUEUE_PATH)):
+                path = _LEGACY_QUEUE_PATH
+                print(f"[ExptServer] migrating queue from legacy temp path {path}")
+            else:
+                return
         try:
-            with open(QUEUE_PATH, 'r') as f:
+            with open(path, 'r') as f:
                 data = json.load(f)
         except Exception as ex:
-            print(f"[ExptServer] warning: could not load {QUEUE_PATH}: {ex}")
+            print(f"[ExptServer] warning: could not load {path}: {ex}")
             return
 
         self.__next_job_id = max(int(data.get('next_job_id', 1)), 1)
