@@ -115,6 +115,11 @@ def SLMRearrangementScan(url=None, reps=None):
     g().rearrange_kwargs.extras.hw_sequence = False
     # g().rearrange_kwargs.extras.flip_immediate = False   # pinned False -- True wedges SLM DMA (bug-rearr-slm-write-dma-stall)
     g().rearrange_kwargs.extras.z4 = -5            # MATCH rp.loading_defocus (same focal plane)
+    # Per-bseq cooling/imaging overlay (expConfig ByPattern): RearrangeCommSeq builds bseq2 (the
+    # post-rearrangement image) against this FINAL/target pattern's params; bseq1 uses the initial
+    # pattern (the scan-default = warmup_kwargs.initial_phase). No effect until ByPattern is
+    # populated for these names (distinct from extras.pattern, the rearrangement protocol shape).
+    g().rearrange_kwargs.extras.final_pattern = TARGET_PATTERN
 
     # ---- non-rearrangement scan settings ----------------------------------------------
     # MOT/loading: 2026-06-05 loading-rate optimization (copied from YbScans/LACScan.py

@@ -14,9 +14,11 @@ its JSON dump -- the regeneration is exact and engine-free (imports only ``expCo
 
 Supersedes ``tools/capture_config_reference.m`` (which sourced ``matlab_new/expConfig.m``).
 The MATLAB capture remains usable for a transition parity check, but ``expConfig.py`` is now
-authoritative. NOTE: this regenerates ONLY the config oracle -- the byte oracles
-(``ybseqs_reference.json`` / ``scan_point_reference.json``) enforce THE ONE RULE (byte-equality
-vs MATLAB) and stay MATLAB-captured; re-capture those from MATLAB after a recalibration.
+authoritative. NOTE: this regenerates ONLY the config oracle. The byte oracles
+(``ybseqs_reference.json`` / ``scan_point_reference.json``) are now pyctrl self-consistency
+guards (the strict MATLAB byte-equality was released for pyctrl) -- re-capture them with
+``tools/capture_ybseqs_reference.py`` / ``tools/capture_scan_point_reference.py`` after a
+recalibration.
 
 Run:
     python pyctrl/tools/capture_config_reference.py
@@ -28,8 +30,9 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)            # pyctrl/
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+for _p in (_ROOT, os.path.join(_ROOT, "lib")):   # expConfig imports expConfig_helper from lib/
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import expConfig
 

@@ -22,7 +22,12 @@ framework) and the expConfig snapshot capture still need a restart / re-capture.
 Naming/units follow ``expConfig.m``: alias prefixes are load-bearing (``TTL*`` FPGA, ``V*`` NI DAQ,
 ``Freq*``/``Amp*`` DDS); defaults are Hz / s. Values mirror the ``.m`` literal forms for readability
 (they resolve to the same IEEE-754 doubles); ints are float-coerced downstream by ``SeqConfig``.
+
+The per-pattern overlay + const cross-ref logic lives in ``lib/expConfig_helper.py`` (this
+module stays the pure data/config source); ``_consts`` calls it for the cross-refs.
 """
+
+import expConfig_helper
 
 
 def build_config():
@@ -293,11 +298,40 @@ def _consts():
         "Timeout": 0.02,                       # seconds (~one 60 Hz period + margin)
     }
 
+    # ---- per-pattern overrides (RUNTIME-ONLY; see the "Per-pattern config overlay" section) ----
+    # Map an SLM loading-pattern NAME (the phase-file basename) to a SPARSE override of the leaves
+    # above that differ for that array. Any leaf left unset falls back to the base value above,
+    # then a swept/manual g() value wins over both. 47x47_uniform is SEEDED below with the CURRENT
+    # base cooling/imaging defaults, so the overlay is byte-identical until you tune these from a
+    # 47x47 scan -- then edit the numbers here. (Trap depth Init.VSLMServo is intentionally NOT
+    # seeded -> 47x47 uses the base value; add "Init": {"VSLMServo": <v>} to tune it per array.)
+    c["ByPattern"] = {
+        "47x47_uniform": {
+            # Initialize the SLM servo to 3.7
+            c["Init"] = {
+                "VSLMServo": 3.7
+            }
+            # imaging (399) + cooling-during-imaging (556 X/h) -- seeded = base Imag399 (2026-06-11).
+            # ExposureTime is omitted (it is a cross-ref to Orca.ExposureTime, re-resolved anyway).
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp": 0.18,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.13},
+                },
+            },
+            # RNR / release-recapture cooling (556) -- seeded = base Cool556 (2026-06-11).
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.135e6, "Amp": 0.13},
+                "h": {"FreqDetuning": 0.13e6, "Amp": 0.12},
+            },
+        },
+    }
+
     # ---- cross-references (mirror expConfig.m's const-to-const assignments) ----
-    c["SLM"]["VServo"] = c["Init"]["VSLMServo"]
-    c["LAC"]["BlueLAC"]["Resonance556mj0Freq"] = c["Resonance556mj0Freq"]
-    c["Imag399"]["ExposureTime"] = c["Orca"]["ExposureTime"]
-    return c
+    return expConfig_helper.apply_cross_refs(c)
 
 
 def _default_vals(consts):

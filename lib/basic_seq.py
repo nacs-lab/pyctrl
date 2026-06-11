@@ -19,6 +19,7 @@ class BasicSeq(RootSeq):
         self.root = self
         self.C = parent.C
         self._init_root()
+        self.pattern = getattr(parent, "pattern", None)   # inherit top-level's pattern (override via set_pattern)
         self.zero_time = SeqTime.zero(self)
         self.cur_seq_time = self.zero_time
         parent.basic_seqs.append(self)

@@ -83,6 +83,15 @@ def RearrangeCommSeq(s):
     s2 = s.new_basic_seq()
     s.cond_branch(True, s2)
 
+    # Per-bseq SLM pattern (expConfig ByPattern overlay): bseq2 images the FINAL (rearranged
+    # target) pattern, so its cooling/imaging/VSLMServo resolve from ByPattern[final]; bseq1 keeps
+    # the scan-default (initial) pattern set by the runner. Name from
+    # rearrange_kwargs.extras.final_pattern (set by the scan); absent -> bseq2 inherits initial
+    # (and the whole thing is a no-op when ByPattern is empty).
+    _final_pat = s.C.rearrange_kwargs.extras.final_pattern("")
+    if _final_pat:
+        s2.set_pattern(_final_pat)
+
     s2.reg_before_bseq(hand_over_slm)  # img1 -> bits -> rearrange
 
     s2.add_step(Cool556hXStep, s.C.Cool556)

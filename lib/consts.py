@@ -21,4 +21,17 @@ class Consts(DynProps):
     def __init__(self):
         # SeqConfig.get() with the default is_seq (matches MATLAB Consts(): conf =
         # SeqConfig.get()); DynProps deep-copies conf.consts into this instance.
-        super().__init__(SeqConfig.get().consts)
+        store = SeqConfig.get().consts
+        # Per-pattern overlay: when a build has an active SLM pattern (expconfig_helper's
+        # current_pattern, set by the runner per scan and by the per-bseq build hook), overlay
+        # that pattern's c["ByPattern"] entry onto the consts BEFORE DynProps deep-copies. No
+        # active pattern (or an empty/unknown entry) -> apply_pattern returns the store unchanged
+        # -> byte-identical. Lazy import keeps a JSON-snapshot config (no helper on path) working.
+        try:
+            import expConfig_helper
+            pat = expConfig_helper.current_pattern()
+            if pat:
+                store = expConfig_helper.apply_pattern(store, pat)
+        except Exception:  # noqa: BLE001 -- overlay is best-effort; fall back to base consts
+            pass
+        super().__init__(store)

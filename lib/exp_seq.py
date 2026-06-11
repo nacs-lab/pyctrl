@@ -30,17 +30,22 @@ class ExpSeq(RootSeq):
         self.config = SeqConfig.get(1)
         self.top_level = self
         self.root = self
-        C = {}
         consts = self.config.consts
-        for fn in consts:
-            C[fn] = consts[fn]
-        if c_ovr is not None:
-            if not isinstance(c_ovr, dict):
-                raise TypeError('Constant input must be a struct.')
-            for fn in c_ovr:
-                C[fn] = c_ovr[fn]
+        if c_ovr is not None and not isinstance(c_ovr, dict):
+            raise TypeError('Constant input must be a struct.')
+        # Per-pattern overlay state (used by add_custom_step's per-bseq hook). base/c_ovr are
+        # kept SEPARATE so the hook can re-layer base (+) ByPattern (+) c_ovr per bseq; the
+        # active scan-default pattern (set by the runner via expConfig_helper) is applied to s.C
+        # now. Inert when ByPattern is empty (_has_by_pattern False -> the hook never fires and
+        # build_seq_consts is identity), so s.C is byte-identical to the plain base (+) c_ovr merge.
+        import expConfig_helper
+        self._base_consts = consts
+        self._scan_ovr = c_ovr or {}
+        self._has_by_pattern = bool(consts.get("ByPattern"))
+        self._overlaid_pattern = expConfig_helper.current_pattern()
         self.time_scale = seq_manager.tick_per_sec()
-        self.C = DynProps(C)
+        self.C = DynProps(expConfig_helper.build_seq_consts(
+            consts, self._scan_ovr, self._overlaid_pattern))
         # c_def debug path skipped (empty config -> debug=0).
         self.G = self.config.G
 
@@ -71,17 +76,41 @@ class ExpSeq(RootSeq):
         self.ni_channels = []
 
         self._init_root()
+        self.pattern = self._overlaid_pattern   # root basic seq = the scan-default pattern
         self.bseq_id = 1
         self.zero_time = SeqTime.zero(self)
         self.cur_seq_time = self.zero_time
 
     # -- top-level builders -------------------------------------------------- #
-    def new_basic_seq(self, cb=None, *args):
+    def new_basic_seq(self, cb=None, *args, pattern=None):
         from basic_seq import BasicSeq
         bseq = BasicSeq(self)
+        if pattern is not None:
+            bseq.set_pattern(pattern)
         if cb is not None:
             cb(bseq, *args)
         return bseq
+
+    # -- per-bseq pattern overlay (driven by add_custom_step; inert when ByPattern empty) ---- #
+    def _enter_pattern(self, pattern):
+        """Make s.C reflect ``pattern`` (base (+) ByPattern[pattern] (+) scan c_ovr) for a step
+        build, and set the Consts() overlay context. Rebuilds s.C only on a pattern change
+        (tracked by _overlaid_pattern). Returns the previous Consts() context to restore. Called
+        only when _has_by_pattern is set."""
+        import expConfig_helper
+        prev = expConfig_helper.current_pattern()
+        if pattern != self._overlaid_pattern:
+            self.C._store = expConfig_helper.build_seq_consts(
+                self._base_consts, self._scan_ovr, pattern)
+            self._overlaid_pattern = pattern
+        expConfig_helper.set_current_pattern(pattern)
+        return prev
+
+    def _exit_pattern(self, prev):
+        """Restore the Consts() overlay context after a step build (s.C stays at the last
+        pattern; _overlaid_pattern tracks it, so the next step rebuilds only if it differs)."""
+        import expConfig_helper
+        expConfig_helper.set_current_pattern(prev)
 
     def add_ttl_mgr(self, chn, off_delay, on_delay, skip_time, min_time, off_val=False):
         if off_delay < 0 or on_delay < 0 or skip_time < 0 or min_time < 0:

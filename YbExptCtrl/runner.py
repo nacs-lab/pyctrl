@@ -531,6 +531,13 @@ def make_engine_run(server, camera, seq_config, log=None):
         import rearrange_runtime
         is_rearrange = _is_rearrange_scan(scangroup)
         _ld_phase, _ld_all = _loading_defaults(seq_config)   # expConfig SLM.Loading
+        # Scan-default SLM pattern for the per-pattern config overlay (expConfig ByPattern):
+        # every build in this scan resolves cooling/imaging/VSLMServo against this pattern; a
+        # rearrange seq overrides it per bseq via set_pattern. No-op when ByPattern is empty.
+        # Cleared in the finally below.
+        pat0 = _first_loading_pattern(scangroup.runp(), default_phase=_ld_phase, all_scans=_ld_all)
+        import expConfig_helper
+        expConfig_helper.set_current_pattern((pat0 or {}).get("name"))
         slm_ses = _make_slm_session(scangroup, scan_id, log,
                                     default_phase=_ld_phase, all_scans=_ld_all)
         # Fresh per-shot health for this scan, so a failing previous scan can't
@@ -546,9 +553,7 @@ def make_engine_run(server, camera, seq_config, log=None):
                 _initial_setup_rearrangement(slm_client, scangroup, scan_id, log,
                                              server=server)
             slm_ses.begin()                                      # grab slm lock + write WGS phase
-            pat0 = _first_loading_pattern(scangroup.runp(),
-                                          default_phase=_ld_phase, all_scans=_ld_all)
-            rearrange_runtime.set_context(rearrange_runtime.ScanContext(
+            rearrange_runtime.set_context(rearrange_runtime.ScanContext(  # pat0 resolved above
                 session=slm_ses, camera=camera, server=server, client=slm_client,
                 scan_id=scan_id, is_rearrange=is_rearrange, n_rounds=_n_rounds(scangroup),
                 pattern_name=(pat0 or {}).get("name"),
@@ -657,6 +662,11 @@ def make_engine_run(server, camera, seq_config, log=None):
                 except Exception:  # noqa: BLE001
                     pass
             rearrange_runtime.clear_context()
+            try:
+                import expConfig_helper
+                expConfig_helper.set_current_pattern(None)       # drop the per-scan pattern overlay
+            except Exception:  # noqa: BLE001
+                pass
 
     return run
 

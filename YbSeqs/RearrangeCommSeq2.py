@@ -61,6 +61,15 @@ def RearrangeCommSeq2(s):
     s2 = s.new_basic_seq()
     s.cond_branch(True, s2)
 
+    # Per-bseq SLM pattern (expConfig ByPattern overlay): the post-rearrangement images (round 1
+    # below + round 2) build cooling/imaging/VSLMServo against the FINAL/target pattern; bseq1
+    # keeps the scan-default (initial) pattern. Name from rearrange_kwargs.extras.final_pattern
+    # (set by the scan); absent -> inherit initial (no-op when ByPattern is empty). [If round 1
+    # ever needs a distinct intermediate pattern, declare and apply it here.]
+    _final_pat = s.C.rearrange_kwargs.extras.final_pattern("")
+    if _final_pat:
+        s2.set_pattern(_final_pat)
+
     s2.reg_before_bseq(_noop)          # hand_over_slm (deferred)
 
     # NI-DAQ keep-alive: reassert one V* channel so libnacs emits non-None NI data.
@@ -74,6 +83,8 @@ def RearrangeCommSeq2(s):
     # Round 2: second SLM-rearrangement basic sequence.
     s3 = s.new_basic_seq()
     s2.cond_branch(True, s3)
+    if _final_pat:
+        s3.set_pattern(_final_pat)     # round-2 image also at the final/target pattern
 
     s3.reg_before_bseq(_noop)          # hand_over_slm_2 (deferred)
 

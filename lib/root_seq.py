@@ -34,6 +34,18 @@ class RootSeq(ExpSeqBase):
         self.sub_seqs = []
         self.n_sub_seqs = 0
         self.latest_seq = True
+        # SLM loading-pattern tag for this basic sequence (expConfig ByPattern overlay). None
+        # -> the scan default (ExpSeq) / inherited (BasicSeq). Set via set_pattern() or
+        # ExpSeq.new_basic_seq(pattern=...).
+        self.pattern = None
+
+    def set_pattern(self, name):
+        """Tag this basic sequence with an SLM loading-pattern NAME so its steps build against
+        that pattern's per-pattern overrides (expConfig ByPattern: cooling/imaging/VSLMServo).
+        ``None`` clears it. Returns self for chaining. RUNTIME-ONLY: with an empty ByPattern
+        table this has no byte effect (the per-bseq build hook in add_custom_step stays inert)."""
+        self.pattern = name or None
+        return self
 
     # -- branches / globals -------------------------------------------------- #
     def assign_global(self, g, val):
@@ -204,8 +216,8 @@ class RootSeq(ExpSeqBase):
         return self
 
     # -- top-level forwarders ------------------------------------------------ #
-    def new_basic_seq(self, *args):
-        return self.top_level.new_basic_seq(*args)
+    def new_basic_seq(self, *args, **kwargs):
+        return self.top_level.new_basic_seq(*args, **kwargs)
 
     def add_ttl_mgr(self, *args):
         self.top_level.add_ttl_mgr(*args)

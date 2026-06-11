@@ -532,7 +532,19 @@ class ExpSeqBase(TimeSeq):
     def add_custom_step(self, cond, start_time, cb, *varargin):
         from sub_seq import SubSeq  # deferred import (ExpSeqBase <-> SubSeq cycle)
         step = SubSeq(self, start_time, cond)
-        cb(step, *varargin)
+        # Per-bseq pattern overlay (expConfig ByPattern): build this step against its owning
+        # basic sequence's tagged SLM pattern. Fully inert -- not even entered -- unless the
+        # active config has a non-empty ByPattern table (_has_by_pattern), so the no-pattern
+        # path is byte-identical and adds no per-step work.
+        tl = self.top_level
+        if getattr(tl, "_has_by_pattern", False):
+            prev = tl._enter_pattern(self.root.pattern)
+            try:
+                cb(step, *varargin)
+            finally:
+                tl._exit_pattern(prev)
+        else:
+            cb(step, *varargin)
         provenance.on_step(self, cb, start_time, step)   # INERT unless a session is active
         step.latest_seq = False
         if is_nan(start_time):
