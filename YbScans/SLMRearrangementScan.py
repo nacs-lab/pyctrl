@@ -33,7 +33,7 @@ import sys
 # Initial (loading) and final (target) SLM patterns, resolved to a server-side phase + baked
 # Zernike by _pattern_cfg below (port of ybLoadingPatternCfg.m). For a plain rearrangement leave
 # them equal. The rearrangement MODEL (warmup_kwargs.model_filename) must match the pattern family.
-INIT_PATTERN = "33x33_uniform"
+INIT_PATTERN = "47x47_uniform"
 TARGET_PATTERN = "33x33_uniform"
 # ------------------------------------------------------------------------------------ #
 
@@ -45,6 +45,7 @@ def _pattern_cfg(name):
     """Port of ybLoadingPatternCfg.m: pattern name -> {phase_path, baked_zernike, legacy}."""
     table = {
         # CONFIRMED
+        "47x47_uniform": ("phase/47x47_uniform.pt", [0, 0, 0, 0, 0]),
         "33x33_uniform": ("phase/33x33_uniform.pt", [0, 0, 0, 0, 0]),
         "3270_z4eq4":    ("phase/3270_z4eq4.pt",    [0, 0, 0, 0, -4]),
         # NAME-IMPLIED (confirm the baked Zernike before trusting)
@@ -100,18 +101,19 @@ def SLMRearrangementScan(url=None, reps=None):
     rp.warmup_kwargs.derive_threshold = 0.35
 
     # ---- rearrange_kwargs (g(); per-shot setup, sweepable) -----------------------------
-    g().rearrange_kwargs.nsteps.scan(1, [50, 100, 150, 200])   # sweep (timing-vs-nsteps)
+    g().rearrange_kwargs.nsteps = 100#.scan(1, list(range(100, 200, 40)))   # sweep (timing-vs-nsteps)
     g().rearrange_kwargs.step_period_ms = 1.0   # pinned (period = 1 ms)
     g().rearrange_kwargs.protocol = "rearrange"
     g().rearrange_kwargs.extras.block_max_size = 256
-    g().rearrange_kwargs.extras.pattern = "sunflower"
-    g().rearrange_kwargs.extras.kagome_crop = 0.88
-    g().rearrange_kwargs.extras.model_bookend_pre = False   # default: no full-grid model bookend
-    g().rearrange_kwargs.extras.model_bookend_post = False
+    #g().rearrange_kwargs.extras.pattern = "every-other"
+    # g().rearrange_kwargs.extras.kagome_crop = 0.88
+    # g().rearrange_kwargs.extras.model_bookend_pre = False   # default: no full-grid model bookend
+    # g().rearrange_kwargs.extras.model_bookend_post = False
     g().rearrange_kwargs.extras.ifEnhanced = False
-    g().rearrange_kwargs.extras.precompute = True
+    g().rearrange_kwargs.extras.precompute.scan(1, [True, False])
     g().rearrange_kwargs.extras.precompute_host = True   # host-resident precompute / pre-pin
     g().rearrange_kwargs.extras.hw_sequence = False
+    # g().rearrange_kwargs.extras.flip_immediate = False   # pinned False -- True wedges SLM DMA (bug-rearr-slm-write-dma-stall)
     g().rearrange_kwargs.extras.z4 = -5            # MATCH rp.loading_defocus (same focal plane)
 
     # ---- non-rearrangement scan settings ----------------------------------------------

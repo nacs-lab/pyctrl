@@ -130,7 +130,7 @@ def _consts():
     c["Orca"] = {"ROI": [1000, 100, 2100, 2100], "ExposureTime": 0.050004}
 
     # 556nm resonance (calibrate daily by spectroscopy; 3P1 mj=0 near-magic)
-    c["Resonance556mj0Freq"] = 107.7677e6  # fit 2026-06-10 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.980, FWHM 49.3 kHz, 200 shots, scan 20260610123024); +12.5 kHz vs prior (within linewidth). was 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
+    c["Resonance556mj0Freq"] = 107.7673e6  # fit 2026-06-11 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.966, FWHM 56.5 kHz, 210 shots, scan 20260611121042); -0.4 kHz vs prior (within linewidth). was 107.7677e6 (06-10); 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
     c["Resonance399Freq"] = 310e6              # not magic; changes with trap depth
 
     # Init: 2D MOT & Zeeman, electric fields, SLM servo
@@ -139,7 +139,7 @@ def _consts():
         "Zeeman": {"FreqDetuning": -36.5e6, "Amp": 0.6},
         "EOM616": {"Freq": 252.07e6, "FreqOld": 252.07e6},
         "Electrodes": {"Vx": -0.0233, "Vy": 0.0027, "Vz": 0.004859},
-        "VSLMServo": 6,                        # 112 sites at 6A at 30dB
+        "VSLMServo": 3.7,                        # 112 sites at 6A at 30dB
     }
 
     # BlueMOT
@@ -156,7 +156,12 @@ def _consts():
         "BFieldRampTime": 100e-6,              # blue->green B-field ramp
         "BFieldGradient": 3,
         # fast-loading opt 2026-06-05: X was 0.039, Y was 0.27
-        "BiasCoilCurrent": {"Ryd": 0, "X": 0.040, "Y": 0.268, "Z": 0.18},
+        # 2026-06-11 X-bias (MOT-position) LACScan 20260611112242: loading window
+        # [0.036,0.040] A, rate peak 0.038 (0.557). x-gradient corr(load,x) flips
+        # +0.27@0.038 -> -0.27@0.040 -> zero-crossing ~0.039 = MOT centered on the
+        # array (flattest gradient = best uniformity), which is also the loading-
+        # plateau center (drift-robust) with rate within ~2% of peak. X 0.040->0.039.
+        "BiasCoilCurrent": {"Ryd": 0, "X": 0.039, "Y": 0.268, "Z": 0.18},
         # fast-loading opt 2026-06-05: HandoverTime was 30e-3
         "PowerBroaden": {"HandoverTime": 15e-3, "FreqDetuning": 0.7e6, "Amp": 0.8},
         # fast-loading opt 2026-06-05: HoldTime was 200e-3, Amp was 0.2
@@ -173,13 +178,24 @@ def _consts():
         "AOM": {"Freq": 120e6, "Amp": 0.55},
         "VServo": None,                        # cross-ref -> Init.VSLMServo (set below)
         "Modulation": {"Time": 10e-3, "Freq": 100e3, "Amp": 0},
+        # Every-scan default loading pattern. RUNTIME-ONLY: consumed by the pyctrl runner
+        # (_loading_defaults in YbExptCtrl/runner.py), never read by a sequence -> no
+        # serialize() byte effect, so it does NOT touch the byte oracles. expConfig.py is the
+        # live source of truth and hot-reloads per job, so the default array changes WITHOUT a
+        # backend restart. The runner.py module constants (DEFAULT_LOADING_PATTERN_PHASE /
+        # DEFAULT_LOADING_DEFOCUS / ALL_SCANS_LOAD_PATTERN) are now only the fallback when this
+        # "Loading" key is absent (e.g. a bare JSON snapshot). After editing this, regenerate
+        # the config drift oracle: ``python pyctrl/tools/capture_config_reference.py``.
+        #   DefaultPhase        - server-side WGS phase written when a scan declares no pattern
+        #   Defocus             - ANSI z4 loading defocus (rad); fixed loading plane (camera-set)
+        #   AllScansLoadPattern - when True, EVERY no-pattern scan writes DefaultPhase + holds
+        #                         the SLM lock + detects with that pattern's per-pattern thresholds
+        "Loading": {
+            "DefaultPhase": "phase/47x47_uniform.pt",
+            "Defocus": -5.0,
+            "AllScansLoadPattern": True,
+        },
     }
-    # NOTE: the every-scan default loading pattern + defocus + AllScansLoadPattern
-    # toggle are NOT stored here. These ``consts`` are governed by the config drift
-    # oracle (THE ONE RULE: byte-identical to the MATLAB reference), so runtime SLM
-    # defaults must not live in them. They live alongside the existing
-    # DEFAULT_LOADING_DEFOCUS in pyctrl/YbExptCtrl/runner.py (DEFAULT_LOADING_PATTERN_PHASE
-    # / ALL_SCANS_LOAD_PATTERN); per-scan override is runp().loading_phase / loading_defocus.
 
     # LAC
     c["LAC"] = {

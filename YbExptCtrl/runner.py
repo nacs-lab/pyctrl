@@ -926,8 +926,12 @@ def _loading_patterns_json(rp, num_images, default_phase=None, all_scans=False):
     """Per-image loading-pattern declaration (port of ybLoadingPatternsJson.m). One entry per
     camera frame: frame-0 <- ``warmup_kwargs.initial_phase``, final frame <- ``final_phase``, with
     ``extras.*_phase_zernike`` as the baked Zernike to strip. An explicit ``runp().imagePatternsJson``
-    wins. Each entry: ``{name, base_phase_path, order, legacy_zerniked, [baked_zernike]}``. Returns
-    the list, or None when the scan declares no loading pattern (legacy day-folder behaviour).
+    wins; failing that, an explicit per-scan ``runp().loading_phase`` (the non-rearrange loading-
+    hologram override, e.g. LACScan) becomes a single base-phase entry -- same priority
+    ``_first_loading_pattern`` uses to WRITE it, so a scan that loads a pattern this way also
+    DECLARES it for detection/thresholds. Each entry: ``{name, base_phase_path, order,
+    legacy_zerniked, [baked_zernike]}``. Returns the list, or None when the scan declares no
+    loading pattern (legacy day-folder behaviour).
 
     When ``all_scans`` is on (expConfig SLM.Loading.AllScansLoadPattern) a scan that declares no
     pattern falls back to a single ``default_phase`` entry, so imagePatternsJson is ALWAYS present
@@ -949,7 +953,18 @@ def _loading_patterns_json(rp, num_images, default_phase=None, all_scans=False):
                 return items
         except Exception:  # noqa: BLE001
             pass
-    # (2) synthesise from rearrange warmup_kwargs, else the every-scan default.
+    # (2) explicit per-scan loading_phase (mirrors _first_loading_pattern's priority): a
+    #     non-rearrange scan that overrides the loading hologram via runp().loading_phase (e.g.
+    #     LACScan) must DECLARE it for detection/thresholds too, not just write it to the SLM.
+    #     The loading defocus (runp().loading_defocus) is re-applied only on the SLM write -- trap
+    #     extraction is defocus-independent -- so it is NOT part of this base-phase declaration.
+    try:
+        lp = str(rp.loading_phase("")).strip()
+    except Exception:  # noqa: BLE001
+        lp = ""
+    if lp:
+        return [_pattern_item(lp, None)]
+    # (3) synthesise from rearrange warmup_kwargs, else the every-scan default.
     try:
         wk = rp.warmup_kwargs
         ip = str(wk.initial_phase("")).strip()
