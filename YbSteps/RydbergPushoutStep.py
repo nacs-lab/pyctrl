@@ -72,7 +72,7 @@ def RydbergPushoutStep(s, g):
     #s.add('Freq556MOTX', Freq_Pushout556).add('Amp556MOTX', Amp_Pushout556)
 
     s.add('AmpAOM308', Amp_Pushout308)
-    # s.add('AmpAOM616', 0)
+    s.add('AmpAOM616', 0)
 
     # Turn on microwave during pushout
     s.add('TTLQickTrig', 1)

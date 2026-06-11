@@ -15,8 +15,8 @@ constant ``ZEEMAN_SLOPE_MHZ_PER_G * field_G`` added (the "linear addition to the
 
   * ``field_G`` (Gauss) maps DIRECTLY to ``Pushout.BiasCoilCurrent.Ryd`` (30 -> 1.5 V on VRydCoil
     -> 30 G), which ``RydbergPushoutStep`` ramps on for the push-out.
-  * Push-out is stronger/shorter than the 0-field calibration: amp 0.22, time 1 ms (the .m used
-    0.22 @ 30 G, 0.15 @ 20 G -- edit the literals in build() if you need a per-field amp).
+  * Push-out is stronger/shorter than the 0-field calibration: the amp scales LINEARLY with
+    field (0.2 @ 0 G -> 0.4 @ 30 G), time 1 ms (edit AMP_AT_0G/AMP_AT_30G in build() to retune).
   * ``field_G=0`` degenerates to the unshifted window at 0 G (Ryd=0), but still uses the Rydberg
     push-out step + strong push -- for the *validated* 0-field line use ``Spectrum556Scan`` instead.
 
@@ -56,8 +56,8 @@ def build(field_G=0):
 
     The swept ``Pushout.Green.Freq`` is centred at ``RES0 + ZEEMAN_SLOPE * field_G`` (the mj=0
     resonance shifted linearly by the field). ``field_G`` drives the Ryd bias coil
-    (``BiasCoilCurrent.Ryd``); the push-out amp is field-dependent (0.15 @ 20 G, else 0.22),
-    time 1 ms.
+    (``BiasCoilCurrent.Ryd``); the push-out amp scales linearly with field (0.2 @ 0 G ->
+    0.4 @ 30 G), time 1 ms.
 
     This is the SHORT-SCAN / coarse-locate configuration: at field the window is wide (+/-0.5 MHz)
     and coarse (50 kHz) so the dip is bracketed despite slope/drift uncertainty; at 0 G it is the
@@ -68,13 +68,17 @@ def build(field_G=0):
     from scan_group import ScanGroup
     from scan_export import matlab_colon
 
-    # mj=0 resonance (MHz) -- expConfig Resonance556mj0Freq -- and its Zeeman shift per Gauss.
-    # Slope 1.18 derived from the retired Spectrum556Scan.m windows (20 G ~131.3, 30 G ~143.1).
-    RES0_MHZ = 107.7503
-    ZEEMAN_SLOPE_MHZ_PER_G = 1.18
+    # 0-field push-out center (MHz) + its Zeeman shift per Gauss, BOTH fit from the 2026-06-10
+    # finer push-out spectra (Lorentzian centers at 0/5/10/20/30 G:
+    # 107.803/113.714/119.605/131.355/143.185 MHz, linear R^2=1.0000).
+    # RES0 is the fitted 0-field intercept -- this strong-push Rydberg line sits ~55 kHz ABOVE the
+    # expConfig mj=0 calibration (107.7503, the prior RES0_MHZ); slope was 1.18 (retired
+    # Spectrum556Scan.m windows). center_mhz = RES0 + slope*field now reproduces the fit line.
+    RES0_MHZ = 107.8049
+    ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
 
     # Window half-width + step (MHz): coarse + wide at field (locate), fine + narrow at 0 G (known).
-    COARSE_HALF_MHZ, COARSE_STEP_MHZ = 15, 0.5
+    COARSE_HALF_MHZ, COARSE_STEP_MHZ = 0.5, 0.03
     FINE_HALF_MHZ, FINE_STEP_MHZ = 0.50, 0.03
 
     center_mhz = RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G
@@ -84,8 +88,12 @@ def build(field_G=0):
     g = ScanGroup()
 
     # ---- high-field push-out params (RydbergPushoutStep reads these) -------
-    g().Pushout.Green.Amp = 0.2
-    g().Pushout.Time = 10e-3
+    # Push-out amp scales LINEARLY with field: weaker push at low field, stronger at high
+    # field -- 0.2 @ 0 G -> 0.4 @ 30 G, i.e. amp = 0.2 + (0.4 - 0.2) * field_G / 30.
+    # (Pure linear: extrapolates for field > 30 G; the `amp=` arg still overrides this.)
+    AMP_AT_0G, AMP_AT_30G = 0.2, 0.5
+    g().Pushout.Green.Amp = AMP_AT_0G + (AMP_AT_30G - AMP_AT_0G) * field_G / 30.0
+    g().Pushout.Time = 1e-3
     g().Pushout.BiasCoilCurrent.Ryd = field_G      # Gauss -> Ryd coil current (30 -> 30 G)
 
     # ---- swept param: Pushout.Green.Freq, centred on the field-shifted resonance ----
