@@ -97,10 +97,14 @@ def load_affine_matrix():
 
 
 def load_pattern_thresholds(name):
-    """Per-pattern thresholds (+ infidelities) from ``<name>/threshold.mat``, or None.
+    """Per-pattern thresholds (+ infidelities + Gaussian fits) from ``<name>/threshold.mat``, or
+    None.
 
-    Returns ``{'thresholds': (N,) list, 'infidelities': (N,) list | None}``; mirrors the
-    day-folder threshold.mat parsing. None when the file is absent / unreadable."""
+    Returns ``{'thresholds': (N,) list, 'infidelities': (N,) list | None,
+    'gauss_params': list[N] | None}``; mirrors the day-folder threshold.mat parsing. None when the
+    file is absent / unreadable. ``gauss_params`` is the per-site double-Gaussian fit
+    ``[mu_e,s_e,A_e,mu_a,s_a,A_a]`` (or None per site for a missing/degenerate fit), used by the
+    mid-shot detector's posterior path; None for the whole list on a v7.3 / missing struct."""
     p = _pattern_threshold_path(name)
     if not os.path.isfile(p):
         return None
@@ -110,20 +114,57 @@ def load_pattern_thresholds(name):
         def _vec(x):
             return np.asarray(x, dtype=float).ravel().tolist()
 
+        gp = None
         try:
             from scipy.io import loadmat
             d = loadmat(p)
             thr = _vec(d["thresholds"]) if "thresholds" in d else None
             inf = _vec(d["infidelities"]) if "infidelities" in d else None
+            gp = _parse_gauss_fits_struct(d)
         except (NotImplementedError, ValueError):
             import h5py
             with h5py.File(p, "r") as f:
                 thr = _vec(f["thresholds"]) if "thresholds" in f else None
                 inf = _vec(f["infidelities"]) if "infidelities" in f else None
+            # v7.3 gaussFitsStruct is a cell/object graph; skip (caller falls back to hard cut).
         if thr is None:
             return None
-        return {"thresholds": thr, "infidelities": inf}
+        return {"thresholds": thr, "infidelities": inf, "gauss_params": gp}
     except Exception:  # noqa: BLE001 - any read failure -> fall back to the day folder
+        return None
+
+
+def read_gauss_params(path):
+    """Per-site Gaussian fit params from a ``threshold.mat`` ``gaussFitsStruct`` -> list of length N
+    (each a (6,) float array ``[mu_e,s_e,A_e,mu_a,s_a,A_a]``, or None for a missing/degenerate fit),
+    or None when the file is absent / has no ``gaussFitsStruct`` / can't be read (v7.3 -> None, the
+    caller then falls back to the hard ``intensity > threshold`` cut). Mirrors the struct written by
+    ``yb_analysis/detection/hist_init.py:save_calibration_outputs``."""
+    if not os.path.isfile(path):
+        return None
+    try:
+        from scipy.io import loadmat
+        d = loadmat(path)
+    except Exception:  # noqa: BLE001 - v7.3 / unreadable -> caller falls back to hard threshold
+        return None
+    return _parse_gauss_fits_struct(d)
+
+
+def _parse_gauss_fits_struct(d):
+    """Parse a scipy-``loadmat`` dict's ``gaussFitsStruct`` (a struct array with field ``params``)
+    into a list[N] of (6,) arrays / None. Returns None when the field is absent or unparsable."""
+    gs = d.get("gaussFitsStruct") if hasattr(d, "get") else None
+    if gs is None:
+        return None
+    try:
+        import numpy as np
+        flat = np.asarray(gs).ravel()              # (N,) struct scalars, field 'params'
+        out = []
+        for s in range(flat.shape[0]):
+            p = np.asarray(flat[s]["params"]).ravel()
+            out.append(p.astype(float) if p.size >= 6 else None)
+        return out if out else None
+    except Exception:  # noqa: BLE001 - unexpected layout -> fall back
         return None
 
 
@@ -177,9 +218,12 @@ def pattern_camera_grid(name, roi):
 def resolve_pattern_calibration(name, roi):
     """Per-pattern detection calibration for ``name`` at ``roi``, or None.
 
-    Returns ``{'grid': (N,2) [Y,X], 'thresholds': (N,), 'infidelities': (N,) | None, 'n_sites': N}``
-    only when BOTH the affine-mapped grid AND per-pattern thresholds resolve with matching site
-    counts. Any mismatch / missing piece -> None so the caller uses the day-folder calibration."""
+    Returns ``{'grid': (N,2) [Y,X], 'thresholds': (N,), 'infidelities': (N,) | None,
+    'gauss_params': list[N] | None, 'n_sites': N}`` only when BOTH the affine-mapped grid AND
+    per-pattern thresholds resolve with matching site counts. The grid (from ``record.json`` knm)
+    and the thresholds/gauss params (from ``threshold.mat``) share the registry site order, so
+    ``gauss_params[i]`` aligns with ``grid[i]``. Any mismatch / missing piece -> None so the caller
+    uses the day-folder calibration."""
     grid = pattern_camera_grid(name, roi)
     if grid is None or len(grid) == 0:
         return None
@@ -192,6 +236,10 @@ def resolve_pattern_calibration(name, roi):
     inf = td.get("infidelities")
     if inf is not None and len(inf) != len(grid):
         inf = None
+    gp = td.get("gauss_params")
+    if gp is not None and len(gp) != len(grid):
+        gp = None
     return {"grid": grid, "thresholds": list(thr),
             "infidelities": list(inf) if inf is not None else None,
+            "gauss_params": list(gp) if gp is not None else None,
             "n_sites": len(grid)}

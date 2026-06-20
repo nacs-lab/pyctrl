@@ -12,7 +12,7 @@ hardware), simulate the injection with ``set_global`` (what register_eom616_pers
 ``_pre`` does), then run the capture and confirm globals.json carries the injected value.
 
 Run in a maintenance window (MATLAB off):
-    .venv-engine\\Scripts\\python -m pytest tests/test_seq_dump_engine.py -m needs_engine --real-engine
+    .venv-engine-py312\\Scripts\\python -m pytest tests/test_seq_dump_engine.py -m needs_engine --real-engine
 """
 
 import json

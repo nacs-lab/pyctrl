@@ -15,7 +15,7 @@ Params mirror LACScan.m's active settings (BlueMOT.LoadingTime=0.4, GreenMOT.Coo
 A small ROI is used so the validation payload is small; the real monitor run sets the imaging
 ROI via camera_init.
 
-Usage:  pyctrl/.venv-engine/Scripts/python tools/run_lacscan_once.py
+Usage:  pyctrl/.venv-engine-py312/Scripts/python tools/run_lacscan_once.py
 """
 
 import os

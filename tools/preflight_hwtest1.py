@@ -23,7 +23,7 @@ WHAT IS / IS NOT TOUCHED (verified against pyctrl source AND the libnacs C++ on 
     the faithful None-guard is "ni_channels is empty after generate()", which is what run_bseq keys on.
 
 Run (repo root = cwd):
-    pyctrl\\.venv-engine\\Scripts\\python.exe pyctrl\\tools\\preflight_hwtest1.py
+    pyctrl\\.venv-engine-py312\\Scripts\\python.exe pyctrl\\tools\\preflight_hwtest1.py
 
 Exit 0 = all HARD checks PASS (WARN/diagnostic lines do not fail the run). The libnacs+libzmq
 DLL-detach wedge hangs normal CPython exit once the engine is loaded, so we TerminateProcess at
@@ -140,7 +140,7 @@ def main():
     # ---- 1. engine importable in THIS interpreter -------------------------- #
     def _c1():
         if not seq_manager.engine_available():
-            return False, ("libnacs NOT importable -- you are NOT on .venv-engine/Python38; "
+            return False, ("libnacs NOT importable -- you are NOT on an engine venv (.venv-engine-py312 / .venv-engine / Python38); "
                            "every getter would be the dummy (get_zynq_bytecode->b''). ABORT.")
         seq_manager.get()                         # force the lazy import now
         return True, "libnacs engine present in this interpreter"

@@ -32,6 +32,14 @@ def RearrangeCommSeq2(s):
 
     s.reg_before_start(_noop)          # pre_run: connect, lock, prewarm, n_rounds=2 (deferred)
 
+    # Per-bseq SLM pattern (expConfig ByPattern overlay): bseq1 -> INITIAL pattern; the
+    # post-rearrangement images (round 1 + round 2 below) -> FINAL. Names from
+    # rearrange_kwargs.extras.initial_pattern / final_pattern (set by the scan); absent ->
+    # scan-default / inherit. Tag s HERE before its steps build. No-op when ByPattern is empty.
+    _init_pat = s.C.rearrange_kwargs.extras.initial_pattern("")
+    if _init_pat:
+        s.set_pattern(_init_pat)
+
     s.add_step(InitStep, s.C.Init)
     s.add_step(BlueMOTStep, s.C.BlueMOT)
     s.add_step(SLMStep, s.C.SLM)
@@ -61,11 +69,8 @@ def RearrangeCommSeq2(s):
     s2 = s.new_basic_seq()
     s.cond_branch(True, s2)
 
-    # Per-bseq SLM pattern (expConfig ByPattern overlay): the post-rearrangement images (round 1
-    # below + round 2) build cooling/imaging/VSLMServo against the FINAL/target pattern; bseq1
-    # keeps the scan-default (initial) pattern. Name from rearrange_kwargs.extras.final_pattern
-    # (set by the scan); absent -> inherit initial (no-op when ByPattern is empty). [If round 1
-    # ever needs a distinct intermediate pattern, declare and apply it here.]
+    # Round 1 + round 2 images -> the FINAL/target pattern (see the initial_pattern note above).
+    # [If round 1 ever needs a distinct intermediate pattern, declare and apply it here.]
     _final_pat = s.C.rearrange_kwargs.extras.final_pattern("")
     if _final_pat:
         s2.set_pattern(_final_pat)

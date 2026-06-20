@@ -20,7 +20,8 @@ def PushouthXStep(s, g):
     t_Pushout = g.Time(Consts().Pushout.Time)
 
     Freq_Pushout399 = g.Blue.Freq(Consts().Pushout.Blue.Freq)
-    Amp_Pushout399 = g.Blue.Amp(Consts().Pushout.Blue.Amp)
+    Amp1_Pushout399 = g.Blue.Amp(Consts().Pushout.Blue.Amp1)
+    Amp2_Pushout399 = g.Blue.Amp(Consts().Pushout.Blue.Amp2)
 
     Freq_Pushout556X = g.Green.X.Freq(Consts().Pushout.Green.Freq)
     Amp_Pushout556X = g.Green.X.Amp(Consts().Pushout.Green.Amp)
@@ -29,11 +30,13 @@ def PushouthXStep(s, g):
 
     # Using the 369 fiber output
     s.add('TTL399AbsImagShutter', 1)
+    s.add('TTL399Imag2Shutter', 1)
     s.add('TTL369Shutter', 1)
 
     s.wait(3e-3)  # wait for the shutter
 
-    s.add('FreqAbsImag', Freq_Pushout399).add('AmpAbsImag', Amp_Pushout399)
+    s.add('FreqAbsImag', Freq_Pushout399).add('AmpAbsImag', Amp1_Pushout399)
+    s.add('Freq399Imag2', Freq_Pushout399).add('Amp399Imag2', Amp2_Pushout399)
 
     s.add('Freq556MOTX', Freq_Pushout556X).add('Amp556MOTX', Amp_Pushout556X)
     s.add('Freq556RydbergMOTh', Freq_Pushout556h).add('Amp556RydbergMOTh', Amp_Pushout556h)
@@ -42,6 +45,7 @@ def PushouthXStep(s, g):
 
     s.add('TTLScopeTrig', 0)
     s.add('AmpAbsImag', 0)
+    s.add('Amp399Imag2', 0)
     s.add('AmpBlueMOT', 0)
 
     s.add('Amp556MOTX', 0)
@@ -49,6 +53,7 @@ def PushouthXStep(s, g):
 
     s.add('AmpAOM308', 0)
     s.add('TTL399AbsImagShutter', 1)
+    s.add('TTL399Imag2Shutter', 0)
     s.add('TTL556MOTaShutter', 1).add('TTL556MOTbShutter', 1).add('TTL556MOTcShutter', 1)
     s.add('TTL556RydbergShutter', 0)
     s.add('TTL369Shutter', 0)

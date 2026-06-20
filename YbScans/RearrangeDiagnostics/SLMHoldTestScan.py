@@ -69,7 +69,7 @@ HELD_IDX = sorted(random.Random(HELD_SEED).sample(range(N_INIT), K_HELD))
 
 
 def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # .../pyctrl
     for d in ("lib", "YbExptCtrl", "YbSeqs", "YbSteps"):
         p = os.path.join(root, d)
         if p not in sys.path:

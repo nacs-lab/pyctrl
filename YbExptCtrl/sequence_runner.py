@@ -116,6 +116,7 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
             # _build_run_kwargs hands run_scan_group a pre-built, pre-scrambled run order
             # (ybBuildScanJob's Scan.Params), so the scan loop just RUNS the order it is given.
             result = run(disp.seq, disp.scangroup, control=control, scan_name=disp.label,
+                         description=_extract_description(descriptor_json),
                          **_build_run_kwargs(disp, rng))
         except Exception as e:  # noqa: BLE001 - a compile/run failure fails THIS job only
             return _fail(server, job_id, "run error: %s" % e, disp.seq_name)
@@ -208,6 +209,26 @@ def _extract_code_snapshot(descriptor_json):
             return None
         cs = d.get("code_snapshot")
         return cs if isinstance(cs, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _extract_description(descriptor_json):
+    """The descriptor's optional free-text ``description`` (run purpose/context), or None.
+
+    A descriptor-level field (set by ``ybStartScan(description=...)``) that ``dispatch_descriptor``
+    does not model -- like ``code_snapshot``, the run loop reads it straight off the payload and
+    threads it into scan-prep so it lands in the scan-config sidecar (top-level ``description``).
+    Tolerates str/bytes/dict input; any problem -> None (so a normal run is unaffected)."""
+    try:
+        d = descriptor_json
+        if isinstance(d, (str, bytes, bytearray)):
+            import json
+            d = json.loads(d)
+        if not isinstance(d, dict):
+            return None
+        desc = d.get("description")
+        return str(desc) if desc else None
     except Exception:  # noqa: BLE001
         return None
 

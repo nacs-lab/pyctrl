@@ -18,7 +18,7 @@ Checks (all hardware-free):
   6. NI rate derived from config.yml matches nidaq_runner._RATE (no hardcoded magic number)
 
 Run (repo root = cwd):
-    pyctrl\\.venv-engine\\Scripts\\python.exe pyctrl\\tools\\preflight_ni.py [SeqName]
+    pyctrl\\.venv-engine-py312\\Scripts\\python.exe pyctrl\\tools\\preflight_ni.py [SeqName]
 Default SeqName = TweezerLoadingSeq (what LACScan runs).
 """
 

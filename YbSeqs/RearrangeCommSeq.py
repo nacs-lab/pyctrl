@@ -43,6 +43,35 @@ from seq_capability import seq_capabilities
 _LAST_IMG1 = {"frame": None}
 
 
+def _fold_distortion_zernike(args):
+    """Fold scalar ``extras.distortion_z<N>`` (ANSI index N, radians) into the
+    ``extras.distortion_zernike`` list the SLM-server ``pingponggrating`` dispatcher reads.
+
+    Mirrors ``rearrange_runtime.translate_zernike_zN`` but for the pingponggrating distortion
+    knob, and lives HERE (a YbSeqs module, hot-reloaded per job) rather than in YbExptCtrl so it
+    needs no backend restart. A scan sweeps a SCALAR axis (e.g. ``extras.distortion_z7.scan(...)``)
+    instead of a list-valued ``distortion_zernike`` axis: a list-valued swept axis breaks the
+    lab-side live scan curve (``scan_analysis._find_first_numeric`` ravels the (npts, coeff_len)
+    list-of-lists -> "size 25 vs 5" concat error). We build the full list here, per shot. An
+    explicit ``distortion_zernike`` already present wins; ``distortion_zernike`` itself is NOT
+    consumed (suffix ``ernike`` is not all-digits)."""
+    extras = args.get("extras") if isinstance(args, dict) else None
+    if not isinstance(extras, dict):
+        return args
+    prefix = "distortion_z"
+    zn = {}
+    for key in list(extras.keys()):
+        if key.startswith(prefix) and key[len(prefix):].isdigit():
+            zn[int(key[len(prefix):])] = float(extras.pop(key))
+    if not zn:
+        return args
+    coeffs = [0.0] * (max(zn) + 1)
+    for idx, val in zn.items():
+        coeffs[idx] = val
+    extras.setdefault("distortion_zernike", coeffs)
+    return args
+
+
 @seq_capabilities(owns_frames=True)   # grabs + stores its own frames mid-sequence (the handoff)
 def RearrangeCommSeq(s):
     # Per-seq coordination flags (DynProps reads return a bool, not a SubProps).
@@ -50,6 +79,15 @@ def RearrangeCommSeq(s):
     s.G.rearrange_lock_ok = False
 
     s.reg_before_start(pre_run)        # connect, compute lock, per-shot setup + reload
+
+    # Per-bseq SLM pattern (expConfig ByPattern overlay): bseq1 images the INITIAL (dense load)
+    # pattern, bseq2 (below) the FINAL (rearranged target); each bseq's cooling/imaging/VSLMServo
+    # resolve from ByPattern[that pattern]. Names from rearrange_kwargs.extras.initial_pattern /
+    # final_pattern (set by the scan); absent -> scan-default / inherit. Tag s HERE, before its
+    # steps build, so they pick it up. No-op when ByPattern is empty.
+    _init_pat = s.C.rearrange_kwargs.extras.initial_pattern("")
+    if _init_pat:
+        s.set_pattern(_init_pat)
 
     s.add_step(InitStep, s.C.Init)
     s.add_step(BlueMOTStep, s.C.BlueMOT)
@@ -83,17 +121,15 @@ def RearrangeCommSeq(s):
     s2 = s.new_basic_seq()
     s.cond_branch(True, s2)
 
-    # Per-bseq SLM pattern (expConfig ByPattern overlay): bseq2 images the FINAL (rearranged
-    # target) pattern, so its cooling/imaging/VSLMServo resolve from ByPattern[final]; bseq1 keeps
-    # the scan-default (initial) pattern set by the runner. Name from
-    # rearrange_kwargs.extras.final_pattern (set by the scan); absent -> bseq2 inherits initial
-    # (and the whole thing is a no-op when ByPattern is empty).
+    # bseq2 -> the FINAL (rearranged target) pattern (see the initial_pattern note above).
     _final_pat = s.C.rearrange_kwargs.extras.final_pattern("")
     if _final_pat:
         s2.set_pattern(_final_pat)
 
     s2.reg_before_bseq(hand_over_slm)  # img1 -> bits -> rearrange
 
+    s2.add_step(SLMStep, s.C.SLM)
+    
     s2.add_step(Cool556hXStep, s.C.Cool556)
 
     # Second Imag399.
@@ -168,6 +204,7 @@ def pre_run(s1):
     # everything else stays sticky from the initial (dequeue-time) setup call.
     args = rearrange_runtime.collect_kwargs(s1.C.rearrange_kwargs)
     args = rearrange_runtime.translate_zernike_zN(args)
+    args = _fold_distortion_zernike(args)
     args.setdefault("client_scan_id", str(ctx.scan_id))
     try:
         c.setup_rearrangement(**args)
@@ -207,8 +244,8 @@ def hand_over_slm(s1):
     # here but isn't in post_run's scope). Cleared above each shot; success path persists it normally.
     _LAST_IMG1["frame"] = img
 
-    bits = ctx.detect_bits(img)
-    if not bits:
+    probs = ctx.detect_probs(img)
+    if not probs:
         return                          # calibration mismatch -> don't rearrange on a stale grid
 
     c = ctx.client
@@ -221,7 +258,10 @@ def hand_over_slm(s1):
     # synchronous result to reconcile here -- the live signal we gate on is the rearrange() result.
     _safe(ctx.server, "stage_frame", img, ctx.scan_id, _seq_id(s1))
     try:
-        r = c.rearrange(bits, **runid)
+        # Send per-site presence PROBABILITIES (floats in [0,1]) in place of the hard bitstring.
+        # The SLM server rounds them to 0/1 for now (identical downstream behaviour) but the floats
+        # let it drop low-confidence sites in future. img2/post_run still uses bits (/slm/results).
+        r = c.rearrange(probs, **runid)
         if isinstance(r, dict) and r.get("handoff_idle"):
             ctx.log("[hand_over_slm] seq %d: server idle; cancelling shot, waiting 1 s"
                     % _seq_id(s1))

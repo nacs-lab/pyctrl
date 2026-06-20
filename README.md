@@ -74,12 +74,16 @@ engine-shaped object is needed, so it never loads `libnacs`.
 
 ### Interpreter for the engine checks
 
-`libnacs` is **only importable under the Python 3.8 install at
-`C:\Users\Ybtweezer-PC2\AppData\Local\Programs\Python\Python38`** (the same build
-MATLAB's `pyenv` uses — but run it as a *separate OS process*, never inside
-MATLAB). The default suite above runs fine under any modern Python (it is pure
-stdlib). Because Python38 has no `pytest`, create an isolated venv that inherits
-`libnacs` via system-site-packages but keeps `pytest` out of MATLAB's base env:
+The **default engine venv is now `.venv-engine-py312` (Python 3.12)** — a self-contained
+venv off the anaconda 3.12 base with the full runtime stack + the (pure-Python) `libnacs`
+bindings copied in (`config.PYCTRL_PYTHON` and `.vscode` point here). The default suite above
+runs fine under any modern Python (it is pure stdlib); the engine/hardware checks need this
+venv (it has both `libnacs` and `pylablib`).
+
+**Legacy fallback (`.venv-engine`, Python 3.8):** `libnacs` is also importable under the Python
+3.8 install at `C:\Users\Ybtweezer-PC2\AppData\Local\Programs\Python\Python38` (the same build
+MATLAB's `pyenv` uses — but run it as a *separate OS process*, never inside MATLAB). That venv
+was created as a `--system-site-packages` venv inheriting `libnacs`, with `pytest` added:
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\Python\Python38\python.exe" -m venv --system-site-packages .venv-engine
@@ -90,8 +94,8 @@ Engine and hardware checks are opt-in and should be run in a maintenance window:
 
 ```bash
 # engine-accepts proof: compile-only, loads libnacs, no init_run/start
-.venv-engine/Scripts/python -m pytest pyctrl -m needs_engine --real-engine
-pytest pyctrl -m needs_hardware   # drives devices — stop the MATLAB experiment first
+.venv-engine-py312/Scripts/python -m pytest pyctrl -m needs_engine --real-engine
+.venv-engine-py312/Scripts/python -m pytest pyctrl -m needs_hardware   # drives devices — stop the MATLAB experiment first
 ```
 
 ## Capturing more references (MATLAB side, engine-free)

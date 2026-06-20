@@ -9,13 +9,21 @@ NOTE: a run submitted with ``--reps 0`` (run-forever) has NO ``config['Params']`
 forever path can't pre-stack an infinite order), so survival_mean comes back empty and
 the axis is unknown -- run calibrations with a finite ``--reps``.
 
+``--mode peak`` fits a Lorentzian PEAK instead of a dip -- for a survival REVIVAL line
+(the 30 G 616-EOM ``Revival616Scan``, where survival rises back up on resonance) rather
+than a push-out dip. Pair it with ``--xlabel '616-EOM freq [MHz]'`` so the saved plot is
+labelled for the swept axis (the swept value, not the lineshape, is all that changes).
+``--peaks 2`` is dip-only (the 399 doublet) and is skipped under ``--mode peak``.
+
 ``--peaks 2`` additionally fits a DOUBLE Lorentzian dip (for two-component / mj-split
 lines such as the 399 ``1S0->1P1`` line) and saves a single-vs-double comparison plot
 (``fit_spectrum_<sid>_2lor.png``); the JSON gains a ``double`` block with both centers,
-both FWHMs, the splitting, and the 2-peak R^2. Default (``--peaks 1``) is unchanged.
+both FWHMs, the splitting, and the 2-peak R^2. Default (``--peaks 1``, ``--mode dip``) is
+unchanged.
 
 Run with the yb_analysis env python:
   <yb_analysis-python> fit_spectrum.py <scan_id|latest> [--ref 107.7503e6] [--peaks 1|2]
+                                       [--mode dip|peak] [--xlabel '616-EOM freq [MHz]']
 """
 import argparse
 import json
@@ -43,9 +51,15 @@ def main():
     ap.add_argument("scan")
     ap.add_argument("--ref", type=float, default=None, help="reference freq (Hz) for a delta report")
     ap.add_argument("--peaks", type=int, choices=(1, 2), default=1,
-                    help="1 = single Lorentzian dip (default); 2 = also fit a double "
+                    help="1 = single Lorentzian (default); 2 = also fit a double "
                          "Lorentzian dip (mj-split / two-component lines, e.g. 399) and "
-                         "save a single-vs-double comparison")
+                         "save a single-vs-double comparison (dip mode only)")
+    ap.add_argument("--mode", choices=("dip", "peak"), default="dip",
+                    help="lineshape: 'dip' (push-out survival dip, default) or 'peak' "
+                         "(a survival REVIVAL peak, e.g. the 30 G 616-EOM revival scan)")
+    ap.add_argument("--xlabel", default="push-out freq [MHz]",
+                    help="x-axis label for the saved plot (default 'push-out freq [MHz]'; "
+                         "use e.g. '616-EOM freq [MHz]' for the revival scan)")
     args = ap.parse_args()
 
     import numpy as np
@@ -66,7 +80,7 @@ def main():
             "survival_mean is empty -- this scan has no config['Params'] map.\n"
             "Was it submitted with --reps 0 (run-forever)? Re-run with a finite --reps.")
 
-    fit = fit_lorentzian(x, y, ye, mode="dip")
+    fit = fit_lorentzian(x, y, ye, mode=args.mode)
     if fit is None:
         raise SystemExit("Lorentzian fit failed (too few finite points?)")
     center, fwhm, r2 = fit["center"], abs(fit["width"]), fit["r_squared"]
@@ -74,7 +88,7 @@ def main():
     span = x.max() - x.min()
     edge = (center <= x.min() + 0.02 * span or center >= x.max() - 0.02 * span)
     out = {"scan_id": sid, "scan_dir": scan_dir, "n_shots": d.get("n_shots"),
-           "n_params": d.get("n_params"), "n_peaks": args.peaks,
+           "n_params": d.get("n_params"), "n_peaks": args.peaks, "mode": args.mode,
            "center_Hz": center, "fwhm_Hz": fwhm,
            "r_squared": r2, "x_min_Hz": float(x.min()), "x_max_Hz": float(x.max()),
            "loading_mean": (float(np.nanmean(ld)) if ld.size else None), "edge_pinned": bool(edge)}
@@ -85,8 +99,9 @@ def main():
     print("scan %s | %s shots, %s pts%s"
           % (sid, d.get("n_shots"), d.get("n_params"),
              ("  loading ~%.2f" % np.nanmean(ld)) if ld.size else ""))
-    print("  [1 Lorentzian] center = %.4f MHz   FWHM = %.1f kHz   R^2 = %.3f%s"
-          % (center / 1e6, fwhm / 1e3, r2, "   *** EDGE-PINNED ***" if edge else ""))
+    print("  [1 Lorentzian %s] center = %.4f MHz   FWHM = %.1f kHz   R^2 = %.3f%s"
+          % (args.mode, center / 1e6, fwhm / 1e3, r2,
+             "   *** EDGE-PINNED ***" if edge else ""))
     print("  window %.3f-%.3f MHz | survival %.2f-%.2f"
           % (x.min() / 1e6, x.max() / 1e6, np.nanmin(y), np.nanmax(y)))
     if args.ref is not None:
@@ -94,7 +109,10 @@ def main():
 
     # Optional second model: a double Lorentzian dip (two-component / mj-split lines).
     dfit = None
-    if args.peaks == 2:
+    if args.peaks == 2 and args.mode == "peak":
+        print("  [2 Lorentzian] skipped -- the double fit is dip-only (it's for the "
+              "399 doublet, not a peak); use --peaks 1 with --mode peak")
+    elif args.peaks == 2:
         dfit = fit_double_lorentzian(x, y, ye, mode="dip")
         if dfit is None:
             print("  [2 Lorentzian] failed or degenerate (components merged) -> "
@@ -131,7 +149,7 @@ def main():
             ax.axvline(center / 1e6, color="C3", ls="--", lw=0.9)
         if args.ref is not None:
             ax.axvline(args.ref / 1e6, color="k", ls=":", lw=0.9, label="prev ref")
-        ax.set_xlabel("push-out freq [MHz]")
+        ax.set_xlabel(args.xlabel)
         ax.set_ylabel("survival (P11)")
         if dfit is not None:
             ttl = ("%s  2-peak %.4f / %.4f MHz  split %.2f MHz  R²=%.3f (1pk %.3f)"

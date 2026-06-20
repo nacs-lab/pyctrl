@@ -33,8 +33,8 @@ import sys
 # Initial (loading) and final (target) SLM patterns, resolved to a server-side phase + baked
 # Zernike by _pattern_cfg below (port of ybLoadingPatternCfg.m). For a plain rearrangement leave
 # them equal. The rearrangement MODEL (warmup_kwargs.model_filename) must match the pattern family.
-INIT_PATTERN = "47x47_uniform"
-TARGET_PATTERN = "33x33_uniform"
+INIT_PATTERN = "47x47_feedbackwarm4"
+TARGET_PATTERN = "47x47_feedbackwarm4"
 # ------------------------------------------------------------------------------------ #
 
 MODEL_FILENAME = "SLMnet/checkpoints/sinc_3x3_experiment/models/direct/direct_best.pth"
@@ -45,6 +45,8 @@ def _pattern_cfg(name):
     """Port of ybLoadingPatternCfg.m: pattern name -> {phase_path, baked_zernike, legacy}."""
     table = {
         # CONFIRMED
+        "47x47_feedbackwarm4": ("phase/47x47_feedbackwarm4.pt", [0, 0, 0, 0, 0]),
+        "2x15x15_xyoffset_5um": ("phase/2x15x15_xyoffset_5um.pt", [0, 0, 0, 0, -0.75]),
         "47x47_uniform": ("phase/47x47_uniform.pt", [0, 0, 0, 0, 0]),
         "33x33_uniform": ("phase/33x33_uniform.pt", [0, 0, 0, 0, 0]),
         "3270_z4eq4":    ("phase/3270_z4eq4.pt",    [0, 0, 0, 0, -4]),
@@ -101,24 +103,26 @@ def SLMRearrangementScan(url=None, reps=None):
     rp.warmup_kwargs.derive_threshold = 0.35
 
     # ---- rearrange_kwargs (g(); per-shot setup, sweepable) -----------------------------
-    g().rearrange_kwargs.nsteps = 100#.scan(1, list(range(100, 200, 40)))   # sweep (timing-vs-nsteps)
-    g().rearrange_kwargs.step_period_ms = 1.0   # pinned (period = 1 ms)
+    g().rearrange_kwargs.nsteps = 150   # sweep (timing-vs-nsteps)
+    g().rearrange_kwargs.step_period_ms = 1#.scan(1, [0.696, 0.75, 1.0, 1.392, 2.0, 3.0, 5.0])   # pinned (period = 1 ms)
     g().rearrange_kwargs.protocol = "rearrange"
     g().rearrange_kwargs.extras.block_max_size = 256
-    #g().rearrange_kwargs.extras.pattern = "every-other"
+    g().rearrange_kwargs.extras.pattern = "every-other"
     # g().rearrange_kwargs.extras.kagome_crop = 0.88
     # g().rearrange_kwargs.extras.model_bookend_pre = False   # default: no full-grid model bookend
     # g().rearrange_kwargs.extras.model_bookend_post = False
     g().rearrange_kwargs.extras.ifEnhanced = False
-    g().rearrange_kwargs.extras.precompute.scan(1, [True, False])
+    g().rearrange_kwargs.extras.precompute = True #.scan(1, [True, False])
     g().rearrange_kwargs.extras.precompute_host = True   # host-resident precompute / pre-pin
     g().rearrange_kwargs.extras.hw_sequence = False
     # g().rearrange_kwargs.extras.flip_immediate = False   # pinned False -- True wedges SLM DMA (bug-rearr-slm-write-dma-stall)
     g().rearrange_kwargs.extras.z4 = -5            # MATCH rp.loading_defocus (same focal plane)
-    # Per-bseq cooling/imaging overlay (expConfig ByPattern): RearrangeCommSeq builds bseq2 (the
-    # post-rearrangement image) against this FINAL/target pattern's params; bseq1 uses the initial
-    # pattern (the scan-default = warmup_kwargs.initial_phase). No effect until ByPattern is
-    # populated for these names (distinct from extras.pattern, the rearrangement protocol shape).
+    # Per-bseq cooling/imaging overlay (expConfig ByPattern): RearrangeCommSeq tags bseq1 (the
+    # initial dense-load image) with initial_pattern and bseq2 (the post-rearrangement image) with
+    # final_pattern, so each resolves cooling/imaging/VSLMServo from ByPattern[that pattern]. No
+    # effect until ByPattern is populated for these names (distinct from extras.pattern, the
+    # rearrangement protocol shape).
+    g().rearrange_kwargs.extras.initial_pattern = INIT_PATTERN
     g().rearrange_kwargs.extras.final_pattern = TARGET_PATTERN
 
     # ---- non-rearrangement scan settings ----------------------------------------------

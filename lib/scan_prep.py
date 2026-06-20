@@ -164,6 +164,29 @@ def load_day_calibration(day_dir):
         return {}
 
 
+_DEFAULT_BOX, _DEFAULT_SIGMA = 9, 2     # MATLAB ybBuildScanPayload constants (focused-spot default)
+
+
+def _pattern_detection_box(name):
+    """Per-pattern detection ``(boxSize, maskSigma)`` from expConfig ``ByPattern[name]``, else the
+    global ``(9, 2)`` default. Lets an array whose PSF differs from the focused-spot default (e.g. a
+    defocused multi-layer array, where a wider Gaussian integration mask captures the spread signal)
+    carry its own integration box WITHOUT changing any other pattern -- only patterns that SET the
+    keys differ. Read from the raw config (``build_config``) so it's a plain scalar, not a DynProps
+    proxy; any failure falls back to the default (never blocks scan prep)."""
+    if not name:
+        return _DEFAULT_BOX, _DEFAULT_SIGMA
+    try:
+        import expConfig
+        ov = (expConfig.build_config().get("consts", {}).get("ByPattern", {}) or {}).get(name) or {}
+        box = int(ov.get("boxSize", _DEFAULT_BOX))
+        sig = ov.get("maskSigma", _DEFAULT_SIGMA)
+        sig = int(sig) if float(sig).is_integer() else float(sig)
+        return box, sig
+    except Exception:
+        return _DEFAULT_BOX, _DEFAULT_SIGMA
+
+
 def resolve_calibration(day_dir, image_patterns=None, roi=None):
     """Per-site detection calibration for the sidecar -- PREFER the per-pattern registry.
 
@@ -185,12 +208,13 @@ def resolve_calibration(day_dir, image_patterns=None, roi=None):
                 pc = None
             if pc is not None:
                 grid = pc["grid"]
+                box, sig = _pattern_detection_box(name)
                 out = {
                     "initGridLocationsY": [float(v) for v in grid[:, 0]],
                     "initGridLocationsX": [float(v) for v in grid[:, 1]],
                     "initThresholds": [float(t) for t in pc["thresholds"]],
-                    "boxSize": 9,
-                    "maskSigma": 2,
+                    "boxSize": box,
+                    "maskSigma": sig,
                     "calibrationSource": "pattern:%s" % name,
                 }
                 if pc.get("infidelities") is not None:

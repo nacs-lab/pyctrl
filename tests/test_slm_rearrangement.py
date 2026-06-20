@@ -92,13 +92,16 @@ def test_encode_bits_string_logical_and_index_list():
     assert _encode_bits({"indices": [1, 2], "n": 9}) == {"indices": [1, 2], "n": 9}
 
 
-def test_rearrange_body_stamps_runid_and_bits():
+def test_rearrange_body_stamps_runid_and_probs():
     sess = FakeSession()
     c = SlmClient(session=sess, client_id="cid")
-    c.rearrange("0110", scan_id="20260605120000", seq_id=7)
+    # rearrange now carries per-site presence PROBABILITIES (floats), not a bitstring.
+    c.rearrange([0.0, 1.0, 0.8, 0.2], scan_id="20260605120000", seq_id=7)
     _, url, body, headers = sess.calls[-1]
     assert url.endswith("/slm/rearrange")
-    assert body == {"bits": "0110", "scan_id": "20260605120000", "seq_id": 7}
+    assert body == {"probs": [0.0, 1.0, 0.8, 0.2],
+                    "scan_id": "20260605120000", "seq_id": 7}
+    assert "bits" not in body
     assert headers["X-Client-Id"] == "cid"
 
 
@@ -311,23 +314,23 @@ class FakeCam:
 
 def test_grab_one_frame_exactly_one():
     cam = FakeCam([[], ["IMG"]])
-    img, ok = rearrange_runtime.grab_one_frame(
+    img, ok, n_seen = rearrange_runtime.grab_one_frame(
         cam, timeout=0.1, sleep=lambda _s: None, clock=_mkclock(step=0.02))
-    assert ok is True and img == "IMG"
+    assert ok is True and img == "IMG" and n_seen == 1
 
 
 def test_grab_one_frame_timeout_returns_false():
     cam = FakeCam([[]])
-    img, ok = rearrange_runtime.grab_one_frame(
+    img, ok, n_seen = rearrange_runtime.grab_one_frame(
         cam, timeout=0.1, sleep=lambda _s: None, clock=_mkclock(step=0.02))
-    assert ok is False and img is None
+    assert ok is False and img is None and n_seen == 0   # 0 frames -> latency/missed trigger
 
 
 def test_grab_one_frame_surplus_is_rejected():
     cam = FakeCam([["A", "B"]])                     # two stale frames -> not exactly one
-    img, ok = rearrange_runtime.grab_one_frame(
+    img, ok, n_seen = rearrange_runtime.grab_one_frame(
         cam, timeout=0.1, sleep=lambda _s: None, clock=_mkclock(step=0.02))
-    assert ok is False and img is None
+    assert ok is False and img is None and n_seen == 2  # surplus -> desync signal for the caller
 
 
 # =========================================================================== #
@@ -431,10 +434,11 @@ def _fake_s1(lock_ok=True):
     return s1
 
 
-def _rearrange_ctx(server, client, cam, detect="1"):
+def _rearrange_ctx(server, client, cam, detect="1", probs=(1.0,)):
     ctx = rearrange_runtime.ScanContext(session=None, camera=cam, server=server,
                                         client=client, scan_id="20260609120000")
-    ctx.detect_bits = lambda _img: detect          # bypass the real detector/calibration
+    ctx.detect_bits = lambda _img: detect          # img2/results path (post_run)
+    ctx.detect_probs = lambda _img: list(probs)    # img1/rearrange path (hand_over_slm)
     return ctx
 
 
@@ -459,9 +463,10 @@ def test_hand_over_then_post_run_stages_aligned_pair():
     assert ("release", "compute") in client.calls   # compute lock released in finally
 
 
-def test_hand_over_rearrange_failure_cancels_shot():
+def test_hand_over_rearrange_failure_publishes_failing_display():
     np = pytest.importorskip("numpy")
     import RearrangeCommSeq as R
+    from rearrange_runtime import FAILING_DISPLAY_SCAN_ID
     frame = np.zeros((8, 8), dtype=np.uint16)
     server, client = FakeImgServer(), FakeReClient(raise_rearrange=True)
     ctx = _rearrange_ctx(server, client, FakeReCam(frame))
@@ -471,12 +476,59 @@ def test_hand_over_rearrange_failure_cancels_shot():
         R.hand_over_slm(s1)                          # rearrange raises -> stage img1 then cancel
         assert s1.G.rearrange_img1_ok(False) is False
         assert any(c[0] == "cancel_last" for c in client.calls)
-        assert server.cancelled >= 1
-        assert server.temp == []                     # staged img1 dropped, no leak
-        R.post_run(s1)
+        assert server.cancelled >= 1                 # real-scan_id img1 dropped (NOT persisted)
+        assert server.temp == []                     # no leak
+        R.post_run(s1)                               # re-publish captured frames for DISPLAY ONLY
     finally:
         rearrange_runtime.clear_context()
-    assert server.finished == []                     # nothing published
+    # The failing shot's frames are re-published under the sentinel scan_id so the live view keeps
+    # flashing (img1 + img2 here), but tagged display-only so the lab side never persists them.
+    assert len(server.finished) == 1
+    published = server.finished[0]
+    assert len(published) == 2                        # img1 + img2, both captured
+    assert all(sid == FAILING_DISPLAY_SCAN_ID for (_f, sid, _sq) in published)
+
+
+def test_post_run_img2_unavailable_publishes_img1_display():
+    np = pytest.importorskip("numpy")
+    import RearrangeCommSeq as R
+    from rearrange_runtime import FAILING_DISPLAY_SCAN_ID
+
+    class _OneFrameCam:
+        """Yields img1 on the first grab (hand_over_slm) then nothing (post_run img2 lost)."""
+        def __init__(self, frame):
+            self._frames = [frame]
+        def read_frames(self):
+            return [self._frames.pop(0)] if self._frames else []
+        def current_roi(self):
+            return [0, 0, 8, 8]
+
+    frame = np.zeros((8, 8), dtype=np.uint16)
+    server, client = FakeImgServer(), FakeReClient({"ok": True})
+    ctx = _rearrange_ctx(server, client, _OneFrameCam(frame))
+    rearrange_runtime.set_context(ctx)
+    try:
+        s1 = _fake_s1(lock_ok=True)
+        R.hand_over_slm(s1)                          # img1 grabbed + staged (real), rearrange OK
+        assert s1.G.rearrange_img1_ok(False) is True
+        R.post_run(s1)                               # img2 grab fails -> img1 display-only, no data img2
+    finally:
+        rearrange_runtime.clear_context()
+    assert server.cancelled >= 1                      # the real-scan_id img1 was dropped
+    assert len(server.finished) == 1
+    published = server.finished[0]
+    assert len(published) == 1                        # only img1 (img2 == "no data")
+    assert published[0][1] == FAILING_DISPLAY_SCAN_ID
+
+
+def test_publish_failed_shot_no_frames_is_noop():
+    np = pytest.importorskip("numpy")
+    server = FakeImgServer()
+    ctx = rearrange_runtime.ScanContext(session=None, camera=None, server=server,
+                                        client=None, scan_id="20260609120000")
+    ctx.publish_failed_shot([None, None], seq_id=3)   # nothing captured
+    assert server.cancelled >= 1                       # leading cancel still runs
+    assert server.finished == []                       # but nothing is published
 
 
 def test_hand_over_img1_unavailable_cancels():
@@ -499,6 +551,94 @@ def test_hand_over_img1_unavailable_cancels():
         rearrange_runtime.clear_context()
     assert server.cancelled >= 1
     assert not any(c[0] == "rearrange" for c in client.calls)
+
+
+class _ErrServer(FakeImgServer):
+    """FakeImgServer + the record_shot_error hook the dashboard shot-health chip keys off."""
+    def __init__(self):
+        super().__init__()
+        self.errors = []
+
+    def record_shot_error(self, message, scan_id=None, seq_id=None, kind=None):
+        self.errors.append((kind, seq_id, message))
+
+
+class _PreRunSession:
+    def ensure_held(self):
+        pass
+
+
+class _PreRunClient:
+    def acquire_lock(self, *a, **k):
+        pass
+
+    def health(self):
+        pass
+
+    def setup_rearrangement(self, **k):
+        pass
+
+    def reload_rearrange(self):
+        pass
+
+
+class _StaleCam:
+    """Reports ``stale`` frames buffered at shot start; flush() drains them and counts the call."""
+    def __init__(self, stale):
+        self._stale = int(stale)
+        self.flushed = 0
+
+    def frames_available(self):
+        return self._stale
+
+    def flush(self):
+        self.flushed += 1
+        n, self._stale = self._stale, 0
+        return n
+
+    def current_roi(self):
+        return [0, 0, 8, 8]
+
+
+def _pre_run_ctx(cam, server):
+    return rearrange_runtime.ScanContext(
+        session=_PreRunSession(), camera=cam, server=server,
+        client=_PreRunClient(), scan_id="20260609120000")
+
+
+def _pre_run_s1():
+    """A fake seq for pre_run: G flags + an empty rearrange_kwargs config (s1.C)."""
+    s1 = _fake_s1(lock_ok=True)
+    s1.C = type("C", (), {"rearrange_kwargs": {}})()
+    return s1
+
+
+def test_pre_run_flushes_stale_frames_and_surfaces_desync():
+    """A nonzero buffer at shot start = a straggler that would flip img1/img2: pre_run drains it
+    AND records a frame_desync shot error (lights the dashboard shot-health chip)."""
+    import RearrangeCommSeq as R
+    cam, server = _StaleCam(3), _ErrServer()
+    rearrange_runtime.set_context(_pre_run_ctx(cam, server))
+    try:
+        R.pre_run(_pre_run_s1())
+    finally:
+        rearrange_runtime.clear_context()
+    assert cam.flushed == 1                       # stale buffer drained -> next shot resynced
+    assert cam.frames_available() == 0
+    assert any(kind == "frame_desync" for (kind, _sq, _m) in server.errors)
+
+
+def test_pre_run_clean_buffer_no_flush_no_error():
+    """The common case: an empty buffer at shot start -> no flush, no error (no false alarms)."""
+    import RearrangeCommSeq as R
+    cam, server = _StaleCam(0), _ErrServer()
+    rearrange_runtime.set_context(_pre_run_ctx(cam, server))
+    try:
+        R.pre_run(_pre_run_s1())
+    finally:
+        rearrange_runtime.clear_context()
+    assert cam.flushed == 0
+    assert server.errors == []
 
 
 def test_detector_bits_day_folder(tmp_path):

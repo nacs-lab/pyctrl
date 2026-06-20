@@ -468,7 +468,7 @@ def make_engine_run(server, camera, seq_config, log=None):
     from run_seq import run_scan_group
     log = log or _noop_log
 
-    def run(seq, scangroup, control=None, scan_name=None, **opts):
+    def run(seq, scangroup, control=None, scan_name=None, description=None, **opts):
         num_images = _num_images(scangroup)
         post = list(opts.pop("post_cb", []) or [])
         pre = list(opts.pop("pre_cb", []) or [])
@@ -491,7 +491,7 @@ def make_engine_run(server, camera, seq_config, log=None):
         # without it the monitor errors "Cannot load <path>" and its _process_once dies).
         _write_scan_prep(scan_id, scangroup, camera, num_images, log,
                          scan_name=scan_name, seq_config=seq_config, params=params_order,
-                         seq=seq)
+                         seq=seq, description=description)
         # Stamp the data-folder id (scan_id) onto the running job so the queue/history shows it
         # (MATLAB fills this via set_job_file_id; pyctrl mints scan_id here, with no job_id in
         # scope, so set_running_job_file_id targets the single running job). Display + a
@@ -553,10 +553,25 @@ def make_engine_run(server, camera, seq_config, log=None):
                 _initial_setup_rearrangement(slm_client, scangroup, scan_id, log,
                                              server=server)
             slm_ses.begin()                                      # grab slm lock + write WGS phase
+            # SINGLE SOURCE OF TRUTH for the rearrange detection grid: pull the SERVER's actual
+            # init_grid (the exact array setup_rearrangement derived, that rearrange(bits) scores
+            # bits[i] against). The detector maps it through the global affine, so the lab detects
+            # in the SAME site order the server scores -> bits[i] corresponds to init_grid[i] BY
+            # CONSTRUCTION. No independently re-derived lab grid whose sort (col vs col_up) could
+            # desync. Best-effort: on any failure the detector falls back to the registry grid.
+            server_grid_knm = None
+            if is_rearrange:
+                try:
+                    server_grid_knm = slm_client.get_rearrange_init_grid()
+                    log("[runner] detection grid: server init_grid (%d sites, single source)"
+                        % len(server_grid_knm) if server_grid_knm else
+                        "[runner] server init_grid unavailable; detection uses registry grid")
+                except Exception as e:  # noqa: BLE001
+                    log("[runner] fetch server init_grid failed (%s); registry grid" % e)
             rearrange_runtime.set_context(rearrange_runtime.ScanContext(  # pat0 resolved above
                 session=slm_ses, camera=camera, server=server, client=slm_client,
                 scan_id=scan_id, is_rearrange=is_rearrange, n_rounds=_n_rounds(scangroup),
-                pattern_name=(pat0 or {}).get("name"),
+                pattern_name=(pat0 or {}).get("name"), server_grid_knm=server_grid_knm,
                 log=lambda m: log("[runner] %s" % m)))
         # Capture ownership comes from the SEQ's own declaration (@seq_capabilities(owns_frames=
         # True)), NOT a runp sniff: the seq that does the mid-sequence grab is the source of truth.
@@ -1071,7 +1086,8 @@ def _scan_descriptor(scangroup, seq, log):
 
 
 def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
-                     scan_name=None, seq_config=None, params=None, seq=None):
+                     scan_name=None, seq_config=None, params=None, seq=None,
+                     description=None):
     """Write the scan-config the monitor's DataManager reads (best-effort; never crash a job).
 
     frameSize = the camera ROI (W, H); the rest from the descriptor runp. ``params`` is the
@@ -1087,7 +1103,7 @@ def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
         from scan_prep import write_scan_config
         roi = camera.current_roi() if camera is not None else [0, 0, 0, 0]
         rp = scangroup.runp()
-        scan_meta = _scan_meta(scangroup, scan_name, seq_config, log)
+        scan_meta = _scan_meta(scangroup, scan_name, seq_config, log, description=description)
         num_per_group = len(params) if params is not None else int(_runp_num(rp, "NumPerGroup", 0))
         # Per-image loading-pattern declaration (port of ybLoadingPatternsJson): drives the live
         # monitor's per-pattern grids/thresholds + the offline analysis's per-pattern calibration.
@@ -1110,13 +1126,16 @@ def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
         log("scan-config write failed: %s" % e)
 
 
-def _scan_meta(scangroup, scan_name, seq_config, log):
+def _scan_meta(scangroup, scan_name, seq_config, log, description=None):
     """Build the DataManager scan-info fields (ScanGroup/ScanName/PlotScale/expConfig) from the
-    dispatched ScanGroup. Best-effort -> ``None`` (frame-metadata-only config) on any failure."""
+    dispatched ScanGroup. ``description`` (the descriptor's free-text run purpose) is stamped as a
+    top-level ``description`` key. Best-effort -> ``None`` (frame-metadata-only config) on any
+    failure."""
     try:
         from scan_summary import scangroup_scan_config
         consts = getattr(seq_config, "consts", None) if seq_config is not None else None
-        return scangroup_scan_config(scangroup, scan_name=scan_name, expconfig=consts)
+        return scangroup_scan_config(scangroup, scan_name=scan_name, expconfig=consts,
+                                     description=description)
     except Exception as e:  # noqa: BLE001
         log("scan-meta build skipped: %s" % e)
         return None

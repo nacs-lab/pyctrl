@@ -13,7 +13,8 @@ import random
 
 import pytest
 
-from scan_prep import build_scan_order, scramble_groups, stack, write_scan_config
+from scan_prep import (build_scan_order, scramble_groups, stack, write_scan_config,
+                       _pattern_detection_box)
 
 pytestmark = pytest.mark.no_hardware
 
@@ -213,6 +214,14 @@ class TestWriteScanConfigCalibration:
         assert cfg["initGridLocationsY"][0] == 10.0   # gridLocations.txt col Y
         assert cfg["initGridLocationsX"][0] == 20.0   # col X
         assert cfg["boxSize"] == 9 and cfg["maskSigma"] == 2
+
+    def test_pattern_detection_box_gated_override(self):
+        # Per-pattern detection-box hook: ONLY a pattern that sets boxSize/maskSigma in its
+        # expConfig ByPattern overlay differs; everything else stays at the global (9, 2).
+        assert _pattern_detection_box("2x15x15_xyoffset_5um") == (13, 3)  # defocused 2-layer array
+        assert _pattern_detection_box("33x33_uniform") == (9, 2)          # no key -> global default
+        assert _pattern_detection_box("") == (9, 2)
+        assert _pattern_detection_box("nonexistent_pattern") == (9, 2)
 
     def test_is_init_scan_has_no_calibration(self, tmp_path):
         sid = 20260603120011

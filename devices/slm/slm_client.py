@@ -30,9 +30,11 @@ import base64
 import os
 import time
 
-# Default server (this machine -> SLM PC over the LAN HTTP companion port; loopback bypasses
-# auth, the LAN port needs the password). Mirrors RearrangeCommSeq.m::resolve_slm_client.
-DEFAULT_URL = "http://192.168.0.171:8551"
+# Default server. The SLM PC is currently reachable ONLY from loopback and Tailscale (the LAN
+# companion port 192.168.0.171:8551 now returns HTTP 403), so default to the Tailscale address.
+# Override with $YB_SLM_URL (e.g. back to http://192.168.0.171:8551 if LAN access returns).
+# Mirrors RearrangeCommSeq.m::resolve_slm_client.
+DEFAULT_URL = "http://100.114.207.118:8551"
 DEFAULT_PASSWORD = "174171"
 
 
@@ -180,13 +182,34 @@ class SlmClient:
         Caller MUST already hold the ``slm`` lock."""
         return self._post_json("/slm/reload_rearrange", {})
 
+    def get_rearrange_init_grid(self):
+        """The server's current rearrangement ``init_grid`` as a list of ``[y, x]`` knm coords in
+        the server's site order, or None if no rearrangement has been set up.
+
+        This is the SINGLE source of truth for the rearrange bit ordering: ``rearrange(bits)`` scores
+        ``bits[i]`` against ``init_grid[i]``. The lab maps this grid through the global affine and
+        detects in the SAME order, so the posted bitstring can't desync from the server's grid
+        (independent lab-side re-derivation with a different sort -- e.g. col vs col_up -- was the
+        prior hazard). Sourced from ``/slm/handoff/live`` (which echoes ``_rearrange_init_grid``)."""
+        resp = self._get_json("/slm/handoff/live?n=1")
+        grid = (resp or {}).get("grid") if isinstance(resp, dict) else None
+        if not grid:
+            return None
+        iy, ix = grid.get("image_y"), grid.get("image_x")
+        if not iy or not ix or len(iy) != len(ix):
+            return None
+        return [[float(a), float(b)] for a, b in zip(iy, ix)]
+
     # ----------------------------------------------------------------------- #
     # per-shot rearrange / results
     # ----------------------------------------------------------------------- #
-    def rearrange(self, bits, target_bits=None, extras=None, scan_id=None, seq_id=None):
-        """Atomic-rearrangement update from a load-pattern bitstring (model inference + paced
-        SLM writes). Pre-conditions: caller holds the ``slm`` lock + setup_rearrangement done."""
-        body = {"bits": _encode_bits(bits)}
+    def rearrange(self, probs, target_bits=None, extras=None, scan_id=None, seq_id=None):
+        """Atomic-rearrangement update from per-site presence PROBABILITIES (a list of floats in
+        [0,1], one per init_grid site -- model inference + paced SLM writes). Sent under the
+        ``probs`` key IN PLACE OF the legacy ``bits`` string; the server rounds each value to 0/1
+        (currently identical downstream behaviour) and keeps the floats for future low-confidence
+        dropping. Pre-conditions: caller holds the ``slm`` lock + setup_rearrangement done."""
+        body = {"probs": _as_float_list(probs)}
         if target_bits is not None:
             body["target_bits"] = _as_float_list(target_bits)
         if extras:

@@ -28,7 +28,7 @@ FINDINGS (this file pins them; if libnacs changes, these assertions flag it):
      identical is NOT established here -- that needs a pre_run/run-level test in
      a maintenance window before option B can rely on it for channel values.
 
-Run:  .venv-engine\\Scripts\\python -m pytest pyctrl/tests/test_int_float_const_equivalence.py -m needs_engine --real-engine -s
+Run:  .venv-engine-py312\\Scripts\\python -m pytest pyctrl/tests/test_int_float_const_equivalence.py -m needs_engine --real-engine -s
 """
 
 import copy

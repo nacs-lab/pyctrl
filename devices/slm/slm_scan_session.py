@@ -14,11 +14,14 @@ Differences from the MATLAB original (per the user spec):
   * **No background heartbeat timer.** The lease is renewed on the per-shot path by a single
     ``/lock/heartbeat``. :meth:`ensure_held` is SERVER-AUTHORITATIVE -- it heartbeats every shot
     to BOTH confirm ownership and renew, and regrabs (+ rewrites the WGS phase) the moment the
-    heartbeat fails. It never trusts a local timestamp, so a server-side release (lease lapse
-    during a long shot / warmup, or a stolen lock) can't silently wedge the scan. Because the
-    lease is renewed ONLY while shots run, a pause / hung shot / crashed runner lets it lapse
-    within ``lease_s`` and the server auto-releases ``slm`` -- the SLM is never wedged for longer
-    than one (short) lease after a stop. Keep ``lease_s`` modest for that reason.
+    heartbeat fails. This requires the server's ``/lock/heartbeat`` to REJECT (HTTP 409) a caller
+    that no longer holds the lock (``LockManager.heartbeat_renew`` in slm_server); a fire-and-forget
+    heartbeat that always returns ``ok`` would defeat this guard. It never trusts a local timestamp,
+    so a server-side release (lease lapse during a long shot / warmup, or a stolen lock) can't
+    silently wedge the scan. Because the lease is renewed ONLY while shots run, a pause / hung shot
+    / crashed runner lets it lapse within ``lease_s`` and the server auto-releases ``slm`` -- the
+    SLM is never wedged for longer than one (short) lease after a stop. Keep ``lease_s`` modest for
+    that reason.
   * **Active, immediate pause drop.** :meth:`on_pause` releases the lock the instant the scan
     pauses (so the SLM can be adjusted); :meth:`on_resume` reacquires + rewrites the phase.
   * **Acquire is mandatory.** :meth:`begin` / :meth:`ensure_held` / :meth:`on_resume`-via-shot
@@ -100,7 +103,13 @@ class SlmScanSession:
         raises :class:`SlmLockUnavailable` -> the run errors (a scan that cannot own the SLM must
         not silently spin). The old purely-local timestamp compare is gone: it could not see a
         server-side release (lease lapse during a long shot / warmup), which silently wedged the
-        scan -- the heartbeat is the single source of truth for ownership."""
+        scan -- the heartbeat is the single source of truth for ownership.
+
+        NOTE: this relies on the server's ``/lock/heartbeat`` REJECTING a caller that no longer
+        holds the lock (HTTP 409). A server whose heartbeat is fire-and-forget (always ``ok``)
+        breaks the contract: the heartbeat then never raises, this guard never regrabs, and every
+        lock-requiring call 423s forever. That server bug was fixed in ``LockManager.heartbeat_renew``
+        (slm_server) -- keep both ends in sync."""
         if self.held:
             try:
                 self.c.heartbeat("slm")

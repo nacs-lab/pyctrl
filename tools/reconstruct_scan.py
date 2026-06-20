@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """reconstruct_scan.py -- regenerate a scan's .seq waveforms OFFLINE (SeqPlotter Task 4).
 
-Run by the ENGINE python (``.venv-engine``, py3.8 + libnacs) as a SEPARATE, hardware-free
+Run by the ENGINE python (``.venv-engine-py312``, py3.12 + libnacs; or the legacy ``.venv-engine`` py3.8) as a SEPARATE, hardware-free
 subprocess (``use_dummy_device: true`` -> the Zynq backend opens no socket; ``start()`` is
 never called). Spawned by the dashboard's ``/api/sequence/reconstruct`` when a scan has NO
 ``.seq`` but HAS a code snapshot.

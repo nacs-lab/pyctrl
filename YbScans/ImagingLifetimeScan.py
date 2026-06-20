@@ -26,7 +26,7 @@ Notes:
     (no colon needed; the values are the same float64 in both stacks).
 
 This only BUILDS the ScanGroup + sends the descriptor JSON; it does NOT load the engine, so any
-interpreter with pyctrl importable + zmq works (yb_analysis env, base, or .venv-engine).
+interpreter with pyctrl importable + zmq works (yb_analysis env, base, or .venv-engine-py312).
 
 Run it (pyctrl backend must already be live at --url):
     cd pyctrl
@@ -90,7 +90,7 @@ def build():
     # Explicit list mirroring the modified ImagingLifetimeScan.m (NOT a colon/logspace expr).
     # Every value is the same float64 in Python and MATLAB (0.1 is the identical inexact
     # double both sides; 1/2/4/8 exact), so it is wired directly and byte-verified per point.
-    g().Pushout.Time.scan(1, [0.005, 0.1, 1.0, 2.0, 4.0, 8.0])
+    g().Pushout.Time.scan(1, [0.001, 0.005, 0.1, 1.0])
 
     # ---- run params (runp); no byte effect, drive the live run ------------
     rp = g.runp()

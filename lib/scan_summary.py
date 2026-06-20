@@ -114,15 +114,19 @@ def _axes_from_params(params):
 # =========================================================================== #
 # Surface B -- the DataManager scan-config fields, from the (dispatched) ScanGroup
 # =========================================================================== #
-def scangroup_scan_config(scangroup, scan_name=None, expconfig=None):
+def scangroup_scan_config(scangroup, scan_name=None, expconfig=None, description=None):
     """Build the scan-config fields the monitor's ``DataManager`` reads for live scan-info.
 
-    Returns ``{ScanGroup, ScanName?, PlotScale, expConfig?}`` where ``ScanGroup.base.vars`` is
+    Returns ``{ScanGroup, ScanName?, description?, PlotScale, expConfig?}`` where
+    ``ScanGroup.base.vars`` is
     the ``{params:[dim-struct,...], size:[...]}`` shape ``extract_scan_dims`` expects (the
     swept leaves + per-dim length) and ``ScanGroup.base.params`` is the fixed/``g()``-override
     struct (provenance; MATLAB's ``Scan.ScanName = scangroup.base.params``). ``scan_name`` ->
-    ``ScanName.scanname`` (uint16 char codes, as ``_extract_scan_title`` decodes). ``expconfig``
-    (the baseline ``SeqConfig.consts`` snapshot) is embedded verbatim for provenance.
+    ``ScanName.scanname`` (uint16 char codes, as ``_extract_scan_title`` decodes). ``description``
+    (the descriptor's free-text run purpose/context) is stamped as a top-level ``description`` key
+    only when non-empty -- the analysis dashboard reads it for the run's collapsible note + run
+    search. ``expconfig`` (the baseline ``SeqConfig.consts`` snapshot) is embedded verbatim for
+    provenance.
 
     Best-effort: a ScanGroup that doesn't support the query API yields a minimal dict."""
     cfg = {}
@@ -144,6 +148,8 @@ def scangroup_scan_config(scangroup, scan_name=None, expconfig=None):
 
     if scan_name:
         cfg["ScanName"] = {"scanname": [ord(c) for c in str(scan_name)]}
+    if description:
+        cfg["description"] = str(description)
     if expconfig is not None:
         cfg["expConfig"] = _jsonable(expconfig)
     return cfg

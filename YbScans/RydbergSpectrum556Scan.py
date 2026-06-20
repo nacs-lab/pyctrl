@@ -74,11 +74,14 @@ def build(field_G=0):
     # RES0 is the fitted 0-field intercept -- this strong-push Rydberg line sits ~55 kHz ABOVE the
     # expConfig mj=0 calibration (107.7503, the prior RES0_MHZ); slope was 1.18 (retired
     # Spectrum556Scan.m windows). center_mhz = RES0 + slope*field now reproduces the fit line.
-    RES0_MHZ = 107.8049
-    ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
+    RES0_MHZ = 107.77
+    ZEEMAN_SLOPE_MHZ_PER_G = 1.178
 
     # Window half-width + step (MHz): coarse + wide at field (locate), fine + narrow at 0 G (known).
-    COARSE_HALF_MHZ, COARSE_STEP_MHZ = 0.5, 0.03
+    # Widened 0.5 -> 1.5 MHz half-width 2026-06-12: the +/-0.5 MHz window showed NO dip at 30 G
+    # (scan 20260612102118, flat ~0.92-0.96), so the line drifted >0.5 MHz out of the old window;
+    # the wider window + stronger push (run with --amp 0.6) re-locates it. Narrow back once found.
+    COARSE_HALF_MHZ, COARSE_STEP_MHZ = 1.5, 0.05
     FINE_HALF_MHZ, FINE_STEP_MHZ = 0.50, 0.03
 
     center_mhz = RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G

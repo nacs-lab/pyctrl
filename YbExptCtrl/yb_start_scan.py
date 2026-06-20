@@ -46,7 +46,7 @@ import json
 from scan_export import scangroup_to_descriptor
 
 
-def ybStartScan(seq, scangroup, *, url=None, label=None, submit=None, **opts):
+def ybStartScan(seq, scangroup, *, url=None, label=None, description=None, submit=None, **opts):
     """Export ``scangroup`` to a descriptor and submit it; return the descriptor id (int).
 
     Args:
@@ -55,6 +55,10 @@ def ybStartScan(seq, scangroup, *, url=None, label=None, submit=None, **opts):
         url: ExptServer ZMQ URL (default: ``runner.resolve_url`` -- ``$NACS_RUNNER_URL`` or
             the canonical default).
         label: queue-UI label (defaults to the seq name).
+        description: free-text PURPOSE/CONTEXT for this run (NOT the name) -- why it was run,
+            which test group it belongs to, what it's measuring. Be verbose; it is stamped into
+            the scan-config sidecar so the analysis dashboard shows it (collapsible) and lets you
+            search runs by it. Defaults to ``None`` (blank). ALWAYS pass one for a real scan.
         submit: optional ``(desc_json, label) -> id`` override (injected in tests so no
             socket is bound). Default: :func:`submit_descriptor` over a one-shot REQ socket.
         **opts: run options forwarded as descriptor ``opts`` (``rep`` = explicit pass count,
@@ -63,7 +67,8 @@ def ybStartScan(seq, scangroup, *, url=None, label=None, submit=None, **opts):
             is ``g.runp().Scramble`` (default off), NOT the ``random`` opt -- see the module
             docstring.
     """
-    desc = scangroup_to_descriptor(scangroup, seq, opts=opts or None, label=label)
+    desc = scangroup_to_descriptor(scangroup, seq, opts=opts or None, label=label,
+                                   description=description)
     desc_json = json.dumps(desc, ensure_ascii=False)
     lbl = label or desc["seq"]
     if submit is None:

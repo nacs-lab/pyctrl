@@ -50,7 +50,7 @@ class ScanContext:
 
     def __init__(self, *, session, camera, server, client, scan_id,
                  is_rearrange=False, n_rounds=1, pattern_name=None,
-                 calib_root=None, log=None):
+                 server_grid_knm=None, calib_root=None, log=None):
         self.session = session          # SlmScanSession (scan-long slm lock owner)
         self.camera = camera            # OrcaCamera (or None)
         self.server = server            # ExptServer (store_imgs / seq_finish / seq_cancel)
@@ -60,17 +60,33 @@ class ScanContext:
         self.n_rounds = int(n_rounds)
         self.pattern_name = pattern_name  # frame-0 loading pattern (per-pattern detection)
         self.log = log or (lambda _m: None)
-        # The mid-shot detector prefers the per-pattern registry grid+thresholds (keyed by the
-        # scan's frame-0 pattern, mapped to camera pixels through the global affine + this scan's
-        # ROI), falling back to the day-folder grid+thresholds. The ROI comes from the live camera.
+        # The mid-shot detector's grid source, in priority order:
+        #   (1) SINGLE SOURCE OF TRUTH -- the SERVER's actual init_grid (``server_grid_knm``, the
+        #       exact array ``rearrange(bits)`` scores ``bits[i]`` against), mapped to camera px
+        #       through the global affine. Using it GUARANTEES the lab detects in the same site
+        #       order the server scores -> ``bits[i]`` corresponds to ``init_grid[i]`` BY
+        #       CONSTRUCTION, so the detection order can NEVER desync from the server (independent
+        #       re-derivation with a divergent sort order -- e.g. col vs col_up -- was the prior
+        #       desync hazard).
+        #   (2) the per-pattern registry grid+thresholds (knm -> affine -> ROI-crop), and
+        #   (3) the day-folder grid+thresholds.
+        # The ROI comes from the live camera.
         roi_provider = (camera.current_roi if camera is not None else None)
         self._detector = _Detector(calib_root or _DATA_ROOT, pattern_name=pattern_name,
-                                   roi_provider=roi_provider, log=self.log)
+                                   roi_provider=roi_provider, server_grid_knm=server_grid_knm,
+                                   log=self.log)
 
     def detect_bits(self, img):
         """Detect atoms in ``img`` -> '0'/'1' string, or '' on a calibration mismatch (so the
         caller bails without rearranging on a stale grid)."""
         return self._detector.bits(img)
+
+    def detect_probs(self, img):
+        """Detect atoms in ``img`` -> list of per-site posterior probabilities P(atom present) in
+        [0,1] (same site order as :meth:`detect_bits`), or ``[]`` on a calibration mismatch. Sent to
+        the SLM server's rearrange call IN PLACE OF the bitstring; a missing/degenerate per-site fit
+        -> 0.0 so the server (which rounds at 0.5) drops uncertain sites."""
+        return self._detector.probs(img)
 
     # ----------------------------------------------------------------------- #
     # shot-error reporting (feeds the dashboard's "shots failing" banner)
@@ -182,7 +198,7 @@ def on_resume():
 # =========================================================================== #
 # camera frame grab (port of grab_one_frame / the nFrames==1 guard)
 # =========================================================================== #
-def grab_one_frame(camera, timeout=0.1, sleep=time.sleep, clock=time.monotonic):
+def grab_one_frame(camera, timeout=0.2, sleep=time.sleep, clock=time.monotonic):
     """Wait for EXACTLY one frame and return ``(img, True, 1)``; ``(None, False, n_seen)`` on a
     timeout or a stale-frame surplus. Mirrors the MATLAB ``nFrames ~= 1`` cancel-and-drain guard:
     any surplus is consumed by ``read_frames`` so it can't pollute the next shot.
@@ -286,17 +302,23 @@ class _Detector:
     lost. Rebuilt when the source calibration changes (mtimes / ROI / pattern) or the image shape
     changes."""
 
-    def __init__(self, data_root, pattern_name=None, roi_provider=None, log=None):
+    def __init__(self, data_root, pattern_name=None, roi_provider=None, server_grid_knm=None,
+                 log=None):
         self._data_root = data_root
         self._pattern_name = pattern_name
         self._roi_provider = roi_provider
+        self._server_grid_knm = server_grid_knm   # server init_grid (N,2 [y,x] knm); single source
         self._log = log or (lambda _m: None)
         self._W = None                 # scipy.sparse (M, H*W)
         self._thresholds = None        # (M,)
+        self._gauss_params = None      # list[M] of (6,) [mu_e,s_e,A_e,mu_a,s_a,A_a] or None/site
         self._img_shape = None         # (H, W)
         self._key = None               # cache identity of the built calibration
 
-    def bits(self, img):
+    def _intensities(self, img):
+        """Per-site masked intensity vector for ``img`` (one sparse matvec), or None on a
+        calibration mismatch. Shared by :meth:`bits` (hard threshold) and :meth:`probs`
+        (posterior) so both score the SAME intensities in the SAME server site order."""
         import numpy as np
         a = np.asarray(img, dtype=float)
         if a.ndim != 2:
@@ -306,24 +328,115 @@ class _Detector:
             self._ensure(shape)
         except Exception as e:  # noqa: BLE001 - missing calibration -> bail (no rearrange)
             self._log("[rearrange_runtime] detector unavailable: %s" % e)
-            return ""
+            return None
         if self._W is None or self._img_shape != shape:
             self._log("[rearrange_runtime] image shape %s != calibrated %s; skipping"
                       % (shape, self._img_shape))
+            return None
+        return self._W.dot(a.ravel(order="F"))            # MATLAB W * img(:) (column-major)
+
+    def bits(self, img):
+        intensities = self._intensities(img)
+        if intensities is None:
             return ""
-        intensities = self._W.dot(a.ravel(order="F"))     # MATLAB W * img(:) (column-major)
         logicals = intensities > self._thresholds
         return "".join("1" if b else "0" for b in logicals)
 
+    def probs(self, img):
+        """Per-site posterior ``P(atom present | intensity)`` as a list of floats in [0,1], or ``[]``
+        on a calibration mismatch (mirrors :meth:`bits` returning ``""`` so the caller bails). Same
+        intensities + same site order as :meth:`bits`, so ``probs[i]`` lines up with the server's
+        ``init_grid[i]``.
+
+        A site with a MISSING/degenerate Gaussian fit -> 0.0 (an uncertain site is treated as empty
+        -- the conservative choice; the SLM server rounds <0.5 to "no atom"). If the WHOLE
+        calibration lacks Gaussian fits (older threshold.mat with no gaussFitsStruct), falls back to
+        the hard ``intensity > threshold`` decision encoded as 1.0/0.0 so the scan still
+        rearranges instead of sending all-zeros."""
+        intensities = self._intensities(img)
+        if intensities is None:
+            return []
+        import numpy as np
+        gp = self._gauss_params
+        if gp is None or all(p is None for p in gp):
+            self._log("[rearrange_runtime] no Gaussian fits in calibration; probs fall back to "
+                      "hard intensity>threshold (1.0/0.0)")
+            logicals = intensities > self._thresholds
+            return [1.0 if b else 0.0 for b in logicals]
+        post = _atom_posterior(np.asarray(intensities, dtype=float), gp)
+        return [float(p) for p in post]
+
     def _ensure(self, img_shape):
         """(Re)build the sparse weight matrix from the best available calibration source."""
-        src = self._pattern_source() or self._day_source()
+        src = self._server_source() or self._pattern_source() or self._day_source()
         if src is None:
-            raise RuntimeError("no per-pattern or day-folder calibration available")
-        grid, thresholds, key = src
+            raise RuntimeError("no server / per-pattern / day-folder calibration available")
+        grid, thresholds, gauss_params, key = src
         if self._W is not None and self._img_shape == img_shape and self._key == key:
             return                          # warm + unchanged
-        self._build(grid, thresholds, img_shape, key)
+        self._build(grid, thresholds, gauss_params, img_shape, key)
+
+    def _server_source(self):
+        """(grid [Y,X], thresholds, cache-key) from the SERVER's init_grid -- THE single source of
+        truth for the rearrange bit ordering, or None (caller falls back to the registry/day grid).
+
+        ``setup_rearrangement`` derived + sorted the grid (its ``sweep_order``, e.g. ``col_up``) and
+        ``rearrange(bits)`` scores ``bits[i]`` against ``init_grid[i]``. We map that EXACT grid
+        (``self._server_grid_knm``, knm [y,x]) through the global affine to camera px, so the lab
+        detects in the SAME site order the server scores -> ``bits[i]`` corresponds to
+        ``init_grid[i]`` BY CONSTRUCTION (no independently re-derived grid whose sort could diverge).
+        Per-site thresholds come from the per-pattern registry, reordered to the server's site order
+        by a position match (same physical points, possibly different sort) -- so a stale-ordered
+        threshold.mat can't misalign them either."""
+        if self._server_grid_knm is None or self._roi_provider is None:
+            return None
+        import numpy as np
+        try:
+            import pattern_grid
+            roi = list(self._roi_provider())
+            A = pattern_grid.load_affine_matrix()
+            if A is None:
+                return None
+            sknm = np.asarray(self._server_grid_knm, dtype=float).reshape(-1, 2)   # [y, x] knm
+            if sknm.shape[0] == 0:
+                return None
+            grid = pattern_grid._apply_affine_cropped(pattern_grid._knm_to_xy(sknm), A, roi)  # [Y,X]
+        except Exception as e:  # noqa: BLE001 - affine/registry unavailable -> fall back
+            self._log("[rearrange_runtime] server-grid affine map failed (%s); registry/day" % e)
+            return None
+        n = sknm.shape[0]
+        # Thresholds: per-pattern registry values, position-matched to the server's site order.
+        if not self._pattern_name:
+            return None
+        try:
+            rec = pattern_grid.get_pattern_record(self._pattern_name)
+            td = pattern_grid.load_pattern_thresholds(self._pattern_name)
+            if not rec or not rec.get("knm") or td is None:
+                return None
+            rknm = np.asarray(rec["knm"], dtype=float).reshape(-1, 2)
+            rthr = np.asarray(td["thresholds"], dtype=float).ravel()
+            if rknm.shape[0] != n or rthr.shape[0] != n:
+                return None                  # site-count mismatch -> let registry/day handle it
+            from scipy.spatial import cKDTree
+            dist, idx = cKDTree(rknm).query(sknm)   # for each server site, nearest record site
+            if float(np.max(dist)) > 5.0 or len(set(idx.tolist())) != n:
+                self._log("[rearrange_runtime] server-grid<->record position match failed "
+                          "(max=%.2f, bijection=%s); registry/day"
+                          % (float(np.max(dist)), len(set(idx.tolist())) == n))
+                return None
+            thr = rthr[idx]
+            # Gaussian fits (for the posterior path), reordered to the server's site order by the
+            # SAME position match -> gp[i] aligns with grid[i]/thr[i]. Absent -> None (probs() then
+            # falls back to the hard cut).
+            rgp = td.get("gauss_params")
+            gp = ([rgp[int(j)] for j in idx]
+                  if rgp is not None and len(rgp) == n else None)
+        except Exception as e:  # noqa: BLE001
+            self._log("[rearrange_runtime] server-grid threshold match failed (%s); registry/day" % e)
+            return None
+        thr_mtime = _mtime(pattern_grid._pattern_threshold_path(self._pattern_name))
+        key = ("server", self._pattern_name, tuple(float(v) for v in roi[:4]), n, thr_mtime)
+        return grid, thr, gp, key
 
     def _pattern_source(self):
         """(grid [Y,X], thresholds, cache-key) from the per-pattern registry, or None."""
@@ -341,6 +454,11 @@ class _Detector:
         import numpy as np
         grid = np.asarray(pc["grid"], dtype=float).reshape(-1, 2)
         thr = np.asarray(pc["thresholds"], dtype=float).ravel()
+        # Gaussian fits (for the posterior path), already aligned to the grid by
+        # resolve_pattern_calibration (record.json knm + threshold.mat share the registry order).
+        gp = pc.get("gauss_params")
+        if gp is not None and len(gp) != int(grid.shape[0]):
+            gp = None
         # Key on the per-pattern threshold.mat mtime so the detector REBUILDS when the live
         # monitor refits + re-saves the pattern thresholds mid-scan (the day-folder source keys
         # on mtime too, see _day_source). Without it the pattern thresholds would be frozen for
@@ -348,7 +466,7 @@ class _Detector:
         thr_mtime = _mtime(pattern_grid._pattern_threshold_path(self._pattern_name))
         key = ("pattern", self._pattern_name, tuple(float(v) for v in roi[:4]),
                int(grid.shape[0]), thr_mtime)
-        return grid, thr, key
+        return grid, thr, gp, key
 
     def _day_source(self):
         """(grid [Y,X], thresholds, cache-key) from the day folder, or None."""
@@ -362,10 +480,21 @@ class _Detector:
         if grid.shape[0] != thresholds.shape[0]:
             raise ValueError("gridLocations has %d sites but thresholds has %d"
                              % (grid.shape[0], thresholds.shape[0]))
+        # Gaussian fits (for the posterior path); the day-folder grid + threshold.mat share the
+        # same site order, so gp[i] aligns with grid[i]/thresholds[i]. None -> probs() falls back
+        # to the hard cut. Read via pattern_grid (pure pyctrl .mat reader); failure -> None.
+        gp = None
+        try:
+            import pattern_grid
+            gp = pattern_grid.read_gauss_params(thr_file)
+            if gp is not None and len(gp) != int(grid.shape[0]):
+                gp = None
+        except Exception:  # noqa: BLE001 - gauss params optional; hard-cut fallback covers it
+            gp = None
         key = ("day", folder, _mtime(grid_file), _mtime(thr_file), int(grid.shape[0]))
-        return grid, thresholds, key
+        return grid, thresholds, gp, key
 
-    def _build(self, grid, thresholds, img_shape, key):
+    def _build(self, grid, thresholds, gauss_params, img_shape, key):
         from scipy import sparse
         m = grid.shape[0]
         if thresholds.shape[0] != m:
@@ -396,10 +525,17 @@ class _Detector:
                     vals.append(mask[my0 + dy, mx0 + dx])
         self._W = sparse.csr_matrix((vals, (rows, cols)), shape=(m, H * W))
         self._thresholds = thresholds.astype(float)
+        # gauss_params: list[M] of (6,) [mu_e,s_e,A_e,mu_a,s_a,A_a] (or None/site), or None for the
+        # whole calibration when no gaussFitsStruct was available (probs() falls back to hard cut).
+        if gauss_params is not None and len(gauss_params) != m:
+            self._log("[rearrange_runtime] gauss_params len %d != M %d; dropping (hard-cut probs)"
+                      % (len(gauss_params), m))
+            gauss_params = None
+        self._gauss_params = gauss_params
         self._img_shape = (H, W)
         self._key = key
-        self._log("[rearrange_runtime] detector built: source=%s M=%d imgSize=[%d %d]"
-                  % (key[0], m, H, W))
+        self._log("[rearrange_runtime] detector built: source=%s M=%d imgSize=[%d %d] gaussFits=%s"
+                  % (key[0], m, H, W, "yes" if gauss_params is not None else "no"))
 
     def _today_folder(self):
         return os.path.join(self._data_root, time.strftime("%Y%m%d"))
@@ -434,6 +570,42 @@ def _read_thresholds(path):
         import h5py
         with h5py.File(path, "r") as f:
             return np.asarray(f["thresholds"], dtype=float).ravel()
+
+
+def _gauss_pdf(x, mu, sigma):
+    """Scalar/array Gaussian pdf N(x | mu, sigma) (sigma > 0)."""
+    import numpy as np
+    return np.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi))
+
+
+def _atom_posterior(intensities, params_list):
+    """Vectorised per-site posterior ``P(atom present | intensity)`` under the per-site two-Gaussian
+    mixture ``params = [mu_e, s_e, A_e, mu_a, s_a, A_a]`` (empty peak first; fitted areas A_e/A_a are
+    the mixing weights, so the posterior folds in the site's loading rate).
+
+    Mirrors ``yb_analysis/detection/dynamical_threshold.py:atom_posterior`` -- reimplemented locally
+    (numpy only) so the engine-venv backend runtime takes NO yb_analysis import dependency. A site
+    whose params are missing (None) or degenerate (s_e<=0 / s_a<=0 / vanishing mixture density) ->
+    0.0 (uncertain -> treated as empty, the conservative choice for rearrangement)."""
+    import numpy as np
+    x = np.asarray(intensities, dtype=float).ravel()
+    out = np.zeros(x.shape[0], dtype=float)
+    for i, params in enumerate(params_list):
+        if params is None:
+            continue
+        p = np.asarray(params, dtype=float).ravel()
+        if p.size < 6:
+            continue
+        mu_e, s_e, A_e, mu_a, s_a, A_a = p[0], p[1], p[2], p[3], p[4], p[5]
+        if not (s_e > 0 and s_a > 0):
+            continue
+        pe = A_e * _gauss_pdf(x[i], mu_e, s_e)
+        pa = A_a * _gauss_pdf(x[i], mu_a, s_a)
+        denom = pe + pa
+        if denom > 0:
+            out[i] = min(1.0, max(0.0, float(pa / denom)))
+        # denom == 0 (both peaks vanish at this intensity) -> leave 0.0
+    return out
 
 
 def _fspecial_gaussian(n, sigma):

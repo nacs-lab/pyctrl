@@ -22,7 +22,8 @@ def Imag399Step(s, g):
     Freq_Resonance399 = Consts().Resonance399Freq
     Freq_Imag399Detuning = g.FreqDetuning(Consts().Imag399.FreqDetuning)
     Freq_Imag399 = Freq_Resonance399 + Freq_Imag399Detuning
-    Amp_Imag399 = g.Amp(Consts().Imag399.Amp)
+    Amp_Imag399_1 = g.Amp1(Consts().Imag399.Amp1)   # beam 1 -> AmpAbsImag (369 fiber output)
+    Amp_Imag399_2 = g.Amp2(Consts().Imag399.Amp2)   # beam 2 -> Amp399Imag2 (second imaging beam)
 
     Freq_Resonance556mj0Freq = Consts().Resonance556mj0Freq
 
@@ -35,6 +36,7 @@ def Imag399Step(s, g):
     Amp_Cool556h = g.Cool556.h.Amp(Consts().Imag399.Cool556.h.Amp)
 
     s.add('TTL399AbsImagShutter', 1)
+    s.add('TTL399Imag2Shutter', 1)
     s.add('TTL556RydbergShutter', 0)
 
     s.add('Freq556MOTX', Freq_Cool556X).add('Amp556MOTX', Amp_Cool556X)
@@ -42,7 +44,8 @@ def Imag399Step(s, g):
 
     s.wait(3e-3)  # wait for the shutter
 
-    s.add('FreqAbsImag', Freq_Imag399).add('AmpAbsImag', Amp_Imag399)
+    s.add('FreqAbsImag', Freq_Imag399).add('AmpAbsImag', Amp_Imag399_1)
+    s.add('Freq399Imag2', Freq_Imag399).add('Amp399Imag2', Amp_Imag399_2)
     s.add_step(100e-6).add('TTLOrcaTrig', 1)
 
     s.add('TTLOrcaTrig', 0)
@@ -53,6 +56,8 @@ def Imag399Step(s, g):
     s.add('Freq556RydbergMOTh', Freq_Cool556h).add('Amp556RydbergMOTh', 0)
 
     s.add('FreqAbsImag', Freq_Imag399).add('AmpAbsImag', 0)
+    s.add('Freq399Imag2', Freq_Imag399).add('Amp399Imag2', 0)
 
     s.add('TTL399AbsImagShutter', 0)
+    s.add('TTL399Imag2Shutter', 0)
     s.wait(3e-3)  # wait for the shutter

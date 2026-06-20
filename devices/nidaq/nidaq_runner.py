@@ -36,12 +36,21 @@ Execution details a naive port misses (finding D):
 Design inspired by the MATLAB original; no brassboard-seq code.
 """
 
+import weakref
+
 _RATE = 400e3          # NI sample-clock rate (Hz) = the FPGA PFI0 clock.
 # ⚠ Was 500e3 ("over-estimate"), but the PCIe-6738 REJECTS >400 kHz with 14 channels
 # (DaqError -200332, "Specified sample rate is higher than the fastest rate supported";
 # device max = 400 kHz at 14 chn). The clock is EXTERNAL (PFI0), so FINITE mode completes
 # after `samps_per_chan` edges regardless -- this rate just has to be <= the device max and
 # match the real ~400 kHz FPGA clock. Verified live 2026-06-02 (first physical pyctrl run).
+
+# Per-task metadata (rate + external clock source) kept OFF the nidaqmx Task: nidaqmx>=1.x made
+# Task a __slots__ class with no __dict__, so attaching `task._yb_rate = ...` raises
+# AttributeError ('Task' object has no attribute '_yb_rate'). A WeakKeyDictionary keyed by the
+# task carries it instead -- auto-evicted when the task is closed/GC'd (Task is weakref-able:
+# __weakref__ is in its __slots__). Version-robust across nidaqmx 1.0.x (no slots) and 1.5+.
+_TASK_META = weakref.WeakKeyDictionary()
 
 
 class NiDAQRunner:
@@ -186,8 +195,7 @@ def _build_task(channels, clocks, triggers, rate):
             task.triggers.start_trigger.cfg_dig_edge_start_trig(
                 "/%s/%s" % (dev, triggers[dev]), trigger_edge=Edge.RISING)
             clk_src = "/%s/%s" % (dev, clocks[dev])   # external sample clock (PFI0)
-    task._yb_rate = rate
-    task._yb_clk_src = clk_src
+    _TASK_META[task] = (rate, clk_src)
     return task
 
 
@@ -202,8 +210,9 @@ def _write_and_start(task, samples):
     from nidaqmx.constants import AcquisitionType, Edge
     nsamps = int(samples.shape[1]) if hasattr(samples, "shape") else len(samples[0])
     task.stop()
+    rate, clk_src = _TASK_META[task]
     task.timing.cfg_samp_clk_timing(
-        task._yb_rate, source=task._yb_clk_src, active_edge=Edge.RISING,
+        rate, source=clk_src, active_edge=Edge.RISING,
         sample_mode=AcquisitionType.FINITE, samps_per_chan=nsamps)
     task.write(samples, auto_start=False)
     task.start()

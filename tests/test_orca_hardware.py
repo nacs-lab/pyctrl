@@ -1,9 +1,9 @@
 """Phase-5 Orca camera LIVE checks (needs_hardware -- excluded by default).
 
 Run only when the camera is free of MATLAB (DCAM is one-handle-per-camera) and pylablib is
-installed (the .venv-engine has it):
+installed (the .venv-engine-py312 has it):
 
-    cd pyctrl; .venv-engine/Scripts/python -m pytest -m needs_hardware tests/test_orca_hardware.py
+    cd pyctrl; .venv-engine-py312/Scripts/python -m pytest -m needs_hardware tests/test_orca_hardware.py
 
 Read-only connectivity + a single INTERNAL-trigger snap (no FPGA, no external trigger). The
 FPGA-triggered (TTL54) capture is deliberately NOT here -- it drives the FPGA via set_chns and

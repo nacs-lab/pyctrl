@@ -7,7 +7,7 @@ to the descriptor. The actual capture (external rising-edge trigger -> frame -> 
 the LIVE run-loop test; the camera hardware/wrapper was already live-verified (runtime-design.md).
 
 Run:
-    pyctrl\\.venv-engine\\Scripts\\python.exe pyctrl\\tools\\preflight_camera.py [SeqName] [NumImages]
+    pyctrl\\.venv-engine-py312\\Scripts\\python.exe pyctrl\\tools\\preflight_camera.py [SeqName] [NumImages]
 Default SeqName=TweezerLoadingSeq, NumImages=1 (what LACScan images).
 """
 

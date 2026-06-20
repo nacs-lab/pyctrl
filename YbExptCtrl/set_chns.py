@@ -1,13 +1,20 @@
-"""set_chns.py -- set FPGA TTL/DDS (and any engine) channels to static values.
+"""set_chns.py -- set FPGA (TTL/DDS) and NI analog-out channels to static values.
 
 pyctrl mirror of ``matlab_new/seqs/setChns.m``: build a one-shot ``ExpSeq`` that adds each
 ``(channel, value)`` at t=0 and RUN it through the engine. This is the manual "set channel"
-operator tool for FPGA channels -- the counterpart to :func:`nidaq_io_handler.set_channel`
-(the NI AO direct write).
+operator tool. It handles BOTH backend families that the engine drives:
 
-Channel naming (backend, no alias needed):
-    TTL:  ``"FPGA1/TTL31"``                         (value 0/1)
-    DDS:  ``"FPGA1/DDS9/FREQ"`` (Hz), ``"FPGA1/DDS9/AMP"`` (0..1)
+  * **FPGA** TTL/DDS channels -- latched directly by the FPGA bytecode (set-and-held).
+  * **NI** PCIe-6738 analog-out channels (``V*`` / ``Dev1/N``) -- clocked out by the
+    FPGA-driven AO path, then held by the DAC (the PCIe-6738 holds its last value).
+
+For a single NI channel WITHOUT the full reset-to-defaults below, the lighter-weight direct
+DC write :func:`devices.nidaq.nidaq_io_handler.set_channel` is an alternative.
+
+Channel naming (an expConfig alias OR the raw backend name -- no alias needed):
+    TTL:  ``"TTLBlueMOTShutter"`` or ``"FPGA1/TTL31"``                   (value 0/1)
+    DDS:  ``"Freq556"``/``"FPGA1/DDS9/FREQ"`` (Hz), ``"Amp556"``/``"FPGA1/DDS9/AMP"`` (0..1)
+    NI :  ``"VElectrode1"`` or ``"Dev1/12"``  -> backend ``NiDAQ/Dev1/12``  (DC volts, +-10 V)
 
 ⚠ **Not an isolated write.** Unlike the NI AO direct path, this RUNS A SEQUENCE through the
 engine (``init_run``/``start``), so at t=0 the engine drives EVERY configured channel to its
@@ -15,30 +22,50 @@ expConfig default, applies the channels you set, then holds. It resets the whole
 its default/idle state PLUS your channels -- exactly as MATLAB ``setChns`` does (its standard
 behavior). The MATLAB ``ResetMemoryMap`` is dropped (pyctrl has no memmap). NEEDS-HARDWARE.
 
-Args accepted (mirrors setChns varargin): flat ``('FPGA1/TTL31', 1, 'FPGA1/DDS9/AMP', 0.1)``
-or pairs ``[('FPGA1/TTL31', 1), ('FPGA1/DDS9/AMP', 0.1)]``.
+⚠ **NI channels must be CLOCKED to take effect.** An NI AO channel only updates while the FPGA
+emits its sample clock (PFI0); the bare set-at-t=0 sequence MATLAB ``setChns`` builds has ~zero
+duration, so the NI would get no clock edges and might never latch. When any channel set here
+resolves to NI, this tool therefore holds the sequence for ``ni_hold`` seconds (default 1 ms,
+~400 clock edges at 400 kHz) so the value clocks out; the DAC then holds it after the task
+closes (like ``setV``). A call with no NI channel is left zero-length (byte-identical to before).
+Pass ``ni_hold=0`` for byte-exact MATLAB ``setChns`` parity (NI may then not latch).
+
+Args accepted (mirrors setChns varargin): flat ``('FPGA1/TTL31', 1, 'VElectrode1', 2.0)``
+or pairs ``[('FPGA1/TTL31', 1), ('VElectrode1', 2.0)]``.
 """
 
+_NI_PREFIX = "NiDAQ"      # translated NI channel names start with this (e.g. "NiDAQ/Dev1/12")
+_DEFAULT_NI_HOLD = 1e-3   # s held so the FPGA clocks the NI AO value out (~400 samples @ 400 kHz)
 
-def build_set_chns(*args):
+
+def build_set_chns(*args, ni_hold=_DEFAULT_NI_HOLD):
     """Build + ``generate()`` (compile) the one-shot ExpSeq, but DO NOT run it.
 
     Compile-only -- creates the engine handle (no ``init_run``/``start``), so it drives no
     hardware. Use to validate the channels/values before firing. Returns the generated ExpSeq.
+
+    If any channel resolves to an NI analog-out channel (translated name under ``NiDAQ/``), a
+    ``ni_hold``-second hold is appended so the FPGA clocks the value out (see the module note);
+    ``ni_hold=0`` skips it (and an all-FPGA call never adds one).
     """
     from exp_seq import ExpSeq
     s = ExpSeq()
     for name, val in _parse_pairs(args):
         s.add(name, float(val))
+    # NI AO is a CLOCKED device: extend the sequence so the FPGA emits sample-clock edges and
+    # the DAC latches the value. FPGA TTL/DDS need no hold, so a no-NI call stays zero-length
+    # (byte-identical to MATLAB setChns). channel_names are already alias-translated here.
+    if ni_hold and any(n.startswith(_NI_PREFIX) for n in s.channel_names):
+        s.wait(ni_hold)
     s.generate()
     return s
 
 
-def set_chns(*args):
-    """Mirror of ``setChns``: build + RUN. ⚠ Drives the FPGA AND resets all channels to
+def set_chns(*args, ni_hold=_DEFAULT_NI_HOLD):
+    """Mirror of ``setChns``: build + RUN. ⚠ Drives the FPGA + NI AO AND resets all channels to
     their defaults (see module note). Returns the run ExpSeq."""
     from run_seq2 import run_real
-    s = build_set_chns(*args)
+    s = build_set_chns(*args, ni_hold=ni_hold)
     run_real(s)
     return s
 

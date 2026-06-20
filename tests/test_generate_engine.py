@@ -7,7 +7,7 @@ does not connect to the FPGA). Proves pyctrl can turn a built sequence into a ru
 handle whose API matches run_seq2.py's pyseq interface -- the last piece before an actual run.
 
 Run in a maintenance window (MATLAB off):
-    .venv-engine\\Scripts\\python -m pytest tests/test_generate_engine.py -m needs_engine --real-engine
+    .venv-engine-py312\\Scripts\\python -m pytest tests/test_generate_engine.py -m needs_engine --real-engine
 """
 
 import inspect

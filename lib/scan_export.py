@@ -47,7 +47,7 @@ _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # public API
 # =========================================================================== #
 def scangroup_to_descriptor(scangroup, seq, opts=None, label=None,
-                            schema_version=SCHEMA_VERSION):
+                            description=None, schema_version=SCHEMA_VERSION):
     """Build a descriptor dict from a single-group :class:`ScanGroup` + a seq.
 
     Args:
@@ -57,6 +57,11 @@ def scangroup_to_descriptor(scangroup, seq, opts=None, label=None,
             ``pre_cb`` / ``post_cb``) or a list of ``(key, value)`` pairs. Callable values
             are exported as ``{"@": name}`` handles (resolved on the backend by name).
         label: queue-UI label (defaults to the seq name downstream).
+        description: optional free-text purpose/context for the run (NOT the name). Emitted as
+            ``descriptor["description"]`` only when non-empty; the run loop stamps it into the
+            scan-config sidecar (top-level ``description``) so the analysis dashboard can show
+            it + search runs by it. Omitted when falsy -> the descriptor is byte-identical to
+            before (purely additive).
 
     Returns:
         dict -- a descriptor conforming to ``descriptor.schema.json`` (the
@@ -93,6 +98,8 @@ def scangroup_to_descriptor(scangroup, seq, opts=None, label=None,
         desc["opts"] = enc_opts
     if label:
         desc["label"] = str(label)
+    if description:
+        desc["description"] = str(description)
     return desc
 
 

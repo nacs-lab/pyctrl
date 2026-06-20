@@ -27,7 +27,7 @@ RUN_DESC = ("DEBUG pingpong step_size sweep 0-2px, nsteps=50 two-way; isolating 
 
 
 def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     for d in ("lib", "YbExptCtrl", "YbSeqs", "YbSteps"):
         p = os.path.join(root, d)
         if p not in sys.path:

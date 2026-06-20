@@ -10,9 +10,9 @@ no engine load / DLL-detach wedge here.
 DEFAULT = DRY: prints the exact descriptor and submits NOTHING. Pass --fire to submit.
 
     # dry (safe -- shows the payload, fires nothing):
-    pyctrl\\.venv-engine\\Scripts\\python.exe pyctrl\\tools\\submit_hwtest1.py
+    pyctrl\\.venv-engine-py312\\Scripts\\python.exe pyctrl\\tools\\submit_hwtest1.py
     # fire (submits one get_my_seq shot to the backend):
-    pyctrl\\.venv-engine\\Scripts\\python.exe pyctrl\\tools\\submit_hwtest1.py --fire
+    pyctrl\\.venv-engine-py312\\Scripts\\python.exe pyctrl\\tools\\submit_hwtest1.py --fire
 """
 
 import argparse

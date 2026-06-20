@@ -17,7 +17,7 @@ The colon ``220:3:360`` is integer-valued, so ``*1e6`` is exact -- no 1-ULP trap
 equivalent to a plain list).
 
 This only BUILDS the ScanGroup + sends the descriptor JSON; it does NOT load the engine, so any
-interpreter with pyctrl importable + zmq works (yb_analysis env, base, or .venv-engine).
+interpreter with pyctrl importable + zmq works (yb_analysis env, base, or .venv-engine-py312).
 
 Run it (pyctrl backend must already be live at --url):
     cd pyctrl

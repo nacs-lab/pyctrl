@@ -52,22 +52,29 @@ def _bootstrap():
             sys.path.insert(0, p)
 
 
-def build(field_G=30, green_amp=0.5, ryd308_amp=0.1):
+def build(field_G=30, green_amp=0.5, ryd308_amp=0.1, green_freq_mhz=None):
     """ScanGroup for the 30 G 616-revival sweep (seq = ``RydbergPushoutSurvivalSeq``).
 
     Fixes ``Pushout.Green.Freq`` on the field-shifted 556 resonance and sweeps
     ``Init.EOM616.Freq`` over the 30 G revival window. ``field_G`` drives the Ryd bias coil
     (``BiasCoilCurrent.Ryd``); ``green_amp`` is the 556 Rydberg push amp (30 G default 0.4);
     ``ryd308_amp`` is the 308 pulse amp (max 0.4).
+
+    ``green_freq_mhz`` (if given) OVERRIDES the model-predicted 556 resonance ``RES0+slope*field``
+    with an explicit MHz value -- use the freshly LOCATED 30 G dip when it has drifted out of the
+    model window (e.g. 2026-06-12: measured 142.281 MHz vs model 143.184 MHz). This keeps the
+    revival's 556 actually on the line WITHOUT retuning the calibration constants on one day's drift.
     """
     _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
 
     # 556 push-out resonance (MHz): mirrors RydbergSpectrum556Scan's calibration (2026-06-10 fit).
-    RES0_MHZ = 107.8049
-    ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
-    res556_mhz = RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz
+    # RES0_MHZ = 107.8049
+    # ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
+    res556_mhz = 142.3425 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz (model)
+    if green_freq_mhz is not None:
+        res556_mhz = float(green_freq_mhz)   # explicit override: the located dip after drift
 
     # 616-EOM sweep window (MHz): the Spectrum308Scan.m "revival" window, centred near the 30 G
     # EOM value (~282.89 MHz). 21 pts @ 0.5 MHz. Edit these to re-centre / refine.
@@ -111,12 +118,14 @@ def build(field_G=30, green_amp=0.5, ryd308_amp=0.1):
     return g
 
 
-def Revival616Scan(url=None, reps=3, field_G=30, green_amp=0.5, ryd308_amp=0.2):
+def Revival616Scan(url=None, reps=3, field_G=30, green_amp=0.5, ryd308_amp=0.2,
+                   green_freq_mhz=None):
     """Build + submit the 30 G 616-revival scan. Returns the queued descriptor id."""
     _bootstrap()
     from yb_start_scan import ybStartScan
 
-    g = build(field_G=field_G, green_amp=green_amp, ryd308_amp=ryd308_amp)
+    g = build(field_G=field_G, green_amp=green_amp, ryd308_amp=ryd308_amp,
+              green_freq_mhz=green_freq_mhz)
     npts = g().Init.EOM616.Freq.size(1)
     opts = {}
     if reps is not None:
@@ -143,6 +152,10 @@ if __name__ == "__main__":
                     help="556 Rydberg push-out amp (default 0.5, the 30 G value)")
     ap.add_argument("--ryd308-amp", type=float, default=0.3,
                     help="308 pulse amp, max 0.4 (default 0.2)")
+    ap.add_argument("--green-freq-mhz", type=float, default=None,
+                    help="override the fixed 556 push freq in MHz (else RES0+slope*field); "
+                         "pass the freshly located 30 G dip when it has drifted out of the model")
     args = ap.parse_args()
     Revival616Scan(url=args.url, reps=args.reps, field_G=args.field,
-                   green_amp=args.green_amp, ryd308_amp=args.ryd308_amp)
+                   green_amp=args.green_amp, ryd308_amp=args.ryd308_amp,
+                   green_freq_mhz=args.green_freq_mhz)

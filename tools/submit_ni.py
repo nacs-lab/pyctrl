@@ -12,7 +12,7 @@ harmless. Does NOT import libnacs (pure ScanGroup/descriptor + zmq).
 
 DEFAULT = DRY (prints the descriptor, submits nothing). Pass --fire to submit.
 
-    pyctrl\\.venv-engine\\Scripts\\python.exe pyctrl\\tools\\submit_ni.py            # dry
+    pyctrl\\.venv-engine-py312\\Scripts\\python.exe pyctrl\\tools\\submit_ni.py            # dry
     <yb_analysis python> pyctrl\\tools\\submit_ni.py --fire                           # fire
 """
 
