@@ -38,7 +38,8 @@ def ImagingSurvivalSeq(s):
     Freq_Imag399Detuning = Consts().Imag399.FreqDetuning()
     Freq_Resonance399 = Consts().Resonance399Freq()
     Freq_Imag399 = Freq_Resonance399 + Freq_Imag399Detuning
-    Amp_Imag399 = Consts().Imag399.Amp()
+    Amp_Imag399_1 = Consts().Imag399.Amp1()   # beam 1 -> AmpAbsImag
+    Amp_Imag399_2 = Consts().Imag399.Amp2()   # beam 2 -> Amp399Imag2
 
     Freq_Cool556Detuning = Consts().Imag399.Cool556.FreqDetuning()
     Freq_Resonance556mj0Freq = Consts().Resonance556mj0Freq()
@@ -46,7 +47,8 @@ def ImagingSurvivalSeq(s):
     Amp_Cool556 = Consts().Imag399.Cool556.Amp()
 
     s.add('FreqCatsEye', Freq_Cool556).add('AmpCatsEye', Amp_Cool556)
-    s.add('FreqAbsImag', Freq_Imag399).add('AmpAbsImag', Amp_Imag399)
+    s.add('FreqAbsImag', Freq_Imag399).add('AmpAbsImag', Amp_Imag399_1)
+    s.add('Freq399Imag2', Freq_Imag399).add('Amp399Imag2', Amp_Imag399_2)
 
     g = s.C.Pushout
     t_Pushout = g.Time(Consts().Pushout.Time)

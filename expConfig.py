@@ -178,9 +178,9 @@ def _consts():
     }
 
     # Absorption imaging
+    # There is only onebeam for AbsImag and it requires flipping a mirror mount
     c["AbsImag"] = {"TOF": 0, "ExposureTime": 50e-6, "BetweenImagsTime": 50e-3,
                     "Freq": 315e6, "Amp": 0.5}
-
     # SLM
     c["SLM"] = {
         "AOM": {"Freq": 120e6, "Amp": 0.55},
@@ -323,7 +323,7 @@ def _consts():
             # cost survival 0.905 -> ~0.80 even after re-tuning cooling (X->0.22, h->0.16) -- reverted
             # to 0.18 and these 0.18-optimum X/h values (full data in Notion 06/12).
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp": 0.18,
+                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
@@ -401,7 +401,7 @@ def _consts():
             # other patterns keep the global 9/2). Inert as a sequence const (no step reads it).
             "boxSize": 13, "maskSigma": 3,
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp": 0.18,
+                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     # 2026-06-13 imaging-cooling re-opt at VSLMServo 1.0 (interleaved X<->h, Blue 0.18
@@ -431,7 +431,7 @@ def _consts():
                 "VSLMServo": 1.9
             },
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp": 0.18,
+                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
@@ -449,7 +449,7 @@ def _consts():
                 "VSLMServo": 1.9
             },
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp": 0.18,
+                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
@@ -469,7 +469,7 @@ def _consts():
                 "VSLMServo": 1.9
             },
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp": 0.18,
+                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
@@ -490,7 +490,7 @@ def _consts():
                 "VSLMServo": 1.9
             },
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp": 0.18,
+                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
@@ -510,7 +510,7 @@ def _consts():
                 "VSLMServo": 1.9
             },
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp": 0.18,
+                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
@@ -537,7 +537,7 @@ def _consts():
             # cost survival 0.905 -> ~0.80 even after re-tuning cooling (X->0.22, h->0.16) -- reverted
             # to 0.18 and these 0.18-optimum X/h values (full data in Notion 06/12).
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp": 0.18,
+                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
@@ -575,7 +575,7 @@ def _consts():
                 "VSLMServo": 3.5
             },
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp": 0.2,
+                "FreqDetuning": -5e6, "Amp1": 0.2, "Amp2": 0.2,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
@@ -599,8 +599,16 @@ def _consts():
         },
         "47x47_feedbackwarm4": {
             # Round-4 iterative WGS feedback array: warm-started from 47x47_feedbackwarm3.pt with the
-            # full per-site correction measured on warm3 (scan 20260612_225239). EXACT copy of the
-            # 47x47_feedbackwarm3 overlay (same 47x47 array family). VSLMServo 3.5.
+            # full per-site correction measured on warm3 (scan 20260612_225239). Started as an exact
+            # copy of the 47x47_feedbackwarm3 overlay (same 47x47 array family). VSLMServo 3.5.
+            # 556 COOLING re-optimized 2026-06-20 for the TWO 399 imaging beams (Amp1/Amp2 = 0.30/0.20)
+            # via interleaved X<->h coordinate ascent:
+            #   imaging-during-imaging (Imag399.Cool556): X 0.16/0.20->0.20/0.24, h 0.16/0.14->0.20/0.22.
+            #   release-recapture (Cool556 below): X 0.13/0.14->0.16/0.14, h 0.12/0.12->0.16/0.12 @30us.
+            # IMAGING re-opt (det -4, Amp1 0.38, Amp2 0.17) was TESTED 2026-06-20 but REVERTED: clean
+            # final-number measurement showed only fidelity 0.9845->0.9865 at EQUAL ~96% single-shot
+            # survival (imaging loss is small vs fixed/detection loss), so not worth the change. Kept
+            # 0.30/0.20 @ -5. Magnitude-along-3:2 sweep then explored separately (scans 20260620_~0145+).
             "Init": {
                 "VSLMServo": 3.5
             },
@@ -608,14 +616,14 @@ def _consts():
                 "FreqDetuning": -5e6, "Amp1": 0.3, "Amp2": 0.2,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                    "X": {"FreqDetuning": 0.20e6, "Amp": 0.24},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
                 },
             },
             "Cool556": {
                 "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.13e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.12e6, "Amp": 0.12},
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
             },
             "LAC": {
                 "FreqDetuning": 0.11e6, "Amp": 0.16, "Time": 10e-3, "DeadTime": 10e-3,

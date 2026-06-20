@@ -10,7 +10,8 @@ optimisation campaign needs, each on the SAME byte-verified seq:
 
   * ``blue_amp``  -- 1-D sweep of ``Pushout.Blue.Amp`` (the 399 imaging intensity). Used FIRST to pick
     an imaging amplitude that puts survival in a sensitive mid-range (good distinction between the
-    cooling-parameter points that follow) with decent atom discrimination.
+    cooling-parameter points that follow) with decent atom discrimination. Beam 2 (``Blue.Amp2``)
+    tracks beam 1 so the hold keeps BOTH 399 beams on (PushouthXStep reads the two amps separately).
   * ``x2d``       -- 2-D ``Pushout.Green.X.{Freq,Amp}`` (Freq = Resonance556mj0 + detuning on dim 1,
     Amp on dim 2). Find the X-beam cooling optimum.
   * ``h2d``       -- 2-D ``Pushout.Green.h.{Freq,Amp}`` (same structure). Find the h-beam optimum.
@@ -69,6 +70,7 @@ def _set_fixed(g, c, blue_amp, *, time_s=100e-3, fix_blue=True, fix_x=True, fix_
     g().Pushout.Blue.Freq = c.Resonance399Freq + c.Imag399.FreqDetuning
     if fix_blue:
         g().Pushout.Blue.Amp = float(blue_amp)
+        g().Pushout.Blue.Amp2 = float(blue_amp)   # beam 2 tracks beam 1 -> both 399 imaging beams on
     if fix_x:
         g().Pushout.Green.X.Freq = (float(x_freq) if x_freq is not None
                                     else c.Resonance556mj0Freq + c.Imag399.Cool556.X.FreqDetuning)
@@ -102,7 +104,9 @@ def build_blue_amp(amps):
     c = _consts()
     g = ScanGroup()
     _set_fixed(g, c, blue_amp=0.3, fix_blue=False, fix_x=True, fix_h=True)
-    g().Pushout.Blue.Amp.scan(1, [float(a) for a in amps])
+    amps_f = [float(a) for a in amps]
+    g().Pushout.Blue.Amp.scan(1, amps_f)
+    g().Pushout.Blue.Amp2.scan(1, amps_f)   # beam 2 co-varies with beam 1 on the SAME axis (dim 1)
     _runp(g)
     return g
 

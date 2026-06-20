@@ -84,8 +84,8 @@ def cfg_with_pattern():
     SeqConfig.load_real()
     seq_manager.override_tick_per_sec(1e12)
     SeqConfig.get().consts["ByPattern"] = {
-        "PAT": {"Imag399": {"Amp": 0.999}, "Init": {"VSLMServo": 1.23}}}
-    base_amp = SeqConfig.get().consts["Imag399"]["Amp"]
+        "PAT": {"Imag399": {"Amp1": 0.999}, "Init": {"VSLMServo": 1.23}}}
+    base_amp = SeqConfig.get().consts["Imag399"]["Amp1"]
     yield base_amp
     H.set_current_pattern(None)
     seq_manager.override_tick_per_sec(0)
@@ -95,12 +95,12 @@ def cfg_with_pattern():
 def test_consts_overlay_follows_current_pattern(cfg_with_pattern):
     base_amp = cfg_with_pattern
     H.set_current_pattern(None)
-    assert Consts().Imag399.Amp() == base_amp                # base
+    assert Consts().Imag399.Amp1() == base_amp               # base
     H.set_current_pattern("PAT")
-    assert Consts().Imag399.Amp() == 0.999                   # overlaid
+    assert Consts().Imag399.Amp1() == 0.999                  # overlaid
     assert Consts().SLM.VServo() == 1.23                     # cross-ref to overlaid VSLMServo
     H.set_current_pattern(None)
-    assert Consts().Imag399.Amp() == base_amp                # restored
+    assert Consts().Imag399.Amp1() == base_amp               # restored
 
 
 def test_expseq_flags_by_pattern(cfg_with_pattern):
@@ -116,7 +116,7 @@ def test_per_bseq_overlay_in_build(cfg_with_pattern):
 
     def cap(sub):
         # capture BOTH the Consts() overlay path and the s.C (g) path the steps actually read
-        seen[sub.root.pattern] = (Consts().Imag399.Amp(), sub.C.Imag399.Amp(0))
+        seen[sub.root.pattern] = (Consts().Imag399.Amp1(), sub.C.Imag399.Amp1(0))
 
     s.add_step(cap)                                          # root bseq: pattern None -> base
     s2 = s.new_basic_seq(pattern="PAT")

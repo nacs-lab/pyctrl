@@ -19,6 +19,8 @@ def Pushout399Step(s, g):
 
     Freq_Pushout399 = g.Blue.Freq(Consts().Pushout.Blue.Freq)
     Amp_Pushout399 = g.Blue.Amp(0)
+    # beam 2 (Amp399Imag2): own knob, default 0 (off) -> swept via Pushout.Blue.Amp2; freq tied
+    Amp_Pushout399_2 = g.Blue.Amp2(Consts().Pushout.Blue.Amp2)
     Freq_Pushout556 = g.Green.Freq(Consts().Pushout.Green.Freq)
     Amp_Pushout556 = g.Green.Amp(0)
     Amp_SLM = g.SLMAOMAmp(Consts().SLM.AOM.Amp)
@@ -42,10 +44,12 @@ def Pushout399Step(s, g):
 
     # Using the 369 fiber output
     s.add('TTL399AbsImagShutter', 1)
+    s.add('TTL399Imag2Shutter', 1)
 
     s.wait(3e-3)  # wait fot the shutter
 
     s.add('FreqAbsImag', Freq_Pushout399).add('AmpAbsImag', Amp_Pushout399)
+    s.add('Freq399Imag2', Freq_Pushout399).add('Amp399Imag2', Amp_Pushout399_2)
 
     # We previously use the MOT beams to do pushout
     s.add('Freq556MOTX', Freq_Pushout556).add('Amp556MOTX', Amp_Pushout556)
@@ -58,6 +62,7 @@ def Pushout399Step(s, g):
     s.add_step(1e-3).add('VSLMservo', ramp_to(Consts().Init.VSLMServo))
 
     s.add('AmpAbsImag', 0)
+    s.add('Amp399Imag2', 0)
     s.add('AmpBlueMOT', 0)
 
     s.add('Amp556MOTX', 0)
@@ -65,6 +70,7 @@ def Pushout399Step(s, g):
 
     s.add('AmpAOM308', 0)
     s.add('TTL399AbsImagShutter', 1)
+    s.add('TTL399Imag2Shutter', 1)  # mirrors beam-1 shutter (set to 1, not 0, here -- pre-existing quirk)
     s.add('TTL556MOTaShutter', 1).add('TTL556MOTbShutter', 1).add('TTL556MOTcShutter', 1)
     s.add('TTL556RydbergShutter', 0)
     s.add('TTL369Shutter', 0)
