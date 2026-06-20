@@ -20,9 +20,9 @@ def PushouthXStep(s, g):
     t_Pushout = g.Time(Consts().Pushout.Time)
 
     Freq_Pushout399 = g.Blue.Freq(Consts().Pushout.Blue.Freq)
-    # Beam 1 (AmpAbsImag) <- g.Blue.Amp; beam 2 (Amp399Imag2) <- g.Blue.Amp2 -- read INDEPENDENTLY,
+    # Beam 1 (AmpAbsImag) <- g.Blue.Amp1; beam 2 (Amp399Imag2) <- g.Blue.Amp2 -- read INDEPENDENTLY,
     # matching PushoutStep / Pushout399Step. (Both beams share g.Blue.Freq; there is no Blue.Freq2.)
-    Amp1_Pushout399 = g.Blue.Amp(Consts().Pushout.Blue.Amp1)
+    Amp1_Pushout399 = g.Blue.Amp1(Consts().Pushout.Blue.Amp1)
     Amp2_Pushout399 = g.Blue.Amp2(Consts().Pushout.Blue.Amp2)
 
     Freq_Pushout556X = g.Green.X.Freq(Consts().Pushout.Green.Freq)

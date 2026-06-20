@@ -242,7 +242,7 @@ def _consts():
     c["Pushout"] = {
         "Time": 10e-3,
         "Green": {"Freq": 118.1e6, "Amp": 0},
-        "Blue": {"Freq": 320e6, "Amp": 0, "Amp1": 0, "Amp2": 0},  # Amp is legacy fallback for Amp1
+        "Blue": {"Freq": 320e6, "Amp1": 0, "Amp2": 0},  # Amp1 and Amp2 for pushout (matches Imag399.Amp1/Amp2)
         "Ryd308": {"Freq": 200e6, "Amp": 0},
         "Ionization": {"Amp": 0},              # 369 ionization-beam amp default (RydbergPushoutStep)
         "STIRAP": {"delay": 1e-6, "reverse_delay": 1e-6, "gap": 10e-6},

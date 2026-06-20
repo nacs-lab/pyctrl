@@ -5,7 +5,7 @@ submits it to the RUNNING pyctrl backend over ZMQ (``submit_scan_descriptor``), 
 Spectrum399Scan.m's ``ybStartScan(FreqPushOut399Scan(), @PushoutSurvival399Seq)``.
 
 Active scan (the ``AbsImg beam probing mj=0`` block from Spectrum399Scan.m):
-    g().Pushout.Blue.Amp = 0.25
+    g().Pushout.Blue.Amp1 = 0.25
     g().Pushout.Time     = 10e-3
     g().Pushout.Blue.Freq.scan(1) = (220:3:360)*1e6   # 47 points, 3 MHz step
 ``Pushout399Step`` reads Pushout.Blue.Freq/Amp + Pushout.Time (Pushout399Step.m:5,7,8);
@@ -54,7 +54,7 @@ def build():
     g = ScanGroup()
 
     # ---- fixed push-out params (Pushout399Step reads these) ----------------
-    g().Pushout.Blue.Amp = 0.25   # 0.2 for AbsImg; 0.015 for MOT-beam probing mj=1
+    g().Pushout.Blue.Amp1 = 0.25   # 0.2 for AbsImg; 0.015 for MOT-beam probing mj=1
     g().Pushout.Time = 10e-3
 
     # ---- swept param: Pushout.Blue.Freq ------------------------------------

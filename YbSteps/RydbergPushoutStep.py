@@ -38,7 +38,7 @@ def RydbergPushoutStep(s, g):
     t_Pushout = g.Time(Consts().Pushout.Time)
 
     Freq_Pushout399 = g.Blue.Freq(Consts().Pushout.Blue.Freq)
-    Amp_Pushout399 = g.Blue.Amp(Consts().Pushout.Blue.Amp)
+    Amp1_Pushout399 = g.Blue.Amp1(Consts().Pushout.Blue.Amp1)
     Freq_Pushout556 = g.Green.Freq(Consts().Pushout.Green.Freq)
     Amp_Pushout556 = g.Green.Amp(Consts().Pushout.Green.Amp)
     Amp_SLM = g.SLMAOMAmp(Consts().SLM.AOM.Amp)

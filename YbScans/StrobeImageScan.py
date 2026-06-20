@@ -1,21 +1,21 @@
 """StrobeImageScan.py -- 2-D sweep of the two 399 strobe-imaging beam amplitudes.
 
-Runs ``StrobeImagingSurvivalSeq`` (image -> cool -> STROBE -> cool -> image; ``NumImages=2`` =>
-survival). The middle "strobe" step is ``StrobePushouthXStep``: it replays the imaging
-illumination -- the two 399 imaging beams + the 556 X/h cooling -- for the push-out time, with
-every parameter DEFAULTING to its imaging/cooling config value but overridable via the
-``Pushout.*`` params.
+Runs ``ImagingPushoutSurvivalSeq`` (image -> cool -> PUSHOUT slot -> cool -> image; ``NumImages=2``
+=> survival). The middle push-out step is ``PushouthXStep``: it drives the two 399 beams + the 556
+X/h beams for the push-out time. This scan repurposes that slot as a strobe-imaging pulse by pinning
+every ``Pushout.*`` parameter to its imaging/cooling config value (PushouthXStep's own defaults are
+the push-out config, so the scan sets them explicitly below).
 
 This scan sweeps the two 399 strobe-beam amplitudes independently:
 
   * beam 1 -> ``AmpAbsImag``   <- ``Pushout.Blue.Amp1`` (dim 1)
   * beam 2 -> ``Amp399Imag2``  <- ``Pushout.Blue.Amp2`` (dim 2)
 
-Everything else stays at its imaging default: the 399 strobe FREQUENCY
+Everything else is pinned to its imaging value: the 399 strobe FREQUENCY
 (``Resonance399Freq + Imag399.FreqDetuning``) and the 556 X/h cooling (``Imag399.Cool556.{X,h}``)
-come from ``StrobePushouthXStep``'s defaults, and the two survival imaging pulses use the config
-imaging params. Push-out/strobe hold is 200 ms; array loaded is ``47x47_feedbackwarm4`` (declaring
-the loading pattern also applies that array's per-pattern config overlay).
+are set explicitly below, and the two survival imaging pulses use the config imaging params.
+Push-out/strobe hold is 200 ms; array loaded is ``47x47_feedbackwarm4`` (declaring the loading
+pattern also applies that array's per-pattern config overlay).
 
 Run (pyctrl backend live at --url; --reps = passes per grid point, total shots = reps x n_points):
     cd pyctrl
@@ -48,9 +48,9 @@ def _bootstrap():
 def build(amp1_grid=AMP1_GRID, amp2_grid=AMP2_GRID, pushout_time=PUSHOUT_TIME):
     """ScanGroup: Pushout.Blue.Amp1 (dim 1) x Pushout.Blue.Amp2 (dim 2).
 
-    Only the two 399 strobe amplitudes are swept; the 399 frequency + 556 X/h cooling default to
-    their imaging values inside StrobePushouthXStep (sweep those via Pushout.Blue.Freq /
-    Pushout.Green.{X,h}.{Freq,Amp} if needed).
+    Only the two 399 strobe amplitudes are swept; the 399 frequency + 556 X/h cooling are pinned to
+    their imaging values below (PushouthXStep reads Pushout.Blue.{Amp,Amp2,Freq} and
+    Pushout.Green.{X,h}.{Freq,Amp} -- sweep any of those if needed).
     """
     _bootstrap()
     from scan_group import ScanGroup
@@ -67,7 +67,7 @@ def build(amp1_grid=AMP1_GRID, amp2_grid=AMP2_GRID, pushout_time=PUSHOUT_TIME):
     g = ScanGroup()
     c = Consts()
     
-    g().Pushout.Blue.Amp1.scan(1, [float(a) for a in matlab_colon(*amp1_grid)])   # beam 1
+    g().Pushout.Blue.Amp1.scan(1, [float(a) for a in matlab_colon(*amp1_grid)])   # beam 1 (PushouthXStep reads Blue.Amp1)
     g().Pushout.Blue.Amp2.scan(2, [float(a) for a in matlab_colon(*amp2_grid)])   # beam 2
     g().Pushout.Blue.Freq = c.Resonance399Freq + c.Imag399.FreqDetuning   # strobe freq default = imaging line
     g().Pushout.Time = float(pushout_time)                                        # 200 ms strobe
@@ -112,14 +112,14 @@ def main():
         g.runp().NumPerGroup = args.reps * n_points
 
     did = ybStartScan(
-        "StrobeImagingSurvivalSeq", g, url=args.url, label="StrobeImageScan_pushout2d",
+        "ImagingPushoutSurvivalSeq", g, url=args.url, label="StrobeImageScan_pushout2d",
         rep=args.reps,
         description=(
             "2-D sweep of the two 399 strobe-imaging beam amplitudes: Pushout.Blue.Amp1 "
             "(beam 1, AmpAbsImag) x Pushout.Blue.Amp2 (beam 2, Amp399Imag2), at %.0f ms strobe, "
-            "array 47x47_feedbackwarm4. Seq StrobeImagingSurvivalSeq; the strobe step "
-            "(StrobePushouthXStep) replays imaging illumination -- 399 freq + 556 X/h cooling "
-            "default to the imaging/cooling config and only the two 399 amplitudes vary -- to find "
+            "array 47x47_feedbackwarm4. Seq ImagingPushoutSurvivalSeq; the push-out step "
+            "(PushouthXStep) replays imaging illumination -- 399 freq + 556 X/h cooling pinned "
+            "to the imaging/cooling config and only the two 399 amplitudes vary -- to find "
             "the (Amp1, Amp2) pair that maximises survival."
             % (args.pushout * 1e3)),
     )

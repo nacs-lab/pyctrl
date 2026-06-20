@@ -275,7 +275,7 @@ _DESC = {
     "spectrum399": {
         "seq": "PushoutSurvival399Seq",
         "params": {
-            "Pushout.Blue.Amp": 0.25,
+            "Pushout.Blue.Amp1": 0.25,
             "Pushout.Blue.Freq": {"scan": 1, "linspace": [220e6, 360e6, 5]},
             "Pushout.Time": 10e-3,
         },
@@ -289,7 +289,7 @@ _DESC = {
             "Imag399.FreqDetuning": {"scan": 1, "values": [-5e6, 0]},
             "Imag399.Amp": {"scan": 2, "values": [0.2, 0.3]},
             "Pushout.Green.Amp": 0,
-            "Pushout.Blue.Amp": 0,
+            "Pushout.Blue.Amp1": 0,
             "Pushout.Time": 10e-3,
         },
         "runp": {"NumImages": 2, "Scramble": 1},

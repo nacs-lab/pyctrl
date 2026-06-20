@@ -5,10 +5,10 @@ Optimises the 556 cooling beams (the X + h push-out beams run AT imaging amplitu
 556 light keeps the atom alive while it is being imaged). Better cooling => higher survival.
 
 The .m leaves every sweep commented (it documents ``ScannedFreq = (0.10:0.02:0.26)*1e6`` detuning
-and ``ScannedAmp = 0.1:0.02:0.28``, with ``Blue.Amp = 0.3``). This port exposes the three scans the
+and ``ScannedAmp = 0.1:0.02:0.28``, with ``Blue.Amp1 = 0.3``). This port exposes the three scans the
 optimisation campaign needs, each on the SAME byte-verified seq:
 
-  * ``blue_amp``  -- 1-D sweep of ``Pushout.Blue.Amp`` (the 399 imaging intensity). Used FIRST to pick
+  * ``blue_amp``  -- 1-D sweep of ``Pushout.Blue.Amp1`` (the 399 imaging intensity). Used FIRST to pick
     an imaging amplitude that puts survival in a sensitive mid-range (good distinction between the
     cooling-parameter points that follow) with decent atom discrimination. Beam 2 (``Blue.Amp2``)
     tracks beam 1 so the hold keeps BOTH 399 beams on (PushouthXStep reads the two amps separately).
@@ -53,7 +53,8 @@ DEF_FREQ = (0.10, 0.02, 0.26)   # detuning colon (MHz units below): (0.10:0.02:0
 DEF_AMP = (0.10, 0.02, 0.28)    # amp colon: 0.1:0.02:0.28                                -> 10 pts
 
 
-def _set_fixed(g, c, blue_amp, *, time_s=100e-3, fix_blue=True, fix_x=True, fix_h=True,
+def _set_fixed(g, c, blue_amp, *, blue_amp2=None, blue_det_hz=None, time_s=100e-3,
+               fix_blue=True, fix_x=True, fix_h=True,
                x_freq=None, x_amp=None, h_freq=None, h_amp=None):
     """Set the always-fixed imaging/cooling params (Time, Blue, and whichever 556 beam is NOT swept).
 
@@ -65,12 +66,21 @@ def _set_fixed(g, c, blue_amp, *, time_s=100e-3, fix_blue=True, fix_x=True, fix_
     beam at its running optimum while sweeping the other. Overriding to an arbitrary value does NOT
     threaten THE ONE RULE: the param->byte path is already verified, so any float64 serialises
     identically (only the MATLAB-equivalence of the *default* config grid is what the oracle pins).
+
+    The TWO 399 imaging beams are set independently: beam 1 = ``blue_amp`` (-> AmpAbsImag), beam 2 =
+    ``blue_amp2`` (-> Amp399Imag2). ``blue_amp2=None`` makes beam 2 TRACK beam 1 (the legacy
+    single-imaging-beam behaviour -- keeps build()/build_blue_amp byte-identical). When optimising
+    cooling for a pattern with two distinct imaging amps (e.g. 47x47_feedbackwarm4 -> 0.30/0.20),
+    pass blue_amp/blue_amp2 = the pattern's Imag399.Amp1/Amp2 so the hold images at the real beams.
     """
     g().Pushout.Time = float(time_s)
-    g().Pushout.Blue.Freq = c.Resonance399Freq + c.Imag399.FreqDetuning
+    # 399 frequency during the hold: default to the config imaging line, or override the detuning
+    # (Hz) so the cooling re-opt matches a NEW imaging detuning (blue_det_hz, e.g. -4 MHz).
+    _blue_det = c.Imag399.FreqDetuning if blue_det_hz is None else blue_det_hz
+    g().Pushout.Blue.Freq = c.Resonance399Freq + _blue_det
     if fix_blue:
-        g().Pushout.Blue.Amp = float(blue_amp)
-        g().Pushout.Blue.Amp2 = float(blue_amp)   # beam 2 tracks beam 1 -> both 399 imaging beams on
+        g().Pushout.Blue.Amp1 = float(blue_amp)
+        g().Pushout.Blue.Amp2 = float(blue_amp if blue_amp2 is None else blue_amp2)
     if fix_x:
         g().Pushout.Green.X.Freq = (float(x_freq) if x_freq is not None
                                     else c.Resonance556mj0Freq + c.Imag399.Cool556.X.FreqDetuning)
@@ -98,26 +108,29 @@ def _runp(g):
 
 
 def build_blue_amp(amps):
-    """1-D Pushout.Blue.Amp sweep (X + h fixed at config cooling defaults)."""
+    """1-D Pushout.Blue.Amp1 sweep (X + h fixed at config cooling defaults)."""
     _bootstrap()
     from scan_group import ScanGroup
     c = _consts()
     g = ScanGroup()
     _set_fixed(g, c, blue_amp=0.3, fix_blue=False, fix_x=True, fix_h=True)
     amps_f = [float(a) for a in amps]
-    g().Pushout.Blue.Amp.scan(1, amps_f)
+    g().Pushout.Blue.Amp1.scan(1, amps_f)
     g().Pushout.Blue.Amp2.scan(1, amps_f)   # beam 2 co-varies with beam 1 on the SAME axis (dim 1)
     _runp(g)
     return g
 
 
-def build_2d(beam, blue_amp, freq_det, amps, fixed_freq=None, fixed_amp=None, time_s=100e-3):
+def build_2d(beam, blue_amp, freq_det, amps, fixed_freq=None, fixed_amp=None, time_s=100e-3,
+             blue_amp2=None, blue_det_hz=None):
     """2-D sweep of one 556 beam: Freq = Resonance556mj0 + det*1e6 (dim 1), Amp (dim 2).
 
     beam: 'X' or 'h'. freq_det: list of detunings in MHz. amps: list of amplitudes.
     ``fixed_freq`` (Hz) / ``fixed_amp`` pin the OTHER (non-swept) 556 beam at its running optimum
     (default = config cooling value). The grids (freq_det/amps) are free to change every round --
     recenter/expand around the optimum or refine the step as the campaign proceeds.
+    ``blue_amp`` / ``blue_amp2`` are the two 399 imaging-beam amps held during the hold
+    (Imag399.Amp1/Amp2); ``blue_amp2=None`` makes beam 2 track beam 1 (legacy single-beam behaviour).
     """
     _bootstrap()
     from scan_group import ScanGroup
@@ -125,7 +138,8 @@ def build_2d(beam, blue_amp, freq_det, amps, fixed_freq=None, fixed_amp=None, ti
     g = ScanGroup()
     # the non-swept beam gets the optimum override (if given)
     fx = dict(x_freq=fixed_freq, x_amp=fixed_amp) if beam == "h" else dict(h_freq=fixed_freq, h_amp=fixed_amp)
-    _set_fixed(g, c, blue_amp=blue_amp, time_s=time_s, fix_x=(beam != "X"), fix_h=(beam != "h"), **fx)
+    _set_fixed(g, c, blue_amp=blue_amp, blue_amp2=blue_amp2, blue_det_hz=blue_det_hz, time_s=time_s,
+               fix_x=(beam != "X"), fix_h=(beam != "h"), **fx)
     reson = float(c.Resonance556mj0Freq)
     freqs = [reson + d * 1e6 for d in freq_det]
     node = g().Pushout.Green.X if beam == "X" else g().Pushout.Green.h
@@ -136,7 +150,7 @@ def build_2d(beam, blue_amp, freq_det, amps, fixed_freq=None, fixed_amp=None, ti
 
 
 def build():
-    """Default config for the A/B byte oracle: the X 2-D scan at Blue.Amp=0.3, .m default grids."""
+    """Default config for the A/B byte oracle: the X 2-D scan at Blue.Amp1=0.3, .m default grids."""
     _bootstrap()
     from scan_export import matlab_colon
     det = matlab_colon(*DEF_FREQ)
@@ -161,7 +175,7 @@ def main():
     ap.add_argument("mode", choices=["blue_amp", "x2d", "h2d"])
     ap.add_argument("--url", default=None)
     ap.add_argument("--reps", type=int, default=2)
-    ap.add_argument("--blue-amp", type=float, default=0.3, help="fixed Blue.Amp for x2d/h2d")
+    ap.add_argument("--blue-amp", type=float, default=0.3, help="fixed Blue.Amp1 for x2d/h2d")
     # blue_amp sweep range (colon lo:step:hi)
     ap.add_argument("--amp-lo", type=float, default=0.1)
     ap.add_argument("--amp-hi", type=float, default=0.5)

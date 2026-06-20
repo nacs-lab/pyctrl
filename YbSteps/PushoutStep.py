@@ -20,7 +20,7 @@ def PushoutStep(s, g):
     t_Pushout = g.Time(Consts().Pushout.Time)
 
     Freq_Pushout399 = g.Blue.Freq(Consts().Pushout.Blue.Freq)
-    Amp_Pushout399 = g.Blue.Amp(Consts().Pushout.Blue.Amp)
+    Amp1_Pushout399 = g.Blue.Amp1(Consts().Pushout.Blue.Amp1)
     # beam 2 (Amp399Imag2): own knob, default 0 (off) -> swept via Pushout.Blue.Amp2; freq tied
     Amp_Pushout399_2 = g.Blue.Amp2(Consts().Pushout.Blue.Amp2)
     Freq_Pushout556 = g.Green.Freq(Consts().Pushout.Green.Freq)
@@ -37,7 +37,7 @@ def PushoutStep(s, g):
     s.wait(3e-3)  # wait for the shutter
 
     # Using the 369 fiber output
-    s.add('FreqAbsImag', Freq_Pushout399).add('AmpAbsImag', Amp_Pushout399)
+    s.add('FreqAbsImag', Freq_Pushout399).add('AmpAbsImag', Amp1_Pushout399)
     s.add('Freq399Imag2', Freq_Pushout399).add('Amp399Imag2', Amp_Pushout399_2)
 
     # We previously use the MOT beams to do pushout

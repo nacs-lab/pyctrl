@@ -9,7 +9,7 @@ push-out: the push-out beams run AT the imaging amplitudes, so the atoms are ima
 the hold and this measures the IMAGING lifetime):
     g().Pushout.Time.scan(1)  = [0.005, 0.1, 1, 2, 4, 8]                         # 6 pts
     g().Pushout.Blue.Freq     = Consts().Resonance399Freq + Consts().Imag399.FreqDetuning
-    g().Pushout.Blue.Amp      = Consts().Imag399.Amp1
+    g().Pushout.Blue.Amp1     = Consts().Imag399.Amp1
     g().Pushout.Blue.Amp2     = Consts().Imag399.Amp2
     g().Pushout.Green.X.Freq  = Consts().Resonance556mj0Freq + Consts().Imag399.Cool556.X.FreqDetuning
     g().Pushout.Green.X.Amp   = Consts().Imag399.Cool556.X.Amp
@@ -106,10 +106,10 @@ def build():
     # NB: a bare consts leaf is a SubProps PROXY -- assigning it directly would store the proxy,
     # not its value (the freqs below resolve only because ``+`` forces _value()). So the amps are
     # wrapped in float() to resolve+coerce to the FLOAT64 the .m's double yields.
-    # Beam 1 <- Pushout.Blue.Amp, beam 2 <- Pushout.Blue.Amp2: PushouthXStep now reads each
+    # Beam 1 <- Pushout.Blue.Amp1, beam 2 <- Pushout.Blue.Amp2: PushouthXStep now reads each
     # independently, so the hold images at the pattern's Amp1/Amp2 (e.g. warm4 -> 0.3/0.2).
     g().Pushout.Blue.Freq = c.Resonance399Freq + c.Imag399.FreqDetuning
-    g().Pushout.Blue.Amp = float(c.Imag399.Amp1)        # beam 1 -> AmpAbsImag
+    g().Pushout.Blue.Amp1 = float(c.Imag399.Amp1)       # beam 1 -> AmpAbsImag
     g().Pushout.Blue.Amp2 = float(c.Imag399.Amp2)       # beam 2 -> Amp399Imag2 (both imaged during hold)
 
     g().Pushout.Green.X.Freq = c.Resonance556mj0Freq + c.Imag399.Cool556.X.FreqDetuning
