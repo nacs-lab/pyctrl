@@ -54,14 +54,22 @@ def build_descriptor_summary(descriptor):
 
     num_per_group = int(_num(runp.get("NumPerGroup"), 0))
     num_images = int(_num(runp.get("NumImages"), 0))
+    rep = _rep_from_opts(desc)
     nseqs = 1
     for ax in axes:
         nseqs *= max(int(ax.get("npts") or 1), 1)
     if not axes:
         nseqs = 0
 
-    # ybScanSummary: StackNum = max(ceil(NumPerGroup / nseqs), 2); total = nseqs * StackNum.
-    if nseqs > 0 and num_per_group > 0:
+    # total_per_group = the number of shots the scan is SET to run ("supposed to do") =
+    # nseqs * StackNum. StackNum honors an explicit ``rep`` opt EXACTLY as the run loop does
+    # (sequence_runner._build_scan_order): a ``rep >= 1`` is the deliberate pyctrl pass-count
+    # override that BYPASSES the NumPerGroup formula -- so a 4-pt sweep with rep=3 is 12 shots,
+    # NOT the NumPerGroup-derived StackNum. With no explicit rep (or rep==0 run-forever, which has
+    # no finite plan), fall back to ybScanSummary's StackNum = max(ceil(NumPerGroup / nseqs), 2).
+    if nseqs > 0 and rep is not None and rep >= 1:
+        total_per_group = nseqs * int(rep)
+    elif nseqs > 0 and num_per_group > 0:
         stack_num = max(math.ceil(num_per_group / nseqs), 2)
         total_per_group = nseqs * stack_num
     else:
@@ -80,6 +88,7 @@ def build_descriptor_summary(descriptor):
         "is_hc": bool(_num(runp.get("isHC"), 0)),
         "rearrangement": bool(_num(runp.get("Rearrangement"), 0)),
         "nseqs": nseqs,
+        "rep": rep,                    # explicit pass-count override (None if unset/forever)
         "total_per_group": total_per_group,
         "scan_filename": scan_name,
         "scan_name": scan_name,
@@ -189,6 +198,30 @@ def _as_dict(descriptor):
 def _is_sweep(v):
     """A descriptor sweep value: ``{"scan": dim, "values": [...]}``."""
     return isinstance(v, dict) and "scan" in v and "values" in v
+
+
+def _rep_from_opts(desc):
+    """The explicit ``rep`` pass-count from the descriptor ``opts``, or ``None`` if unset.
+
+    ``rep`` rides in ``descriptor["opts"]`` (``[[key, val], ...]`` from ``scan_export._encode_opts``,
+    or a dict), NOT in ``runp`` -- so the StackNum/NumPerGroup math must look here to learn the
+    scan's deliberate pass-count override. ``rep == 0`` is run-forever (no finite plan) and is
+    returned as ``0``; a non-integer/absent rep -> ``None``."""
+    opts = desc.get("opts")
+    if not opts:
+        return None
+    items = opts.items() if isinstance(opts, dict) else opts
+    for kv in items:
+        try:
+            key, val = kv
+        except (TypeError, ValueError):
+            continue
+        if key == "rep":
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _seq_name(seq):

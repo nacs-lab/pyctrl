@@ -327,6 +327,13 @@ def write_scan_config(scan_id, frame_wh, num_images, *, is_init=0, is_hc=0, is_g
         # Scan.Params: shot (1-based seq_id) -> scan-point index. The seq_id->point map the
         # live scan curve buckets on (data_manager reads config['Params']).
         cfg["Params"] = [int(x) for x in params]
+        # n_shots_planned = the number of shots this scan was SET to run ("supposed to do") =
+        # the realized run-order length (ybBuildScanJob's Scan.Params = nseqs * StackNum,
+        # StackNum honoring an explicit rep). The OFFLINE analysis (run_analysis / runs_list)
+        # reads this as the scheduled denominator and shows it against the ACTUAL recovered
+        # shots (len(seq_ids)). Matches the queue summary's total_per_group (same run order).
+        # A run-forever scan passes params=None -> the key is omitted (no finite plan).
+        cfg["n_shots_planned"] = len(params)
     # Per-image loading-pattern declaration (loading-pattern affine migration): the SAME
     # imagePatternsJson shape MATLAB's ybLoadingPatternsJson emits. The LIVE monitor reads it to
     # build per-pattern grids + load/refit/save per-pattern thresholds (to BOTH the day folder and

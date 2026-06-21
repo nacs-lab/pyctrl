@@ -15,6 +15,10 @@ optimisation campaign needs, each on the SAME byte-verified seq:
   * ``x2d``       -- 2-D ``Pushout.Green.X.{Freq,Amp}`` (Freq = Resonance556mj0 + detuning on dim 1,
     Amp on dim 2). Find the X-beam cooling optimum.
   * ``h2d``       -- 2-D ``Pushout.Green.h.{Freq,Amp}`` (same structure). Find the h-beam optimum.
+  * ``amp2d``     -- 2-D ``Pushout.Blue.Amp1`` x ``Amp2`` at a LONG pushout (imaging-optimization
+    Stage A1/A3): the proxy survival map over the two 399 imaging-beam amplitudes, cooling pinned at
+    the loading PATTERN's ``Imag399.Cool556``. Park near the ~90% survival cliff. See
+    ``references/imaging-optimization.md``; the campaign driver is ``tmp/imaging_round.py``.
 
 Notes: fixed freq/amp are read from ``Consts()``; swept detunings/amps use
 ``scan_export.matlab_colon`` (MATLAB-exact colon), and the X/h frequency is
@@ -46,6 +50,23 @@ def _consts():
     if not SeqConfig.get().consts:
         SeqConfig.load_real()
     return Consts()
+
+
+def _consts_for_pattern(pattern):
+    """Consts with the loading PATTERN's ByPattern overlay applied (base < ByPattern[pattern]).
+
+    So the pushout proxy's cooling/freq reads the ARRAY's imaging values (e.g. warm4's
+    ``Imag399.Cool556`` X/h + the imaging line) rather than bare base -- the proxy then replays the
+    real imaging illumination. Mirrors ImagingLifetimeScan; an unknown/empty pattern returns base
+    unchanged.
+    """
+    from seq_config import SeqConfig
+    from dyn_props import DynProps
+    import expConfig_helper
+    if not SeqConfig.get().consts:
+        SeqConfig.load_real()
+    base = SeqConfig.get().consts
+    return DynProps(expConfig_helper.apply_pattern(base, pattern or ""))
 
 
 # Default sweep grids (mirror the .m's documented ScannedFreq / ScannedAmp).
@@ -149,6 +170,30 @@ def build_2d(beam, blue_amp, freq_det, amps, fixed_freq=None, fixed_amp=None, ti
     return g
 
 
+def build_amp2d(amp1, amp2, time_s=0.2, pattern="47x47_feedbackwarm4"):
+    """Stage-A1 proxy amp map: 2-D ``Pushout.Blue.Amp1`` (dim 1) x ``Amp2`` (dim 2) at a LONG pushout.
+
+    The middle ``PushouthXStep`` replays the imaging illumination for ``time_s`` -- long so the
+    heating cliff is measurable (the imaging-optimization runbook's Stage A1/A3). Sweeps the two 399
+    pushout amps (= the ``AmpAbsImag`` / ``Amp399Imag2`` imaging channels); the pushout 556 X+h
+    cooling and the 399 frequency are **pinned** at the loading PATTERN's ``Imag399.Cool556`` / imaging
+    line (resolved via the ByPattern overlay) so the proxy reproduces the real imaging illumination.
+    The image-step amps come from the pattern's ByPattern overlay (the caller sets ``loading_phase``).
+    ``amp1``/``amp2`` are lists of amplitudes.
+    """
+    _bootstrap()
+    from scan_group import ScanGroup
+    c = _consts_for_pattern(pattern)
+    g = ScanGroup()
+    # Pin Time + 399 freq + the 556 X/h cooling at the pattern's imaging values; leave the two 399
+    # amps UNSET (fix_blue=False) so they can be scanned.
+    _set_fixed(g, c, blue_amp=0.0, time_s=time_s, fix_blue=False, fix_x=True, fix_h=True)
+    g().Pushout.Blue.Amp1.scan(1, [float(a) for a in amp1])
+    g().Pushout.Blue.Amp2.scan(2, [float(a) for a in amp2])
+    _runp(g)
+    return g
+
+
 def build():
     """Default config for the A/B byte oracle: the X 2-D scan at Blue.Amp1=0.3, .m default grids."""
     _bootstrap()
@@ -172,10 +217,17 @@ def main():
     _bootstrap()
     from scan_export import matlab_colon
     ap = argparse.ArgumentParser(description="Submit a CoolingScan variant to the pyctrl backend.")
-    ap.add_argument("mode", choices=["blue_amp", "x2d", "h2d"])
+    ap.add_argument("mode", choices=["blue_amp", "x2d", "h2d", "amp2d"])
     ap.add_argument("--url", default=None)
     ap.add_argument("--reps", type=int, default=2)
     ap.add_argument("--blue-amp", type=float, default=0.3, help="fixed Blue.Amp1 for x2d/h2d")
+    # amp2d (Stage-A1 proxy amp map): two 399-amp colons + the ByPattern seed
+    ap.add_argument("--amp1", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=(0.05, 0.05, 0.5),
+                    help="amp2d: Pushout.Blue.Amp1 colon (beam 1 -> AmpAbsImag)")
+    ap.add_argument("--amp2", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=(0.05, 0.05, 0.5),
+                    help="amp2d: Pushout.Blue.Amp2 colon (beam 2 -> Amp399Imag2)")
+    ap.add_argument("--pattern", default="47x47_feedbackwarm4",
+                    help="amp2d: ByPattern key to seed cooling/freq from (default warm4)")
     # blue_amp sweep range (colon lo:step:hi)
     ap.add_argument("--amp-lo", type=float, default=0.1)
     ap.add_argument("--amp-hi", type=float, default=0.5)
@@ -196,6 +248,14 @@ def main():
         amps = matlab_colon(args.amp_lo, args.amp_step, args.amp_hi)
         g = build_blue_amp(amps)
         _submit("ImagingPushoutSurvivalSeq", g, args.url, "CoolingScan_blueamp", args.reps)
+    elif args.mode == "amp2d":
+        a1 = matlab_colon(*args.amp1)
+        a2 = matlab_colon(*args.amp2)
+        g = build_amp2d(a1, a2, time_s=args.time, pattern=args.pattern)
+        # NOTE: standalone amp2d relies on the backend's current loading pattern; the careful
+        # campaign run goes through tmp/imaging_round.py, which also writes loading_phase + the
+        # detection pattern and analyzes the survival/loading map.
+        _submit("ImagingPushoutSurvivalSeq", g, args.url, "CoolingScan_amp2d", args.reps)
     else:
         beam = "X" if args.mode == "x2d" else "h"
         det = matlab_colon(*args.fdet)

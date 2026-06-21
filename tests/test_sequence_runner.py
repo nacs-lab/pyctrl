@@ -235,7 +235,7 @@ class TestCodeSnapshotReplay:
             pass
         assert sys.path == saved
 
-    def test_pinned_descriptor_injects_then_restores(self, tmp_path):
+    def test_pinned_descriptor_injects_then_restores(self, tmp_path, monkeypatch):
         import json
         import os
         import sys
@@ -243,6 +243,10 @@ class TestCodeSnapshotReplay:
         from sequence_runner import _snapshot_replay_ctx
         root = str(tmp_path / "proj")
         data_root = str(tmp_path / "data")
+        # Pin the snapshot base under data_root: the production default is now a LOCAL dir off the
+        # superproject, but this test asserts the injected path contains data_root (and must not
+        # write into the real local snapshot dir).
+        monkeypatch.setenv("YB_CODE_SNAPSHOT_DIR", os.path.join(data_root, "_code_snapshots"))
         os.makedirs(os.path.join(root, "YbSeqs"))
         with open(os.path.join(root, "YbSeqs", "ReplayProbe.py"), "w") as f:
             f.write("V = 5\n")

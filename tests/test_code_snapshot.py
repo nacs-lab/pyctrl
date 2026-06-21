@@ -19,6 +19,19 @@ import code_snapshot
 pytestmark = pytest.mark.no_hardware
 
 
+@pytest.fixture(autouse=True)
+def _snapshot_under_data_root(tmp_path, monkeypatch):
+    """Pin the snapshot base under each test's ``data_root``.
+
+    The PRODUCTION default is now a LOCAL dir off the superproject (``log/code_snapshots``) --
+    moved off the OneDrive data share for speed. These tests assert the on-``data_root`` layout
+    (``_snap_count(data_root)``, ``data_root/<run_dir>``), and must NOT write into the real local
+    snapshot dir, so set ``$YB_CODE_SNAPSHOT_DIR`` to ``<data_root>/_code_snapshots`` -- exactly
+    the legacy location every test was written against."""
+    monkeypatch.setenv("YB_CODE_SNAPSHOT_DIR",
+                       os.path.join(str(tmp_path / "data"), "_code_snapshots"))
+
+
 # --- a fake pyctrl source tree -------------------------------------------------
 
 def _make_tree(root, *, seq_value=1, lib_value=10):
@@ -83,6 +96,37 @@ def test_blobs_dedup_across_runs(tmp_path):
     _make_tree(root, seq_value=999)
     code_snapshot.snapshot_code(root, data_root, run_id=3)
     assert _snap_count(data_root) == n1 + 1
+
+
+# --- snapshot location: local default + override + legacy fallback ------------
+
+def test_snapshot_base_defaults_local_and_honors_override(tmp_path, monkeypatch):
+    """Default (no env) -> the LOCAL base off the superproject (NOT under the OneDrive
+    data_root); ``$YB_CODE_SNAPSHOT_DIR`` overrides it."""
+    monkeypatch.delenv("YB_CODE_SNAPSHOT_DIR", raising=False)   # undo the autouse fixture
+    data_root = str(tmp_path / "data")
+    base = code_snapshot.snapshot_base(data_root)
+    assert base == code_snapshot._local_default_base()
+    assert not os.path.abspath(base).startswith(os.path.abspath(data_root))  # the whole point
+    override = str(tmp_path / "snaps")
+    monkeypatch.setenv("YB_CODE_SNAPSHOT_DIR", override)
+    assert code_snapshot.snapshot_base(data_root) == override
+
+
+def test_existing_run_folder_legacy_fallback(tmp_path, monkeypatch):
+    """A run snapshotted at the legacy ``<data_root>/_code_snapshots`` (pre-switch / on OneDrive)
+    is still found by ``existing_run_folder`` after the base moves local -- so old runs replay."""
+    root = str(tmp_path / "proj")
+    _make_tree(root)
+    data_root = str(tmp_path / "data")
+    # Old run: written to the legacy on-data_root location.
+    monkeypatch.setenv("YB_CODE_SNAPSHOT_DIR", os.path.join(data_root, "_code_snapshots"))
+    code_snapshot.snapshot_code(root, data_root, run_id=111)
+    # Switch to a NEW (empty) local base: the lookup must fall back to the legacy location.
+    monkeypatch.setenv("YB_CODE_SNAPSHOT_DIR", str(tmp_path / "local_snaps"))
+    found = code_snapshot.existing_run_folder(data_root, 111)
+    assert os.path.isfile(os.path.join(found, "manifest.json"))
+    assert "local_snaps" not in found                          # resolved via the legacy fallback
 
 
 # --- #3 replay ----------------------------------------------------------------

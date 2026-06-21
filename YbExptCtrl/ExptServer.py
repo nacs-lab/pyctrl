@@ -174,6 +174,12 @@ class ExptServer(object):
             # get_status reflects the pause REQUEST; this flag is the run loop's report that it
             # has actually parked. See ack_paused / is_paused.
             self.__is_paused = False
+            # One-shot "carry the pause across an abort" intent (pyctrl backend). Set by
+            # abort_seq when the user aborts a scan that is currently PAUSED ("drop this item,
+            # advance to the next one, but STAY paused"), consumed by the next start_scan (which
+            # then begins the next job in Paused/Pause rather than Running/NoRequest). Cleared on
+            # idle (clear_seq_request) so it can never leak to a much-later submitted scan.
+            self.__pause_after_abort = False
         with self.__data_lock:
             self.seq_status = self.State.Init
 
@@ -262,6 +268,7 @@ class ExptServer(object):
         with self.__seq_lock:
             self.__seq_req = self.SeqRequest.NoRequest
             self.__is_paused = False
+            self.__pause_after_abort = False
         with self.__data_lock:
             self.seq_status = self.State.Init
         self.start_worker()
@@ -564,10 +571,15 @@ class ExptServer(object):
     def abort_seq(self) -> str:
         with self.__data_lock:
             if self.seq_status == self.State.Running or self.seq_status == self.State.Paused:
+                # Aborting a PAUSED scan means "drop the current item and advance, but stay
+                # paused" -- carry the pause across to the next job's start_scan. Aborting a
+                # RUNNING scan is a plain abort, so clear any stale carry intent.
+                was_paused = self.seq_status == self.State.Paused
                 self.seq_status = self.State.Init
                 with self.__seq_lock:
                     self.__seq_req = self.SeqRequest.Abort
                     self.__is_paused = False    # abort un-parks
+                    self.__pause_after_abort = was_paused
                 res = "Sequence Aborted"
             else:
                 res = "Sequence is not running"
@@ -685,12 +697,23 @@ class ExptServer(object):
         with self.__seq_lock:
             self.__seq_req = self.SeqRequest.NoRequest
             self.__is_paused = False
+            # Idle == no next job to carry the pause to, so drop a stale carry intent (an
+            # abort-while-paused with an EMPTY queue must not leave a later submit paused).
+            self.__pause_after_abort = False
 
     def start_scan(self):
+        # Clear-at-job-start. Normally begins the job Running with no pending request. EXCEPTION:
+        # honor a one-shot pause-after-abort intent (set when the user aborted the PREVIOUS,
+        # paused scan to advance the queue while staying paused) -- begin this job in Paused/Pause
+        # so the run loop parks at its first shot until the user hits play. The flag is one-shot
+        # (consumed here), so it can never wedge a future scan (cf. bug-runjob-stale-abortrunseq).
         with self.__data_lock:
-            self.seq_status = self.State.Running
-        with self.__seq_lock:
-            self.__seq_req = self.SeqRequest.NoRequest
+            with self.__seq_lock:
+                repause = self.__pause_after_abort
+                self.__pause_after_abort = False
+                self.seq_status = self.State.Paused if repause else self.State.Running
+                self.__seq_req = self.SeqRequest.Pause if repause else self.SeqRequest.NoRequest
+                self.__is_paused = False    # requested if repause, not yet reached (acked on park)
         scan_id = round(time.time() * 1000)
         return scan_id
 

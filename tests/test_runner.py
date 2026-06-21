@@ -447,8 +447,10 @@ class TestMakeEngineRun:
                 cb(0, 1)
             return {"status": "ok", "nseq": 1}
 
+        reset_calls = {"n": 0}
         monkeypatch.setattr(run_seq, "run_scan_group", fake_rsg)
-        monkeypatch.setattr(seq_manager, "new_run", lambda: None)
+        monkeypatch.setattr(seq_manager, "new_run",
+                            lambda: reset_calls.__setitem__("n", reset_calls["n"] + 1))
 
         cam, srv, cfg = _ArmCam(), _StoreServer(), _SeqCfg(seq_id=4)
         run = runner.make_engine_run(srv, cam, cfg)
@@ -456,7 +458,11 @@ class TestMakeEngineRun:
 
         assert res["status"] == "ok"
         assert cam.flushed and cam.started == (True, 16) and cam.stopped     # armed + disarmed
-        assert captured["new_run"] is seq_manager.new_run                     # engine reset wired
+        # The new_run seam is now a run_timing-wrapped closure (so the engine reset is timed
+        # in the bucket-B setup window); assert by BEHAVIOR -- invoking it triggers the reset.
+        assert callable(captured["new_run"]) and reset_calls["n"] == 0        # not yet called
+        captured["new_run"]()
+        assert reset_calls["n"] == 1                                          # engine reset wired
         # 2 frames published with seq_id 4 + a 14-digit YYYYMMDDHHMMSS scan_id (NOT epoch-ms)
         assert len(srv.stored) == 2 and srv.finished == 1
         assert all(q == 4 and len(str(s)) == 14 for _, s, q in srv.stored)
@@ -574,10 +580,52 @@ class TestForceDummyOff:
         runner._force_dummy_off(object(), log=lambda m: None)   # no raise
 
 
-def test_open_camera_none_when_wrapper_absent():
+def test_open_camera_none_when_wrapper_absent(monkeypatch):
+    # Deterministic + hardware-free: simulate the wrapper raising on open (the
+    # pylablib-absent / camera-absent path) rather than depending on the test
+    # interpreter lacking pylablib (which would touch the real camera under the
+    # engine venv). retry_delay=0 keeps it instant.
+    import devices.orca as orca_mod
+    monkeypatch.setattr(orca_mod, "open_orca_from_config",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no cam")))
     logs = []
-    assert runner.open_camera(log=logs.append) is None       # orca_camera not built yet
-    assert logs and "camera" in logs[0].lower()
+    assert runner.open_camera(log=logs.append, attempts=2, retry_delay=0) is None
+    assert any("camera" in m.lower() for m in logs)
+
+
+def test_open_camera_retries_then_gives_up(monkeypatch):
+    # A contended open that fails-fast must be retried `attempts` times before
+    # the backend boots camera-less (Fix for the restart-race DCAM wedge).
+    import devices.orca as orca_mod
+    calls = {"n": 0}
+
+    def boom(*a, **k):
+        calls["n"] += 1
+        raise RuntimeError("device busy")
+
+    monkeypatch.setattr(orca_mod, "open_orca_from_config", boom)
+    logs = []
+    assert runner.open_camera(log=logs.append, attempts=3, retry_delay=0) is None
+    assert calls["n"] == 3                                    # all attempts used
+    assert any("attempt 1/3" in m for m in logs)             # retry logged
+
+
+def test_open_camera_succeeds_after_transient(monkeypatch):
+    # A transient contention that clears on the 2nd try must yield the camera --
+    # a clean restart should never drop the camera over a momentary handle race.
+    import devices.orca as orca_mod
+    calls = {"n": 0}
+    sentinel = object()
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise RuntimeError("device busy")
+        return sentinel
+
+    monkeypatch.setattr(orca_mod, "open_orca_from_config", flaky)
+    assert runner.open_camera(attempts=3, retry_delay=0) is sentinel
+    assert calls["n"] == 2                                    # stopped retrying on success
 
 
 # --------------------------------------------------------------------------- #

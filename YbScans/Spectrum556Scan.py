@@ -54,11 +54,11 @@ def build(mj=0):
       * ``mj=0`` -- "check ULE shift": weak/short push-out (Amp 0.10, 5 ms), 41 pts @ 10 kHz
         over (107.5:0.01:107.9) MHz, bracketing the 107.735 MHz mj=0 resonance (FWHM ~58 kHz).
         This path reproduces the original mj=0 build.
-      * ``mj=1`` -- "check trap depth": stronger/longer push-out (Amp 0.18, 20 ms), 31 pts @
-        100 kHz over (104.2:0.1:107.2) MHz, the broader |mj|=1 trap-shifted feature.
-        (Window shifted +0.7 MHz right 2026-06-12 for the 47x47_uniform array: the dip fit at
-        105.72 MHz sat <1 FWHM from the old 106.5 right edge; 104.2-107.2 centers it and stays
-        ~0.5 MHz clear of the mj=0 line at 107.7.)
+      * ``mj=1`` -- "check trap depth": longer push-out (Amp 0.1, 20 ms), 31 pts @ 100 kHz
+        over (103.5:0.1:106.5) MHz, the broader |mj|=1 trap-shifted feature. Window set for
+        the 33x33 centered_level family (dip ~104.9 MHz at servo 1.9; matches the 20260620
+        sinc_dcfree / centered_level_fb1 mj=1 scans). (The 47x47_uniform array used
+        104.2:0.1:107.2 instead.)
     """
     _bootstrap()
     from scan_group import ScanGroup
@@ -70,7 +70,7 @@ def build(mj=0):
     if mj == 0:
         # mj=0 calibration push-out: weak/short so the dip width tracks the line,
         # not power/time broadening (the recipe behind 107.735 MHz, expConfig.m:122).
-        g().Pushout.Green.Amp = 0.10
+        g().Pushout.Green.Amp = 0.12
         g().Pushout.Time = 5e-3
     elif mj == 1:
         # |mj|=1 "check trap depth": stronger + longer to drive the weaker,
@@ -92,10 +92,11 @@ def build(mj=0):
         # current 107.735 MHz resonance (FWHM ~58 kHz -> ~6 pts across the dip).
         freqs = [v * 1e6 for v in matlab_colon(107.5, 0.01, 107.9)]   # 41 pts, MATLAB-exact
     else:
-        # |mj|=1 window: 31 pts @ 100 kHz over (104.2:0.1:107.2) MHz (shifted +0.7 MHz right
-        # 2026-06-12 for the 47x47_uniform array; old window 103.5-106.5 put the dip too close
-        # to the right edge -- see build() docstring).
-        freqs = [v * 1e6 for v in matlab_colon(104.2, 0.1, 107.2)]    # 31 pts, MATLAB-exact
+        # |mj|=1 window: 31 pts @ 100 kHz over (103.5:0.1:106.5) MHz for the 33x33
+        # centered_level family (dip ~104.9 MHz at servo 1.9; matches the sinc_dcfree /
+        # centered_level_fb1 mj=1 scans of 20260620). The camera-feedbacked camfb_wrapper
+        # seed has a large depth spread, so this window brackets the per-site dip spread.
+        freqs = [v * 1e6 for v in matlab_colon(103.5, 0.1, 106.5)]    # 31 pts, MATLAB-exact
     g().Pushout.Green.Freq.scan(1, freqs)
 
     # ---- run params (runp); no byte effect, drive the live run ------------
@@ -110,7 +111,7 @@ def build(mj=0):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    g.runp().loading_phase = "phase/47x47_feedbackwarm3.pt"   # server-side WGS phase path
+    g.runp().loading_phase = "phase/33x33_uniform.pt"
     g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
     return g
 

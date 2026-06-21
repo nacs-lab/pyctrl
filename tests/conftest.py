@@ -64,6 +64,19 @@ def all_reference_files():
     return matlab_reference_files() + pyctrl_reference_files()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_code_snapshot_dir(tmp_path, monkeypatch):
+    """Keep every test's code snapshot OUT of the real local snapshot dir.
+
+    The production default snapshot base is now a LOCAL dir off the superproject
+    (``log/code_snapshots``, moved off OneDrive for speed). Without this, any test that
+    calls ``code_snapshot.snapshot_code`` (directly or via ``scan_prep.write_scan_config``)
+    would write its blobs + per-run tree into that REAL dir. Pin ``$YB_CODE_SNAPSHOT_DIR``
+    to a per-test temp dir. Tests that assert the on-``data_root`` layout set a more specific
+    ``YB_CODE_SNAPSHOT_DIR`` themselves (their monkeypatch runs later and wins)."""
+    monkeypatch.setenv("YB_CODE_SNAPSHOT_DIR", str(tmp_path / "_code_snapshots_isolated"))
+
+
 @pytest.fixture
 def repo_root():
     return REPO_ROOT

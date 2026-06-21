@@ -244,6 +244,53 @@ def scan_summary(label=None):
 
 
 # =========================================================================== #
+# per-scan SETUP timing (bucket B: the pre-shot-loop work in the run() wrapper)
+# =========================================================================== #
+# The per-shot stage() accumulator (_CUR) only exists INSIDE a shot (begin_shot..
+# end_shot), so it cannot see the expensive once-per-scan setup that runs BEFORE the
+# first shot: scan-prep + code-snapshot, the AWG WVDT upload, the scan-long SLM begin /
+# rearrange model load, the camera arm, and the engine new_run. That work needs its own
+# window. Each setup_stage() logs ONE line as it completes (nothing is summed into the
+# per-shot CSV). Zero-cost when timing is OFF: begin_setup_timing() resolves the enable
+# decision ONCE per scan, after which every setup_stage() is a single bool check.
+_SETUP = {"on": False, "t0": 0.0}
+
+
+def begin_setup_timing():
+    """Open the per-scan SETUP timing window; resolve the RUN_TIMING enable decision ONCE.
+
+    Call at the top of the run() wrapper, before any setup work. When timing is OFF this
+    costs one :func:`is_enabled` probe per SCAN (not per shot) and every subsequent
+    :func:`setup_stage` is a bool check -> no added latency on a normal run. ``is_enabled``
+    never raises (it swallows probe errors), so ``_SETUP["on"]`` always gets a fresh bool --
+    a prior scan's state can never leak in."""
+    on = is_enabled()
+    _SETUP["on"] = on
+    _SETUP["t0"] = time.perf_counter()
+    if on:
+        label = _SCAN["label"]
+        _emit("[run_timing] --- setup timing (bucket B, pre-shot-loop)%s ---"
+              % ((" %s" % label) if label else ""))
+
+
+@contextlib.contextmanager
+def setup_stage(name):
+    """Time + log one per-scan SETUP phase (bucket B). Emits one ``[run_timing] setup ...``
+    line on exit. No-op (a single bool check) unless :func:`begin_setup_timing` enabled it,
+    so a normal (timing-OFF) run pays nothing. Separate from :func:`stage` -- no active shot
+    accumulator exists during setup. Logs even when the wrapped block raises (the elapsed so
+    far), so a failure in setup still shows where the time went."""
+    if not _SETUP["on"]:
+        yield
+        return
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        _emit("[run_timing] setup %-16s %9.1f ms" % (name, _ms(time.perf_counter() - t0)))
+
+
+# =========================================================================== #
 # formatting helpers
 # =========================================================================== #
 def _ms(x):

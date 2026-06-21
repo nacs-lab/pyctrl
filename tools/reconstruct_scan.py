@@ -71,7 +71,9 @@ def _find_sidecar(scan_dir):
 def _prepend_snapshot(data_root, scan_id):
     """Prepend the run's snapshot tree (incl ``lib``) to ``sys.path``; return the folder or None."""
     import code_snapshot
-    folder = code_snapshot.run_folder(data_root, scan_id)
+    # existing_run_folder: the local base (current default) first, then the legacy
+    # <data_root>/_code_snapshots (so scans snapshotted before the local-dir switch still reconstruct).
+    folder = code_snapshot.existing_run_folder(data_root, scan_id)
     if not os.path.isdir(folder) or not os.path.isfile(os.path.join(folder, "manifest.json")):
         return None
     add = [folder] + [os.path.join(folder, d) for d in _SNAPSHOT_SUBDIRS]

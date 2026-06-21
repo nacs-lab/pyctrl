@@ -1,6 +1,8 @@
 """ImagingSurvivalSeq.py -- transliteration of
 ``matlab_new/YbSeqs/ImagingSurvivalSeq.m``.
 
+This is a weird sequence that does not follow the standard sequence convention. Tend to remove or consolidate.
+
 nargin-1 seq with body code between the steps. Init -> BlueMOT -> SLM -> GreenMOT ->
 LAC -> Imag399 -> (set cooling/imaging tones, wait t_Pushout) -> Imag399 -> (wait) -> Init.
 

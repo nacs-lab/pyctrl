@@ -41,6 +41,7 @@ import signal
 import sys
 import time
 
+import run_timing
 from seq_reload import reload_experiment_modules
 from sequence_runner import IdleScheduler, run_job
 
@@ -55,6 +56,18 @@ CAMERA_INIT_WAIT_S = 15.0
 # The loop iterates ~10 Hz when idle; reading DCAM attributes that often is wasteful, and the
 # monitor's camera pane only polls every ~2 s, so refresh status at most this often.
 CAMERA_STATUS_REFRESH_S = 2.0
+# Startup camera-open resilience: retry the DCAM open a few times so a restart that briefly races
+# the previous backend's handle release (a fail-fast "device busy") recovers instead of booting
+# camera-less. A FREE-handle open is ~5 s; the launcher guarantees the handle is free before spawn,
+# so these retries only cover a residual transient. Env-overridable for the field.
+try:
+    CAMERA_OPEN_ATTEMPTS = max(1, int(os.environ.get("YB_CAMERA_OPEN_ATTEMPTS", "3")))
+except (TypeError, ValueError):
+    CAMERA_OPEN_ATTEMPTS = 3
+try:
+    CAMERA_OPEN_RETRY_S = float(os.environ.get("YB_CAMERA_OPEN_RETRY_S", "2.0"))
+except (TypeError, ValueError):
+    CAMERA_OPEN_RETRY_S = 2.0
 # pyctrl package root (…/pyctrl/YbExptCtrl/runner.py -> …/pyctrl) for locating config.yml,
 # which now lives inside the submodule (a copy of matlab_new/config.yml) so pyctrl is self-contained.
 PYCTRL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -405,7 +418,8 @@ def make_camera_pump(refresh_s=CAMERA_STATUS_REFRESH_S, monotonic=time.monotonic
     return pump
 
 
-def open_camera(seq_config=None, log=None):
+def open_camera(seq_config=None, log=None, attempts=CAMERA_OPEN_ATTEMPTS,
+                retry_delay=CAMERA_OPEN_RETRY_S):
     """Open + init the Orca from expConfig (the ``OrcaInit.m`` port), or ``None`` if unavailable.
 
     Reads ``consts.Orca.ROI`` / ``ExposureTime`` from ``seq_config`` and applies the full
@@ -414,6 +428,14 @@ def open_camera(seq_config=None, log=None):
     the monitor's ``camera_init`` never arrives (e.g. a backend restart under a running monitor).
     The pylablib import is lazy; if it/the camera is absent we degrade gracefully (backend boots
     camera-less, the pane shows disconnected, scans needing frames fail loudly at run time).
+
+    The open is RETRIED (``attempts`` tries, ``retry_delay`` s apart): a restart can briefly race
+    the previous backend's DCAM-handle release, and a contended open may fail-fast with a "device
+    busy" error -- a short retry rides that out so a clean restart doesn't drop the camera. (A
+    contended open that *hangs* instead of erroring is prevented upstream by the launcher waiting
+    for the old backend to fully exit before spawning -- see ``pyctrl_launcher`` / ``port_utils``.)
+    Whatever the failure, the backend still boots camera-less and serves, so the controller stays
+    responsive and a later ``camera_init`` (the GUI "Connect") can reopen the handle.
     """
     log = log or _noop_log
     try:
@@ -421,11 +443,19 @@ def open_camera(seq_config=None, log=None):
     except Exception as e:  # noqa: BLE001 - module/pylablib absent
         log("camera wrapper unavailable (%s) -- backend boots camera-less" % e)
         return None
-    try:
-        return open_orca_from_config(seq_config, log=log)
-    except Exception as e:  # noqa: BLE001
-        log("camera open failed: %s -- backend boots camera-less" % e)
-        return None
+    last = None
+    for i in range(max(1, attempts)):
+        try:
+            return open_orca_from_config(seq_config, log=log)
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if i + 1 < attempts:
+                log("camera open attempt %d/%d failed (%s) -- retrying in %.1fs"
+                    % (i + 1, attempts, e, retry_delay))
+                time.sleep(retry_delay)
+    log("camera open failed after %d attempt(s): %s -- backend boots camera-less"
+        % (attempts, last))
+    return None
 
 
 # =========================================================================== #
@@ -478,9 +508,9 @@ def make_engine_run(server, camera, seq_config, log=None):
         # per-shot timing rows with the scan + mode so an async-on vs -off A/B separates cleanly.
         async_save = _async_frame_save_enabled()
         try:
-            import run_timing
             run_timing.set_scan_label("%s %s async=%d"
                                       % (scan_name or "seq", scan_id, int(async_save)))
+            run_timing.begin_setup_timing()   # open the bucket-B setup window (no-op when OFF)
         except Exception:  # noqa: BLE001
             pass
         # The pre-built run order (sequence_runner._build_run_kwargs) IS ybBuildScanJob's
@@ -489,9 +519,10 @@ def make_engine_run(server, camera, seq_config, log=None):
 
         # Scan-prep: write the Scan-config .mat the monitor's DataManager reads (best-effort;
         # without it the monitor errors "Cannot load <path>" and its _process_once dies).
-        _write_scan_prep(scan_id, scangroup, camera, num_images, log,
-                         scan_name=scan_name, seq_config=seq_config, params=params_order,
-                         seq=seq, description=description)
+        with run_timing.setup_stage("scan_prep"):   # incl. code-snapshot hashing (bucket B)
+            _write_scan_prep(scan_id, scangroup, camera, num_images, log,
+                             scan_name=scan_name, seq_config=seq_config, params=params_order,
+                             seq=seq, description=description)
         # Stamp the data-folder id (scan_id) onto the running job so the queue/history shows it
         # (MATLAB fills this via set_job_file_id; pyctrl mints scan_id here, with no job_id in
         # scope, so set_running_job_file_id targets the single running job). Display + a
@@ -513,7 +544,8 @@ def make_engine_run(server, camera, seq_config, log=None):
         awg_names = _awg_names(scangroup)
         if awg_names:
             from devices.sigilent_awg import AWGManager
-            AWGManager.setup(awg_names, scangroup)
+            with run_timing.setup_stage("awg_upload"):   # WVDT batch-upload (bucket B)
+                AWGManager.setup(awg_names, scangroup)
 
             def _awg_pre_cb(_seq_num, arg0):
                 pt = scangroup.getseq(arg0)
@@ -550,9 +582,11 @@ def make_engine_run(server, camera, seq_config, log=None):
         if slm_ses is not None:
             slm_client = slm_ses.c
             if is_rearrange:
-                _initial_setup_rearrangement(slm_client, scangroup, scan_id, log,
-                                             server=server)
-            slm_ses.begin()                                      # grab slm lock + write WGS phase
+                with run_timing.setup_stage("rearrange_setup"):  # model + pattern load (bucket B)
+                    _initial_setup_rearrangement(slm_client, scangroup, scan_id, log,
+                                                 server=server)
+            with run_timing.setup_stage("slm_begin"):            # grab slm lock + write WGS phase
+                slm_ses.begin()
             # SINGLE SOURCE OF TRUTH for the rearrange detection grid: pull the SERVER's actual
             # init_grid (the exact array setup_rearrangement derived, that rearrange(bits) scores
             # bits[i] against). The detector maps it through the global affine, so the lab detects
@@ -591,8 +625,9 @@ def make_engine_run(server, camera, seq_config, log=None):
         armed = False
         if camera is not None and num_images > 0:
             try:
-                camera.flush()                                   # drop stale frames (MATLAB flushdata)
-                camera.start_video(external=True, nframes=max(num_images * 4, 16))
+                with run_timing.setup_stage("camera_arm"):       # flush stale frames + start_video
+                    camera.flush()                               # drop stale frames (MATLAB flushdata)
+                    camera.start_video(external=True, nframes=max(num_images * 4, 16))
                 armed = True
                 if not seq_owns_frames:
                     # Normal scan: read frames after each shot, then hand them to the ExptServer
@@ -635,10 +670,16 @@ def make_engine_run(server, camera, seq_config, log=None):
                 return s
             opts.setdefault("compile_point", _compile_point)
 
+        # Engine reset (bucket B): runs at the top of run_scan_group's loop, not here -- wrap the
+        # seam so its cost is logged alongside the other setup phases when RUN_TIMING is on.
+        def _timed_new_run():
+            with run_timing.setup_stage("new_run"):
+                seq_manager.new_run()
+
         try:
             return run_scan_group(seq, scangroup, control=control,
                                   pre_cb=pre, post_cb=post,
-                                  new_run=seq_manager.new_run,
+                                  new_run=_timed_new_run,
                                   on_compile=seq_on_compile,
                                   on_globals=seq_on_globals, **opts)
         finally:

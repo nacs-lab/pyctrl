@@ -46,7 +46,7 @@ _REF = os.path.join(_TESTS_DIR, "reference_scan_point", "scan_point_reference.js
 # --------------------------------------------------------------------------- #
 def build_spectrum399():
     g = ScanGroup()
-    g().Pushout.Blue.Amp = 0.25
+    g().Pushout.Blue.Amp1 = 0.25
     g().Pushout.Blue.Freq.scan(1, [v * 1e6 for v in range(220, 361, 35)])  # 5 points
     g().Pushout.Time = 10e-3
     g.runp().NumPerGroup = 10000
@@ -62,7 +62,7 @@ def build_imaging_hist():
     g().Imag399.FreqDetuning.scan(1, [-5 * 1e6, 0 * 1e6])
     g().Imag399.Amp.scan(2, [0.2, 0.3])
     g().Pushout.Green.Amp = 0
-    g().Pushout.Blue.Amp = 0
+    g().Pushout.Blue.Amp1 = 0
     g().Pushout.Time = 10e-3
     g.runp().NumImages = 2
     g.runp().Scramble = 1

@@ -29,7 +29,7 @@ import os
 import sys
 
 # ---- scan settings (override on the command line) -------------------------
-LOADING_PHASE = "phase/47x47_feedbackwarm4.pt"   # SLM loading hologram (+ its ByPattern config)
+LOADING_PHASE = "phase/33x33_uniform.pt"   # SLM loading hologram (+ its ByPattern config)
 LOADING_DEFOCUS = -5                             # ANSI z4 loading defocus (rad)
 PUSHOUT_TIME = 200e-3                            # strobe (push-out slot) hold (s)
 
@@ -45,7 +45,8 @@ def _bootstrap():
             sys.path.insert(0, p)
 
 
-def build(amp1_grid=AMP1_GRID, amp2_grid=AMP2_GRID, pushout_time=PUSHOUT_TIME):
+def build(amp1_grid=AMP1_GRID, amp2_grid=AMP2_GRID, pushout_time=PUSHOUT_TIME,
+          loading_phase=LOADING_PHASE, loading_defocus=LOADING_DEFOCUS):
     """ScanGroup: Pushout.Blue.Amp1 (dim 1) x Pushout.Blue.Amp2 (dim 2).
 
     Only the two 399 strobe amplitudes are swept; the 399 frequency + 556 X/h cooling are pinned to
@@ -84,8 +85,8 @@ def build(amp1_grid=AMP1_GRID, amp2_grid=AMP2_GRID, pushout_time=PUSHOUT_TIME):
     rp.isInit = 0
     rp.isHC = 0
     rp.isGrid2 = 0
-    rp.loading_phase = LOADING_PHASE        # load 47x47_feedbackwarm4 + apply its ByPattern config
-    rp.loading_defocus = LOADING_DEFOCUS
+    rp.loading_phase = loading_phase        # load the array hologram + apply its ByPattern config
+    rp.loading_defocus = loading_defocus
     return g
 
 
@@ -102,9 +103,13 @@ def main():
     ap.add_argument("--amp2", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=AMP2_GRID,
                     help="Pushout.Blue.Amp2 colon -- beam 2 (Amp399Imag2)")
     ap.add_argument("--pushout", type=float, default=PUSHOUT_TIME, help="Pushout.Time (s); default 0.2")
+    ap.add_argument("--loading-phase", default=LOADING_PHASE,
+                    help="SLM loading hologram (+ its ByPattern overlay); default 47x47_feedbackwarm4")
+    ap.add_argument("--defocus", type=float, default=LOADING_DEFOCUS, help="ANSI z4 loading defocus (rad)")
     args = ap.parse_args()
 
-    g = build(args.amp1, args.amp2, args.pushout)
+    g = build(args.amp1, args.amp2, args.pushout,
+              loading_phase=args.loading_phase, loading_defocus=args.defocus)
     n_points = g.nseq()
     # Keep the dashboard's "shots scheduled" total honest: reps x n_points (see the
     # NumPerGroup footgun in the experiment-running skill). reps=0 -> run forever.

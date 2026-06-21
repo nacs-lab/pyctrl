@@ -169,7 +169,12 @@ def _consts():
         # +0.27@0.038 -> -0.27@0.040 -> zero-crossing ~0.039 = MOT centered on the
         # array (flattest gradient = best uniformity), which is also the loading-
         # plateau center (drift-robust) with rate within ~2% of peak. X 0.040->0.039.
-        "BiasCoilCurrent": {"Ryd": 0, "X": 0.039, "Y": 0.268, "Z": 0.18},
+        # 2026-06-21 Y-bias (vertical MOT-position) sweep on 33x33_uniform (scan
+        # 20260621_172514, _load_bias r11): corr(load,y) zero-crossing drifted UP to
+        # Y~0.281; moved Y 0.268->0.280 to null the vertical gradient (corrY
+        # -0.18@0.268 -> ~-0.05@0.280) at ~98% of peak load. X re-checked at the same
+        # time (scan 20260621_172015): 0.039 still the 0.038-0.040 viable-window center.
+        "BiasCoilCurrent": {"Ryd": 0, "X": 0.039, "Y": 0.280, "Z": 0.18},
         # fast-loading opt 2026-06-05: HandoverTime was 30e-3
         "PowerBroaden": {"HandoverTime": 15e-3, "FreqDetuning": 0.7e6, "Amp": 0.8},
         # fast-loading opt 2026-06-05: HoldTime was 200e-3, Amp was 0.2
@@ -355,24 +360,20 @@ def _consts():
         },
         "33x33_uniform": {
             # Initialize the SLM servo to 3.7
-            "Init": {
-                "VSLMServo": 1.9
-            },
-            # imaging (399) + cooling-during-imaging (556 X/h) -- seeded = base Imag399 (2026-06-11).
-            # ExposureTime is omitted (it is a cross-ref to Orca.ExposureTime, re-resolved anyway).
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"Time": 20e-3},   # per-user override 2026-06-21 (base 10 ms); deep-merges, rest of LAC inherits base
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.10,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.13},
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
                 },
             },
-            # RNR / release-recapture cooling (556) -- seeded = base Cool556 (2026-06-11).
             "Cool556": {
                 "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.135e6, "Amp": 0.13},
-                "h": {"FreqDetuning": 0.13e6, "Amp": 0.12},
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
             },
         },
         # Two-layer 15x15 "diamond" array (phase/2x15x15_xyoffset_5um.pt): layers at +-2.5 um
@@ -634,6 +635,227 @@ def _consts():
                     "X": {"FreqDetuning": 0.22 * 1e6, "Amp": 0.04},
                 }
             }
+        },
+        # New SLM array (phase/33x33_uniform_centered_level.pt -- a 33x33 "uniform"
+        # array rotated to straight (lattice 0.5deg vs 33x33_uniform's 3.5deg) and
+        # centered on the zeroth order (knm centroid 512,512). 1068 sites when
+        # FFT-extracted at threshold 0.40 (0.30 leaks 8 spurious edge ghosts, 4
+        # off-sensor -> detect_atom crash; per-pattern threshold 0.40 set in the
+        # registry record). 2026-06-20 COOLING + IMAGING seeded from
+        # 47x47_feedbackwarm4. Init.VSLMServo = 1.9 (CHOSEN 2026-06-20, kept after a
+        # depth check): the array-average trap depth measured here is ~460 uK (mj=0 f0
+        # 107.788 MHz vs mj=1 104.889 MHz, Delta_nu 5.77 MHz; scans 20260620_172908 /
+        # _173141 at push-out 0.15). Going to 47x47's 3.5 would be ~850 uK and push the
+        # mj=1 dip off the bottom of the push-out band, so 1.9 was kept. The mj=1 line
+        # is broad -> large site-to-site depth spread (target of the per-site feedback).
+        # cooling/imaging below = warm4 seed (cooling-X confirmed at 1.9: X 0.20/0.22,
+        # survival ~0.84); being briefly confirmed. LAC inherited from base.
+        "33x33_uniform_centered_level": {
+            "Init": {
+                "VSLMServo": 1.9
+            },
+            # imaging amps kept at warm4 seed 0.30/0.20 (StrobeImageScan 20260620_174758:
+            # img1 fidelity ~0.975 saturated/flat -> already good). 556 imaging-cooling
+            # briefly re-opt at 1.9 (cooling_img_round X 20260620_170130, h _173720):
+            # detunings 0.20 MHz confirmed; X amp 0.24->0.22, h amp 0.22->0.18 (survival ~0.87).
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.3, "Amp2": 0.2,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.18},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # Trap-depth feedback round 1 of 33x33_uniform_centered_level: warm-start WGS
+        # correction (phase change 1.07 rad) of the centered_level hologram, from the
+        # per-site depths at scan 20260620_175714 (CV 23.1%, mean 468 uK). EXACT copy of
+        # the centered_level overlay (same family: servo 1.9, same cooling/imaging).
+        # 1068 sites @ registry threshold 0.40.
+        "33x33_centered_level_fb1": {
+            "Init": {
+                "VSLMServo": 1.9
+            },
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.3, "Amp2": 0.2,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.18},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # sinc-corrected + DC-free rebuild of the centered_level array (2026-06-20, by
+        # user): a 1/sinc^2 radial pre-correction boosts the corner spots (the round-1
+        # sinc envelope made corners ~0.47x center -> dim corners failed to fit), and the
+        # near-zeroth-order spots are dropped (88-px DC gap) -> 1052 sites. Same overlay
+        # as centered_level (servo 1.9, cooling X 0.22/h 0.18, imaging 0.30/0.20).
+        # 1052 sites @ registry threshold 0.40. The proper starting array for the feedback.
+        "33x33_uniform_centered_level_sinc_dcfree": {
+            "Init": {
+                "VSLMServo": 1.9
+            },
+            # IMAGING amps RAISED 0.30/0.20 -> 0.40/0.27 (2026-06-20) for the trap-depth
+            # FEEDBACK phase: at 0.40/0.27 per-site imaging fidelity is median 1.000 with
+            # only 1 dead site <90% (vs 5 at 0.30/0.20), so every site fits cleanly. This
+            # lowers imaging survival, which DOES NOT matter for the mj=1 depth sweeps.
+            # RESTORE to 0.30/0.20 (higher survival) after feedback converges. Sweep id=372.
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.4, "Amp2": 0.27,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.18},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # Camera-feedback starting array for the ATOM (trap-depth) feedback campaign
+        # (2026-06-21): phase/33x33_camfb_wrapper.pt -- the centered_level 33x33 array
+        # camera-feedbacked via the new slmnet.experimental.slm_feedback wrapper
+        # (square_array_ij center (2920,1850), n=33, pitch 90.9 px, dc_exclude 295 px ->
+        # 1052 spots, same grid as the sinc_dcfree family). Camera-flat is NOT depth-flat,
+        # so the atoms see a large site-to-site spread -> this is the seed the per-site
+        # atom feedback corrects. IMAGING + COOLING OPTIMIZED on this array 2026-06-21
+        # (scans 20260621_015938..022529, jobs 379-384): this camera-fb array has SHALLOWER/
+        # more delicate traps than the slmnet arrays, so it images at MUCH lower 399 power --
+        # Amp1 0.11 / Amp2 0.12 (0.30/0.20 and esp. 0.40/0.27 heated atoms out: loading
+        # 0.56 @ 0.30 -> 0.29 @ 0.40). Cooling-during-imaging re-opt: X (det 0.16 MHz,
+        # amp 0.26 -- higher X amp lifted pooled fidelity 0.977->0.99), h (det 0.20, amp 0.22).
+        # Result: real 0-pushout survival ~0.975, per-site fidelity median 0.9975 / ALL 1052
+        # spots >90% (min 0.901). Release-recapture Cool556 (below) left at the family seed
+        # (not used by imaging; only by ReleaseRecaptureSeq).
+        "33x33_camfb_wrapper": {
+            "Init": {
+                "VSLMServo": 1.9
+            },
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.12,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # Second camera-feedback array (2026-06-21): phase/33x33_centered_level_camfb_1068.pt
+        # -- the centered_level 33x33 camera-feedbacked to 1068 sites (vs camfb_wrapper's 1052).
+        # Same array family (servo 1.9, similar trap depth) -> imaging + cooling SEEDED from the
+        # camfb_wrapper optimum W (amps 0.11/0.12, cool X 0.16/0.26, h 0.20/0.22); to be
+        # confirmed + slightly adjusted on this array, then used for trap-depth feedback.
+        "33x33_centered_level_camfb_1068": {
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"Time": 20e-3},   # per-user override 2026-06-21 (base 10 ms); deep-merges, rest of LAC inherits base
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # Feedback ROUND-1 correction of camfb_1068 via the slmsuite SLMFeedback (external_spot)
+        # path (2026-06-21, knm-basis, no Fourier cal): flatten good sites + 2x brighten goal on
+        # the dead site 591. EXACT copy of the camfb_1068 overlay (servo 1.9, imaging 0.11/0.10,
+        # cooling X0.16/0.26 h0.20/0.22, LAC 20 ms) -- same array family, only the hologram differs.
+        "33x33_camfb1068_fb1": {
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"Time": 20e-3},
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # Trap-depth CONSISTENCY test (2026-06-21): 3 independent 8192-WGS, sinc^2-corrected
+        # UNIFORM holograms on the SAME 33x33 centered grid (phase/33x33_consistency_s{1,2,3}.pt),
+        # differing only in the random speckle seed. Measure per-site depth on each + correlate:
+        # correlated -> systematic optics/atom-plane; uncorrelated -> hologram speckle. Cooling/
+        # imaging/servo are an EXACT copy of 33x33_centered_level_camfb_1068 (per user: use the
+        # center-level-fb array params). Only the hologram differs across the three.
+        "33x33_consistency_s1": {
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"Time": 20e-3},
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        "33x33_consistency_s2": {
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"Time": 20e-3},
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        "33x33_consistency_s3": {
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"Time": 20e-3},
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
         },
     }
 

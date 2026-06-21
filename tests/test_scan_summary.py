@@ -56,6 +56,8 @@ class TestDescriptorSummary:
         assert self.s["num_per_group"] == 500
         assert self.s["nseqs"] == 17
         assert self.s["total_per_group"] == 510
+        assert self.s["rep"] is None        # no explicit rep -> NumPerGroup formula
+
 
     def test_scan_name_from_label(self):
         assert self.s["scan_name"] == "LACScan"
@@ -68,6 +70,41 @@ class TestDescriptorSummary:
     def test_malformed_descriptor_degrades(self):
         s = build_descriptor_summary("{not json")
         assert s["axes"] == [] and s["set_params"] == {}
+
+
+class TestDescriptorSummaryRep:
+    """An explicit ``rep`` opt is the scan's deliberate pass-count override and MUST drive
+    total_per_group (= nseqs * rep), exactly as sequence_runner._build_scan_order runs it --
+    NOT the NumPerGroup-derived StackNum (the bug that made the dashboard 'max' way too big)."""
+
+    def _summary(self, **opts):
+        g = _lac_group()                                   # nseqs = 17, NumPerGroup = 500
+        desc = scangroup_to_descriptor(g, "TweezerLoadingSeq", opts=opts or None, label="LACScan")
+        return build_descriptor_summary(desc)
+
+    def test_explicit_rep_overrides_numpergroup(self):
+        s = self._summary(rep=3)
+        assert s["rep"] == 3
+        assert s["nseqs"] == 17
+        assert s["num_per_group"] == 500                   # the runp sentinel is preserved
+        assert s["total_per_group"] == 51                  # 17 * 3, NOT the StackNum=30 -> 510
+
+    def test_rep_one_is_a_single_pass(self):
+        # rep=1 bypasses the >=2 StackNum floor (a deliberate single pass).
+        s = self._summary(rep=1)
+        assert s["total_per_group"] == 17
+
+    def test_rep_zero_is_run_forever_falls_back_to_formula(self):
+        # rep==0 has no finite plan -> fall back to the NumPerGroup-derived StackNum (unchanged).
+        s = self._summary(rep=0)
+        assert s["rep"] == 0
+        assert s["total_per_group"] == 510
+
+    def test_rep_accepts_json_string(self):
+        g = _lac_group()
+        desc = scangroup_to_descriptor(g, "TweezerLoadingSeq", opts={"rep": 3}, label="LACScan")
+        s = build_descriptor_summary(json.dumps(desc))
+        assert s["total_per_group"] == 51
 
 
 # --------------------------------------------------------------------------- #

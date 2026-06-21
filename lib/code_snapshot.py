@@ -64,6 +64,51 @@ _RECORD_FILES = ("expConfig.py", "config.yml")
 _SNAPSHOT_DIRNAME = "_code_snapshots"
 _RUNS_DIRNAME = "_runs"
 
+# Environment override for the snapshot base dir (an explicit absolute path). Point it at
+# ``<data_root>/_code_snapshots`` to restore the legacy on-OneDrive location.
+_SNAPSHOT_DIR_ENV = "YB_CODE_SNAPSHOT_DIR"
+
+
+def _local_default_base() -> str:
+    """The DEFAULT (local) snapshot base: ``<superproject>/log/code_snapshots``.
+
+    ``pyctrl_root()`` is ``…/pyctrl``; its parent is the experiment-control superproject, whose
+    ``log/`` dir already holds the other runtime artifacts (``log/pyctrl_log`` …) and lives on a
+    fast LOCAL disk -- unlike the OneDrive-synced data share that ``data_root`` points at."""
+    return os.path.join(os.path.dirname(pyctrl_root()), "log", "code_snapshots")
+
+
+def snapshot_base(data_root: str) -> str:
+    """Resolve the ``_code_snapshots`` base dir (content blobs + per-run hardlink trees).
+
+    DEFAULT is the LOCAL :func:`_local_default_base`, NOT ``<data_root>/_code_snapshots``. The
+    ``data_root`` is the OneDrive-synced Data share, and building the ~130-file per-run hardlink
+    tree through OneDrive's filter driver cost ~10 s per scan -- it blocked the FIRST SHOT of
+    every scan. The snapshot is best-effort provenance (not shared data), so a local disk is its
+    right home. Override with ``$YB_CODE_SNAPSHOT_DIR`` (absolute path); set it to
+    ``<data_root>/_code_snapshots`` to restore the old behavior. Writer and replay readers BOTH
+    resolve through here, so they always agree on where a snapshot lives."""
+    override = os.environ.get(_SNAPSHOT_DIR_ENV)
+    if override:
+        return override
+    try:
+        return _local_default_base()
+    except Exception:  # noqa: BLE001 - any path error -> legacy on-data_root location
+        return os.path.join(data_root, _SNAPSHOT_DIRNAME)
+
+
+def _rel_or_abs(path: str, start: str) -> str:
+    """``relpath(path, start)`` as posix; the absolute posix path if they're on different drives.
+
+    Windows ``os.path.relpath`` raises ``ValueError`` across drives -- which the local snapshot
+    base now is, relative to the OneDrive ``data_root``. The recorded path is informational
+    (replay recomputes via :func:`run_folder`), so an absolute fallback is fine."""
+    try:
+        return os.path.relpath(path, start).replace("\\", "/")
+    except ValueError:
+        return os.path.abspath(path).replace("\\", "/")
+
+
 # Set to the source scan_id while a :func:`snapshot_syspath` replay is active (the runner
 # runs one job at a time, so a module global is safe). Lets scan-prep record a replayed run
 # HONESTLY -- as a pointer to the code that actually executed -- instead of re-snapshotting
@@ -186,7 +231,7 @@ def snapshot_code(project_root: str,
     Best-effort: never raises (a top-level failure returns an ``errors`` dict).
     """
     try:
-        snap_dir = os.path.join(data_root, _SNAPSHOT_DIRNAME)
+        snap_dir = snapshot_base(data_root)
         os.makedirs(snap_dir, exist_ok=True)
     except Exception as exc:  # noqa: BLE001
         logger.warning("code_snapshot: cannot create snapshot dir: %s", exc)
@@ -298,8 +343,8 @@ def _build_run_folder(snap_dir, data_root, run_id, records, missing, errors,
     except Exception as exc:  # noqa: BLE001
         errors.append({"path": manifest_path,
                        "error": "write manifest: %s: %s" % (type(exc).__name__, exc)})
-    rel_run = os.path.relpath(run_dir, data_root).replace("\\", "/")
-    rel_man = os.path.relpath(manifest_path, data_root).replace("\\", "/")
+    rel_run = _rel_or_abs(run_dir, data_root)
+    rel_man = _rel_or_abs(manifest_path, data_root)
     return rel_run, rel_man
 
 
@@ -345,16 +390,30 @@ def read_git_state(project_root: str | None = None) -> dict | None:
 # Snapshot REPLAY (#3) -- import experiment code from a per-run snapshot folder.
 # =========================================================================== #
 def run_folder(data_root: str, run_id) -> str:
-    """Absolute path of a run's snapshot folder (no existence check)."""
-    return os.path.join(data_root, _SNAPSHOT_DIRNAME, _RUNS_DIRNAME,
-                        _safe_run_id(run_id))
+    """Absolute path of a run's snapshot folder under the CURRENT base (no existence check).
+    For READING a run that may predate the local-dir switch, use :func:`_existing_run_folder`."""
+    return os.path.join(snapshot_base(data_root), _RUNS_DIRNAME, _safe_run_id(run_id))
+
+
+def existing_run_folder(data_root: str, run_id) -> str:
+    """The run folder that actually has a ``manifest.json`` -- the current (local) base first,
+    then the legacy ``<data_root>/_code_snapshots`` location, so runs snapshotted BEFORE the
+    local-dir switch still replay / reconstruct. Falls back to the current-base path (for the
+    not-found message). Public: used by replay (here) and ``tools/reconstruct_scan.py``."""
+    primary = run_folder(data_root, run_id)
+    if os.path.isfile(os.path.join(primary, "manifest.json")):
+        return primary
+    legacy = os.path.join(data_root, _SNAPSHOT_DIRNAME, _RUNS_DIRNAME, _safe_run_id(run_id))
+    if os.path.isfile(os.path.join(legacy, "manifest.json")):
+        return legacy
+    return primary
 
 
 def snapshot_experiment_dirs(data_root: str, run_id) -> list[str] | None:
     """Return the absolute experiment-dir paths inside a run's snapshot folder
     that exist (``…/_runs/<id>/YbSeqs`` etc.), or ``None`` if the folder/manifest
     is absent.  These are what :func:`snapshot_syspath` prepends to ``sys.path``."""
-    folder = run_folder(data_root, run_id)
+    folder = existing_run_folder(data_root, run_id)
     if not os.path.isfile(os.path.join(folder, "manifest.json")):
         return None
     dirs = [os.path.join(folder, d) for d in _EXPERIMENT_DIRS]
@@ -369,7 +428,7 @@ def lib_mismatch(data_root: str, run_id, project_root: str | None = None) -> lis
     runs today; full reproduction needs a restart on the snapshot's lib."  Never
     raises; returns ``[]`` when it can't tell."""
     root = project_root or pyctrl_root()
-    man = os.path.join(run_folder(data_root, run_id), "manifest.json")
+    man = os.path.join(existing_run_folder(data_root, run_id), "manifest.json")
     try:
         with open(man, encoding="utf-8") as f:
             files = json.load(f).get("files", [])
