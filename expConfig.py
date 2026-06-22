@@ -857,6 +857,45 @@ def _consts():
                 "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
             },
         },
+        # s1 + SMOOTH-ONLY converged atom-depth correction (corrects only the deg<=3 optics bowl,
+        # not per-site speckle; maxiter 8, realized/target 0.8%). Same camfb cooling/imaging.
+        "33x33_consistency_s1_fb1s": {
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"Time": 20e-3},
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # s1 + ONE warm-start GS-step atom-depth correction (wgs_feedback --maxiter 2 from s1 FB0
+        # depths). Same camfb_1068 cooling/imaging as the consistency arrays. Tests whether the
+        # uniform-sinc-seed + warm-start atom feedback flattens depth (vs the camera-fb path).
+        "33x33_consistency_s1_fb1": {
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"Time": 20e-3},
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
     }
 
     # ---- cross-references (mirror expConfig.m's const-to-const assignments) ----

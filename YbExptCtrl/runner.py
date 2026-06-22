@@ -177,7 +177,8 @@ def _ping(url, timeout_ms=1000):
 # =========================================================================== #
 # Descriptor pop -> JSON job (mirror handleDescriptorPop)
 # =========================================================================== #
-def handle_descriptor_pop(server, max_per_iter=MAX_DESC_PER_ITER, log=None):
+def handle_descriptor_pop(server, max_per_iter=MAX_DESC_PER_ITER, log=None,
+                          pop_attr="pop_next_descriptor", priority="normal"):
     """Drain queued descriptors into JSON jobs; cap at ``max_per_iter`` per call.
 
     For each queued descriptor: submit its JSON body as a job payload (pyctrl is producer +
@@ -187,16 +188,24 @@ def handle_descriptor_pop(server, max_per_iter=MAX_DESC_PER_ITER, log=None):
     ``link_descriptor_to_job`` then drops the now-redundant descriptor row instead of
     archiving a duplicate (its same-id branch). A bad descriptor is reported via
     ``finish_descriptor(id, 'error', msg)`` and must NEVER tear down the runner -- the loop
-    keeps draining. A ``pop_next_descriptor`` failure aborts this call (next iteration
-    retries). Returns the number of descriptors dispatched.
-    """
+    keeps draining. A ``pop`` failure aborts this call (next iteration retries). Returns the
+    number of descriptors dispatched.
+
+    ``pop_attr``/``priority`` select the scheduling lane: the default drains FOREGROUND
+    descriptors; :func:`handle_background_descriptor_pop` re-targets it at the background lane
+    (``pop_next_background_descriptor`` + ``priority='background'``). ``submit_job`` is stamped
+    with ``priority`` so the job is never briefly mis-laned before ``link_descriptor_to_job``
+    copies the descriptor's authoritative lane onto it."""
     log = log or _noop_log
     dispatched = 0
+    pop = getattr(server, pop_attr, None)
+    if pop is None:
+        return dispatched
     for _ in range(max_per_iter):
         try:
-            desc = server.pop_next_descriptor()
+            desc = pop()
         except Exception as e:  # noqa: BLE001
-            log("pop_next_descriptor error: %s" % e)
+            log("%s error: %s" % (pop_attr, e))
             return dispatched
         if not desc:
             return dispatched
@@ -211,7 +220,7 @@ def handle_descriptor_pop(server, max_per_iter=MAX_DESC_PER_ITER, log=None):
             # Reuse the descriptor's id for the job so the scan has a SINGLE id (the one the
             # .py script printed); link_descriptor_to_job then drops the descriptor row (its
             # same-id branch) instead of archiving a redundant second row.
-            job_id = server.submit_job(payload, summary=summary, job_id=desc_id)
+            job_id = server.submit_job(payload, summary=summary, job_id=desc_id, priority=priority)
             server.link_descriptor_to_job(desc_id, job_id)
             dispatched += 1
         except Exception as e:  # noqa: BLE001 - bad descriptor: mark error, keep draining
@@ -224,12 +233,20 @@ def handle_descriptor_pop(server, max_per_iter=MAX_DESC_PER_ITER, log=None):
     return dispatched
 
 
+def handle_background_descriptor_pop(server, max_per_iter=MAX_DESC_PER_ITER, log=None):
+    """Drain queued BACKGROUND (calibration) descriptors into background jobs -- the background
+    lane's counterpart to :func:`handle_descriptor_pop`. getattr-guarded inside (a server without
+    ``pop_next_background_descriptor`` drains nothing), so it is safe against a coarse server."""
+    return handle_descriptor_pop(server, max_per_iter=max_per_iter, log=log,
+                                 pop_attr="pop_next_background_descriptor", priority="background")
+
+
 # =========================================================================== #
 # The main consume loop (mirror SequenceRunner.m's while true)
 # =========================================================================== #
 def consume_loop(server, *, should_stop, run_job_fn=None, dispatch_pop=None,
-                 idle=None, handle_camera=None, camera=None, sleep=time.sleep,
-                 run_kwargs=None, log=None):
+                 dispatch_bg=None, idle=None, handle_camera=None, camera=None,
+                 sleep=time.sleep, run_kwargs=None, log=None):
     """Drain the queue until ``should_stop()`` returns True.
 
     Per iteration (mirrors SequenceRunner.m:101-192): handle a pending camera command, drain
@@ -250,6 +267,8 @@ def consume_loop(server, *, should_stop, run_job_fn=None, dispatch_pop=None,
         run_job_fn = run_job
     if dispatch_pop is None:
         dispatch_pop = handle_descriptor_pop
+    if dispatch_bg is None:
+        dispatch_bg = handle_background_descriptor_pop
     log = log or _noop_log
     run_kwargs = run_kwargs or {}
 
@@ -275,6 +294,37 @@ def consume_loop(server, *, should_stop, run_job_fn=None, dispatch_pop=None,
             continue
 
         if job is None:
+            # Tier 2: a BACKGROUND (calibration) job -- only when the global toggle is on AND no
+            # foreground scan is running/queued (both checked in _try_pop_background). It runs via
+            # the SAME run_job_fn (run_job reads `background` off the payload, so its control
+            # channel yields to foreground work at a shot boundary). Completion is owned HERE:
+            # requeue_background re-queues a clean finish/yield to cycle, or archives an error.
+            bg = _try_pop_background(server, dispatch_bg)
+            if bg is not None:
+                _safe_set_dummy_running(server, 0)
+                _safe_set_background_running(server, 1, bg.get("seqName", ""))
+                try:
+                    result = run_job_fn(server, bg["payload"], job_id=bg["id"], **run_kwargs)
+                    status = getattr(result, "status", "ok")
+                    rq = getattr(server, "requeue_background", None)
+                    if rq is not None:
+                        try:
+                            rq(bg["id"], status)
+                        except Exception as e:  # noqa: BLE001
+                            log("requeue_background failed: %s" % e)
+                    # Background-only queues read as foreground-idle (mark_idle excludes
+                    # background), so reset Running -> Init for the operator's "stopped" view.
+                    mark_idle = getattr(server, "mark_idle_if_queue_empty", None)
+                    if mark_idle is not None:
+                        try:
+                            mark_idle()
+                        except Exception as e:  # noqa: BLE001
+                            log("end-of-bg idle-status reset failed: %s" % e)
+                    log("bg job #%s finished (%s)" % (bg["id"], status))
+                finally:
+                    _safe_set_background_running(server, 0)
+                continue
+            # Tier 3: the DummySeq keep-alive (off/default/last) when nothing else runs.
             if idle is not None:
                 _safe_set_dummy_running(server, 1)
                 idle.step(sleep)
@@ -1421,6 +1471,52 @@ def _safe_set_dummy_running(server, flag):
             fn(flag)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _safe_set_background_running(server, flag, name=""):
+    fn = getattr(server, "set_background_running", None)
+    if fn is not None:
+        try:
+            fn(flag, name)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _try_pop_background(server, dispatch_bg):
+    """Pop the next BACKGROUND (calibration) job, or ``None`` if the lane must not run now.
+
+    Returns None when (in order): the global background toggle is off; a foreground scan is
+    running or queued (``has_foreground_work`` -- includes not-yet-dispatched foreground
+    descriptors); the server predates the background lane; or no background job is queued.
+    Otherwise drains background descriptors into jobs (``dispatch_bg``) then pops one. Every
+    server hook is getattr-guarded, so a coarse server (no background methods) cleanly yields
+    None and the dummy keep-alive runs instead."""
+    get_enabled = getattr(server, "get_background_enabled", None)
+    if get_enabled is not None:
+        try:
+            if not get_enabled():
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+    has_fg = getattr(server, "has_foreground_work", None)
+    if has_fg is not None:
+        try:
+            if has_fg():
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+    pop_bg = getattr(server, "pop_next_background_job", None)
+    if pop_bg is None:
+        return None
+    if dispatch_bg is not None:
+        try:
+            dispatch_bg(server)
+        except Exception:  # noqa: BLE001 - a bad bg descriptor must not stop the loop
+            pass
+    try:
+        return pop_bg()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _noop_log(_msg):

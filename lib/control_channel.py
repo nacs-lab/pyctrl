@@ -60,7 +60,7 @@ class ControlChannel:
     """
 
     def __init__(self, source, poll_interval=1.0, sleep=time.sleep,
-                 on_pause=None, on_resume=None):
+                 on_pause=None, on_resume=None, is_background=False):
         self._source = source
         self._poll = poll_interval
         self._sleep = sleep
@@ -71,6 +71,11 @@ class ControlChannel:
         # the pause gate (a failed resume regrab is enforced by the next shot's ensure_held).
         self._on_pause = on_pause
         self._on_resume = on_resume
+        # Background (calibration) lane: when True, :meth:`should_yield` lets the run bail out at
+        # a shot boundary the moment foreground work is queued (see the run loop's two-tier
+        # schedule). A normal (foreground) scan never yields. This is INDEPENDENT of the
+        # Pause/Abort SeqRequest -- yielding sets NO control flag (see should_yield).
+        self._is_background = bool(is_background)
 
     # ----------------------------------------------------------------------- #
     # the per-sequence gate (CheckPauseAbort replacement)
@@ -127,6 +132,29 @@ class ControlChannel:
     def aborting(self):
         """True iff an abort is currently pending (cheap, non-parking check)."""
         return self._request() == SeqRequest.Abort
+
+    # ----------------------------------------------------------------------- #
+    # background-lane yield (NOT a SeqRequest -- pure queue-state predicate)
+    # ----------------------------------------------------------------------- #
+    def should_yield(self):
+        """True iff THIS is a background (calibration) run AND foreground work is now queued, so
+        the run should bail out cleanly at this shot boundary (the run loop then runs the
+        foreground scan and re-queues this one).
+
+        CARDINAL RULE: this NEVER reads or writes the ``SeqRequest`` (Pause/Abort). The yield is
+        driven solely by the queue state (``source.has_foreground_work()``), so it cannot fool the
+        incoming foreground scan's ``begin_scan``/``start_scan`` -- which clears nothing because
+        nothing was set. Returns False for a normal (foreground) run, or if the source predates
+        the predicate (getattr-guarded, so old fakes/servers are unaffected)."""
+        if not self._is_background:
+            return False
+        fn = getattr(self._source, "has_foreground_work", None)
+        if fn is None:
+            return False
+        try:
+            return bool(fn())
+        except Exception:  # noqa: BLE001 - a predicate failure must not break the run loop
+            return False
 
     # ----------------------------------------------------------------------- #
     # helpers

@@ -46,7 +46,8 @@ import json
 from scan_export import scangroup_to_descriptor
 
 
-def ybStartScan(seq, scangroup, *, url=None, label=None, description=None, submit=None, **opts):
+def ybStartScan(seq, scangroup, *, url=None, label=None, description=None,
+                background=False, cycle=True, submit=None, **opts):
     """Export ``scangroup`` to a descriptor and submit it; return the descriptor id (int).
 
     Args:
@@ -59,6 +60,13 @@ def ybStartScan(seq, scangroup, *, url=None, label=None, description=None, submi
             which test group it belongs to, what it's measuring. Be verbose; it is stamped into
             the scan-config sidecar so the analysis dashboard shows it (collapsible) and lets you
             search runs by it. Defaults to ``None`` (blank). ALWAYS pass one for a real scan.
+        background: queue this as a low-priority BACKGROUND (calibration) scan -- it runs only
+            when no foreground scan is running or queued, yields cleanly at the next shot
+            boundary the moment foreground work is queued, and (when ``cycle``) re-queues itself
+            so calibrations cycle continuously. Default ``False`` (an ordinary foreground scan).
+        cycle: when ``background``, re-queue this scan after each finite slice / yield so it
+            runs round-robin with any other background scans. Set ``False`` for a one-shot
+            background scan. Ignored when ``background`` is ``False``.
         submit: optional ``(desc_json, label) -> id`` override (injected in tests so no
             socket is bound). Default: :func:`submit_descriptor` over a one-shot REQ socket.
         **opts: run options forwarded as descriptor ``opts`` (``rep`` = explicit pass count,
@@ -68,7 +76,7 @@ def ybStartScan(seq, scangroup, *, url=None, label=None, description=None, submi
             docstring.
     """
     desc = scangroup_to_descriptor(scangroup, seq, opts=opts or None, label=label,
-                                   description=description)
+                                   description=description, background=background, cycle=cycle)
     desc_json = json.dumps(desc, ensure_ascii=False)
     lbl = label or desc["seq"]
     if submit is None:

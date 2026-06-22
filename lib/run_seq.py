@@ -56,9 +56,11 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
                    on_compile=None, on_globals=None):
     """Run a ScanGroup as a scan (port of ``runSeq2(func, scangroup, ...)``).
 
-    Returns a result dict ``{"status": "ok"|"aborted", "nseq": <shots completed>}``. (The
-    MATLAB graceful abort returns no status, recording ``'ok'`` -- the "aborted != ok"
-    must-fix; pyctrl distinguishes them.)
+    Returns a result dict ``{"status": "ok"|"aborted"|"yielded", "nseq": <shots completed>}``.
+    (The MATLAB graceful abort returns no status, recording ``'ok'`` -- the "aborted != ok"
+    must-fix; pyctrl distinguishes them.) ``"yielded"`` is a background (calibration) scan that
+    stepped aside for newly-queued foreground work at a shot boundary -- a clean stop like abort,
+    but the run loop re-queues it instead of discarding it.
     """
     if rep < 0:
         raise ValueError("Cannot run the sequence by negative times.")
@@ -134,13 +136,25 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
             cb(counter["cur_seq_num"], indices[idx - 1])
 
     def run_one(idx):
-        """The per-shot body (MATLAB nested ``run_seq``). Returns True to ABORT."""
+        """The per-shot body (MATLAB nested ``run_seq``).
+
+        Returns a falsy value (``False``) to PROCEED, or a stop-reason sentinel string:
+        ``"abort"`` (user abort/pause-then-abort -- discard) or ``"yield"`` (background scan
+        stepping aside for foreground work -- re-queue). Both stop at this shot boundary and
+        run the same clean teardown; only the run loop's reaction differs."""
         run_timing.begin_shot(indices[idx - 1])         # opt-in per-shot timing (inert when OFF)
         while True:                                     # C.RESTART retry loop
             with run_timing.stage("gate"):
-                abort = control is not None and control.check_pause_abort()
-            if abort:
-                return True                             # gate: abort at this boundary
+                if control is not None:
+                    if control.check_pause_abort():
+                        return "abort"                  # gate: user abort at this boundary
+                    # Yield AFTER abort (abort precedes yield): a background scan steps aside
+                    # for newly-queued foreground work. should_yield never touches SeqRequest,
+                    # so the foreground scan's begin_scan sees a clean slate. getattr-guarded:
+                    # control is duck-typed (test stubs / older controls may lack should_yield).
+                    _yield = getattr(control, "should_yield", None)
+                    if _yield is not None and _yield():
+                        return "yield"
             with run_timing.stage("compile"):
                 prepare_seq(idx)
             if tstartwait > 0:
@@ -165,8 +179,10 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
     try:
         if new_run is not None:
             new_run()                                   # SeqManager.new_run() (engine reset)
-        aborted = _scan_loop(run_one, nseq, rep, is_random, rng)
-        return {"status": "aborted" if aborted else "ok", "nseq": counter["cur_seq_num"]}
+        outcome = _scan_loop(run_one, nseq, rep, is_random, rng)
+        # outcome: False (ran to completion) | "abort" (user abort) | "yield" (bg stepped aside).
+        status = {"abort": "aborted", "yield": "yielded"}.get(outcome, "ok")
+        return {"status": status, "nseq": counter["cur_seq_num"]}
     finally:
         run_timing.scan_summary()                       # log mean/median/max per stage (no-op if OFF)
         # End-of-run reset (CurrentSeqNum -> 0). Abort/Pause are NOT cleared here -- the
@@ -178,7 +194,11 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
 
 
 def _scan_loop(run_one, nseq, rep, is_random, rng):
-    """The rep / random scheduling (port of runSeq2.m:346-412). Returns True if aborted.
+    """The rep / random scheduling (port of runSeq2.m:346-412).
+
+    Returns ``False`` if the scan ran to completion, else the stop-reason sentinel ``run_one``
+    returned (``"abort"`` or ``"yield"``) -- forwarded verbatim so ``run_scan_group`` can map it
+    to a status. A ``rep=0`` forever scan only ever exits via such a sentinel.
 
     Faithful to runSeq2: ``is_random`` here is runSeq2's OWN global ``randperm``. In the
     production path this branch is NOT used -- ``sequence_runner._build_run_kwargs`` hands a
@@ -190,29 +210,34 @@ def _scan_loop(run_one, nseq, rep, is_random, rng):
         if rep == 0:
             idx = rng.randint(1, nseq)
             while True:
-                if run_one(idx):
-                    return True
+                stop = run_one(idx)
+                if stop:
+                    return stop
                 idx = rng.randint(1, nseq)
         idxs = list(range(1, nseq + 1)) * rep
         rng.shuffle(idxs)
         for cur in idxs:
-            if run_one(cur):
-                return True
+            stop = run_one(cur)
+            if stop:
+                return stop
         return False
 
     # sequential
     for i in range(1, nseq + 1):
-        if run_one(i):
-            return True
+        stop = run_one(i)
+        if stop:
+            return stop
     if rep == 0:
-        while True:                                     # run forever until aborted
+        while True:                                     # run forever until aborted / yielded
             for i in range(1, nseq + 1):
-                if run_one(i):
-                    return True
+                stop = run_one(i)
+                if stop:
+                    return stop
     for _ in range(2, rep + 1):
         for i in range(1, nseq + 1):
-            if run_one(i):
-                return True
+            stop = run_one(i)
+            if stop:
+                return stop
     return False
 
 

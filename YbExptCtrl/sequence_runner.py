@@ -66,6 +66,10 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
         dispatch = dispatch_descriptor
     if run is None:
         from run_seq import run_scan_group as run
+    # Background (calibration) scan? -> the control channel yields to foreground work at a shot
+    # boundary, AND run_job leaves completion to the consume loop's requeue_background (so a
+    # successful/yielded background job re-queues to cycle instead of being archived here).
+    is_background = _extract_background(descriptor_json)
     if control_factory is None:
         from control_channel import ControlChannel
         import rearrange_runtime
@@ -73,9 +77,11 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
         # Default control channel wires the rearrangement pause/resume hooks: a pause actively
         # drops the scan-long SLM lock, a resume reacquires + rewrites the loading phase. Both are
         # no-ops when no SLM session is active (non-rearrange scans), so this is harmless for them.
+        # is_background lets a background run bail out (yield) when foreground work is queued.
         def control_factory(srv):
             return ControlChannel(srv, on_pause=rearrange_runtime.on_pause,
-                                  on_resume=rearrange_runtime.on_resume)
+                                  on_resume=rearrange_runtime.on_resume,
+                                  is_background=is_background)
 
     # Opt-in code-snapshot REPLAY (#3): if THIS descriptor pins a ``code_snapshot``, run its
     # dispatch + resolution against that snapshot's experiment code (YbSeqs/YbSteps/YbScans/
@@ -94,9 +100,9 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
         try:
             disp = dispatch(descriptor_json)
         except NotMigratedError as e:
-            return _fail(server, job_id, "not migrated: %s" % e, None)
+            return _fail(server, job_id, "not migrated: %s" % e, None, finish=not is_background)
         except Exception as e:  # noqa: BLE001 - any malformed descriptor
-            return _fail(server, job_id, "descriptor error: %s" % e, None)
+            return _fail(server, job_id, "descriptor error: %s" % e, None, finish=not is_background)
 
         _safe(server, "set_seq_name", job_id, disp.seq_name)
 
@@ -105,7 +111,8 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
             try:
                 on_prep(disp)
             except Exception as e:  # noqa: BLE001
-                return _fail(server, job_id, "prep error: %s" % e, disp.seq_name)
+                return _fail(server, job_id, "prep error: %s" % e, disp.seq_name,
+                             finish=not is_background)
 
         # --- 3. run the scan (compile-per-point + per-seq gate live inside run_scan_group). ---
         control = control_factory(server) if server is not None else None
@@ -119,10 +126,16 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
                          description=_extract_description(descriptor_json),
                          **_build_run_kwargs(disp, rng))
         except Exception as e:  # noqa: BLE001 - a compile/run failure fails THIS job only
-            return _fail(server, job_id, "run error: %s" % e, disp.seq_name)
+            return _fail(server, job_id, "run error: %s" % e, disp.seq_name,
+                         finish=not is_background)
 
     status = result.get("status", "ok") if isinstance(result, dict) else "ok"
-    _finish(server, job_id, status)
+    # Foreground: archive via finish_job. Background: leave the job in 'running' for the consume
+    # loop's requeue_background, which re-queues a clean finish/yield (cycle) or archives an error
+    # -- so a successful background scan is NOT prematurely moved to history (which would break
+    # cycling and make requeue_background a no-op).
+    if not is_background:
+        _finish(server, job_id, status)
     return JobResult(status, disp.seq_name)
 
 
@@ -231,6 +244,24 @@ def _extract_description(descriptor_json):
         return str(desc) if desc else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _extract_background(descriptor_json):
+    """True iff the descriptor marks this a BACKGROUND (calibration) scan (the additive
+    ``background`` key emitted by ``scan_export`` / ``ybStartScan(background=True)``).
+
+    Like ``description``/``code_snapshot``, ``dispatch_descriptor`` does not model it -- the run
+    loop reads it straight off the payload. A background run yields to foreground work at a shot
+    boundary, and its completion is owned by the consume loop (``requeue_background``), NOT by
+    ``run_job``'s ``finish_job``. Tolerates str/bytes/dict; any problem -> False (normal run)."""
+    try:
+        d = descriptor_json
+        if isinstance(d, (str, bytes, bytearray)):
+            import json
+            d = json.loads(d)
+        return bool(isinstance(d, dict) and d.get("background"))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _default_data_root():
@@ -368,8 +399,11 @@ def _finish(server, job_id, status):
     _safe(server, "finish_job", job_id, status)
 
 
-def _fail(server, job_id, status, seq_name):
-    _finish(server, job_id, status)
+def _fail(server, job_id, status, seq_name, finish=True):
+    # finish=False for a BACKGROUND job: skip finish_job here so the consume loop's
+    # requeue_background owns completion (it archives the error, never re-queues it).
+    if finish:
+        _finish(server, job_id, status)
     return JobResult(status, seq_name)
 
 

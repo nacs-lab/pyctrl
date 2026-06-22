@@ -47,7 +47,8 @@ _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # public API
 # =========================================================================== #
 def scangroup_to_descriptor(scangroup, seq, opts=None, label=None,
-                            description=None, schema_version=SCHEMA_VERSION):
+                            description=None, background=False, cycle=True,
+                            schema_version=SCHEMA_VERSION):
     """Build a descriptor dict from a single-group :class:`ScanGroup` + a seq.
 
     Args:
@@ -62,6 +63,15 @@ def scangroup_to_descriptor(scangroup, seq, opts=None, label=None,
             scan-config sidecar (top-level ``description``) so the analysis dashboard can show
             it + search runs by it. Omitted when falsy -> the descriptor is byte-identical to
             before (purely additive).
+        background: mark this as a low-priority BACKGROUND (calibration) scan. A background
+            scan runs only when no foreground scan is running or queued, yields immediately
+            (at the next shot boundary) when foreground work is queued, and (when ``cycle``)
+            re-queues itself so calibrations cycle. Emitted as ``descriptor["background"]``
+            only when True -> non-background descriptors stay byte-identical (purely additive;
+            ``dispatch_descriptor`` ignores the key, same as ``description``/``code_snapshot``).
+        cycle: when ``background``, re-queue this scan at the back of the background lane after
+            each finite slice / yield so it runs continuously (round-robin). Emitted as
+            ``descriptor["cycle"]`` only when ``background`` is set.
 
     Returns:
         dict -- a descriptor conforming to ``descriptor.schema.json`` (the
@@ -100,6 +110,11 @@ def scangroup_to_descriptor(scangroup, seq, opts=None, label=None,
         desc["label"] = str(label)
     if description:
         desc["description"] = str(description)
+    if background:
+        # Additive: only emitted for background scans, so a normal descriptor is byte-identical
+        # to before. dispatch_descriptor ignores both keys (like description/code_snapshot).
+        desc["background"] = True
+        desc["cycle"] = bool(cycle)
     return desc
 
 

@@ -220,6 +220,20 @@ class ExptServer(object):
         }
         self.__last_fallback_active = False
 
+        # Background (calibration) lane state -- a LOW-PRIORITY queue of REAL scans that run
+        # only when no foreground scan is running/queued, yield the instant foreground work is
+        # queued, and (per-scan `cycle`) re-queue themselves to run continuously. Distinct from
+        # the DummySeq keep-alive above (which captures no data). Scheduling priority is
+        #   foreground job/descriptor > background calibration job > DummySeq keep-alive.
+        # `__background_enabled` is the global operator toggle (when False the consume loop skips
+        # the background lane entirely -- scans stay queued, untouched). `__background_running` /
+        # `__background_name` are surfaced (via last_seq_status) so the monitor shows
+        # "Idle (background calibration: <name>)" instead of a misleading "running". Guarded by
+        # __dummy_lock (idle-mode-adjacent state).
+        self.__background_enabled = True
+        self.__background_running = False
+        self.__background_name = ''
+
         # Per-shot health (pyctrl ADDITION; the MATLAB copy lacks the
         # 'shot_health' verb -- a benign divergence, the monitor degrades to
         # "no health info" against MATLAB). A bounded ring of recent per-shot
@@ -443,6 +457,15 @@ class ExptServer(object):
             with self.__dummy_lock:
                 val = self.__dummy_mode
             self.safe_send_string(addr, val)
+        elif msg_str == "set_background_enabled":
+            # Global operator toggle for the background (calibration) lane. When off the
+            # consume loop skips background scans entirely; queued background scans are NOT
+            # removed (they resume when re-enabled).
+            val_str = (self.safe_recv_string() or '').strip().lower()
+            self.set_background_enabled(val_str in ('1', 'true', 'yes', 'on'))
+            self.safe_send_string(addr, "ok")
+        elif msg_str == "get_background_enabled":
+            self.safe_send_string(addr, '1' if self.get_background_enabled() else '0')
         elif msg_str == "set_last_seq_meta":
             # MATLAB pushes {name, file_id} after caching a seq. captured_at
             # is stamped server-side so wall-clock skew between MATLAB and
@@ -479,6 +502,11 @@ class ExptServer(object):
                 status = dict(self.__last_seq_meta)
                 status['fallback_active'] = self.__last_fallback_active
                 status['mode'] = self.__dummy_mode
+                # Background (calibration) lane status -- the monitor shows
+                # "Idle (background calibration: <name>)" + toggle state off these.
+                status['background_enabled'] = self.__background_enabled
+                status['background_running'] = self.__background_running
+                status['background_name'] = self.__background_name
             self.safe_send(addr, json.dumps(status).encode('utf-8'))
         elif msg_str == "shot_health":
             # pyctrl ADDITION: recent per-shot error rollup so the monitor can
@@ -740,8 +768,14 @@ class ExptServer(object):
         ``__queue_lock``, so the single direction can't deadlock. Returns True iff it reset."""
         with self.__queue_lock:
             # __queue holds only 'queued'/'running' entries ('done'/'error' move to __history);
-            # ANY remaining entry (job OR not-yet-drained descriptor) means work is pending.
-            if any(e.get('state') in ('queued', 'running') for e in self.__queue):
+            # ANY remaining FOREGROUND entry (job OR not-yet-drained descriptor) means real work
+            # is pending. Background (calibration) entries are deliberately EXCLUDED: a cycling
+            # background scan keeps the queue non-empty forever, but from the foreground/operator
+            # view the machine is idle (the consume loop surfaces "background calibration" via the
+            # separate set_background_running flag). So only-background -> reset Running -> Init.
+            if any(e.get('state') in ('queued', 'running')
+                   and e.get('priority', 'normal') == 'normal'
+                   for e in self.__queue):
                 return False
             with self.__data_lock:
                 if self.seq_status == self.State.Running:
@@ -856,7 +890,8 @@ class ExptServer(object):
 
     # -------- Job queue (NEW) --------
 
-    def submit_job(self, payload, summary=None, job_id=None):
+    def submit_job(self, payload, summary=None, job_id=None,
+                   priority='normal', cycle=False):
         """Append a new job to the queue. `payload` is the MATLAB
         getByteStreamFromArray(...) blob the runner will decode with
         getArrayFromByteStream. `summary` is an optional dict produced by
@@ -897,6 +932,12 @@ class ExptServer(object):
                 'finish_ts': None,
                 'status': None,
                 'summary': summary if isinstance(summary, dict) else None,
+                # Scheduling lane: 'normal' (foreground, default) or 'background' (low-priority
+                # calibration). `cycle` only matters for background jobs (re-queue on
+                # finish/yield). link_descriptor_to_job overwrites both from the descriptor row
+                # when this job was built from a descriptor (the authoritative source).
+                'priority': 'background' if priority == 'background' else 'normal',
+                'cycle': bool(cycle),
             }
             # If the summary carries a scan filename, use it as a fallback
             # seqName display. The runner overwrites this with the real
@@ -991,7 +1032,8 @@ class ExptServer(object):
         with self.__queue_lock:
             for e in self.__queue:
                 if (e['state'] == 'queued'
-                        and e.get('kind', 'job') == 'job'):
+                        and e.get('kind', 'job') == 'job'
+                        and e.get('priority', 'normal') == 'normal'):
                     e['state'] = 'running'
                     e['start_ts'] = time.time()
                     # Baseline for the per-scan "sequences run" counter. nseq is a
@@ -1014,6 +1056,93 @@ class ExptServer(object):
                     # Freeze the per-scan sequence count (sequences whose images
                     # were published via seq_finish) so the history row keeps it
                     # after nseq has moved on to the next scan.
+                    base = e.get('nseq_start')
+                    if base is not None:
+                        e['seq_num'] = max(0, self.nseq - base)
+                    self.__history.insert(0, e)
+                    del self.__history[HISTORY_CAP:]
+                    self.__queue.pop(i)
+                    self.__save_queue_locked()
+                    return True
+            return False
+
+    def has_foreground_work(self) -> bool:
+        """True iff any FOREGROUND (priority=='normal') scan is queued, building, or running.
+
+        The yield / scheduling predicate. A running background scan polls this at every shot
+        boundary (via :meth:`ControlChannel.should_yield`) and the consume loop checks it before
+        popping a background job, so background work always defers to real work. MUST count
+        queued DESCRIPTORS too: a foreground scan submitted while a background job runs sits as a
+        queued descriptor until the loop's next dispatch pass -- which is blocked inside the
+        background run -- so a job-only test would never yield to a just-submitted foreground scan.
+        """
+        with self.__queue_lock:
+            for e in self.__queue:
+                if e.get('priority', 'normal') != 'normal':
+                    continue
+                kind = e.get('kind', 'job')
+                state = e.get('state')
+                if kind == 'job' and state in ('queued', 'running'):
+                    return True
+                if kind == 'descriptor' and state in ('queued', 'building'):
+                    return True
+            return False
+
+    def pop_next_background_job(self):
+        """Like :meth:`pop_next_job` but for the BACKGROUND lane (priority=='background').
+
+        The caller (consume loop) guards on ``not has_foreground_work()`` first, so a background
+        job is only ever popped when no foreground scan is running or queued."""
+        with self.__queue_lock:
+            for e in self.__queue:
+                if (e['state'] == 'queued'
+                        and e.get('kind', 'job') == 'job'
+                        and e.get('priority', 'normal') == 'background'):
+                    e['state'] = 'running'
+                    e['start_ts'] = time.time()
+                    e['nseq_start'] = self.nseq
+                    self.__save_queue_locked()
+                    return {'id': e['id'], 'payload': e['payload'], 'seqName': e['seqName']}
+            return None
+
+    def requeue_background(self, job_id: int, status: str, cycle_enabled: bool = True) -> bool:
+        """Background-lane completion: re-queue a finished/yielded background JOB at the BACK of
+        the queue so calibrations cycle (round-robin), or archive it.
+
+        RE-QUEUE (running -> queued, run state reset, moved to the back) when the row's ``cycle``
+        flag AND the global ``cycle_enabled`` are set AND ``status`` is a clean finish/yield
+        ('ok'/'yielded'). Otherwise ('aborted'/'error', or cycling off) ARCHIVE to history like
+        :meth:`finish_job`. ONE atomic transition under ``__queue_lock`` (never
+        finish-then-resubmit), so a yielded background job can be neither lost nor duplicated.
+        Queue-only: never touches ``__seq_req`` / ``seq_status`` (the yield set no control flag,
+        so the next foreground job's ``begin_scan`` sees a clean slate). Returns True if found."""
+        if isinstance(status, (bytes, bytearray)):
+            status = status.decode('ascii', errors='replace')
+        status = str(status or 'ok')
+        with self.__queue_lock:
+            for i, e in enumerate(self.__queue):
+                if e['id'] == job_id and e.get('priority', 'normal') == 'background':
+                    recycle = bool(cycle_enabled and e.get('cycle')
+                                   and status in ('ok', 'yielded'))
+                    if recycle:
+                        # Reset to a fresh 'queued' job and move to the BACK so any other
+                        # background calibration ahead of it runs next (round-robin).
+                        e['state'] = 'queued'
+                        e['start_ts'] = None
+                        e['finish_ts'] = None
+                        e['status'] = None
+                        e['file_id'] = ''
+                        e['nseq_start'] = None
+                        e['seq_num'] = None
+                        self.__queue.pop(i)
+                        self.__queue.append(e)
+                        self.__save_queue_locked()
+                        return True
+                    # Not cycling -> archive like finish_job (a yield without cycle is a clean
+                    # one-shot 'done'; an abort/error is recorded as such and not re-run).
+                    e['state'] = 'done' if status in ('ok', 'yielded') else 'error'
+                    e['finish_ts'] = time.time()
+                    e['status'] = status
                     base = e.get('nseq_start')
                     if base is not None:
                         e['seq_num'] = max(0, self.nseq - base)
@@ -1117,12 +1246,19 @@ class ExptServer(object):
             # dashboard queue panel reads. Best-effort: a malformed descriptor leaves it None
             # and the queue UI degrades gracefully.
             summary = None
+            priority = 'normal'
+            cycle = False
             if isinstance(parsed, dict):
                 try:
                     from scan_summary import build_descriptor_summary
                     summary = build_descriptor_summary(parsed)
                 except Exception:
                     summary = None
+                # Background (calibration) lane: the additive `background`/`cycle` descriptor
+                # keys (emitted by scan_export only for background scans). Default normal.
+                if parsed.get('background'):
+                    priority = 'background'
+                    cycle = bool(parsed.get('cycle', True))
             entry = {
                 'id': did,
                 'kind': 'descriptor',
@@ -1138,6 +1274,8 @@ class ExptServer(object):
                 'error_message': None,
                 'summary': summary,
                 'payload_size': 0,
+                'priority': priority,
+                'cycle': cycle,
             }
             self.__queue.append(entry)
             self.__save_queue_locked()
@@ -1151,7 +1289,25 @@ class ExptServer(object):
         jsondecode and start building."""
         with self.__queue_lock:
             for e in self.__queue:
-                if e.get('kind') == 'descriptor' and e['state'] == 'queued':
+                if (e.get('kind') == 'descriptor' and e['state'] == 'queued'
+                        and e.get('priority', 'normal') == 'normal'):
+                    e['state'] = 'building'
+                    e['start_ts'] = time.time()
+                    self.__save_queue_locked()
+                    return {
+                        'id': e['id'],
+                        'descriptor': e['descriptor'],
+                        'label': e.get('label', ''),
+                    }
+            return None
+
+    def pop_next_background_descriptor(self):
+        """Like :meth:`pop_next_descriptor` but for the BACKGROUND lane
+        (priority=='background'). Marks the next queued background descriptor 'building'."""
+        with self.__queue_lock:
+            for e in self.__queue:
+                if (e.get('kind') == 'descriptor' and e['state'] == 'queued'
+                        and e.get('priority', 'normal') == 'background'):
                     e['state'] = 'building'
                     e['start_ts'] = time.time()
                     self.__save_queue_locked()
@@ -1200,6 +1356,9 @@ class ExptServer(object):
                                     j['label'] = e.get('label')
                                 if e.get('seqName') and not j.get('seqName'):
                                     j['seqName'] = e.get('seqName')
+                                # Carry the scheduling lane from the descriptor (authoritative).
+                                j['priority'] = e.get('priority', 'normal')
+                                j['cycle'] = bool(e.get('cycle', False))
                                 break
                         self.__queue.pop(i)
                         self.__save_queue_locked()
@@ -1331,6 +1490,27 @@ class ExptServer(object):
             self.__last_fallback_active = bool(active)
 
     # ------------------------------------------------------------------ #
+    # background (calibration) lane -- global toggle + running indicator
+    # ------------------------------------------------------------------ #
+    def set_background_enabled(self, enabled):
+        """Global operator toggle for the background calibration lane. When False the consume
+        loop skips background scans (queued ones stay, untouched, and resume when re-enabled)."""
+        with self.__dummy_lock:
+            self.__background_enabled = bool(enabled)
+
+    def get_background_enabled(self) -> bool:
+        with self.__dummy_lock:
+            return self.__background_enabled
+
+    def set_background_running(self, flag, name=''):
+        """The consume loop sets this around a background-job run so the monitor can show
+        "Idle (background calibration: <name>)" instead of a misleading "running" (the coarse
+        get_status reads Running during the active shot, like any job)."""
+        with self.__dummy_lock:
+            self.__background_running = bool(flag)
+            self.__background_name = str(name) if (flag and name) else ''
+
+    # ------------------------------------------------------------------ #
     # per-shot health (pyctrl ADDITION) -- surface "shots are failing"
     # ------------------------------------------------------------------ #
     def reset_shot_health(self, scan_id=None):
@@ -1454,6 +1634,10 @@ class ExptServer(object):
             'payload_size': e.get('payload_size', 0),
             'summary': e.get('summary'),
             'file_id': e.get('file_id', ''),
+            # Scheduling lane (NEW): 'normal' (foreground) or 'background' (calibration). The
+            # monitor queue pane shows a 'background' badge off this; `cycle` = re-queue on done.
+            'priority': e.get('priority', 'normal'),
+            'cycle': bool(e.get('cycle', False)),
             # Descriptor-only fields (omitted for jobs; consumers tolerate
             # missing keys).
             'descriptor': e.get('descriptor'),

@@ -65,6 +65,7 @@ class FakeQueueServer:
         self._next_job_id = 100
         self.submitted = []                     # [(job_id, payload), ...]
         self.submitted_summaries = []           # [summary_or_None, ...] (parallel to submitted)
+        self.submitted_priorities = []          # [priority, ...] (parallel to submitted)
         self.linked = []                        # [(desc_id, job_id), ...]
         self.desc_finished = []                 # [(desc_id, status, msg), ...]
         self.dummy_running = []                 # [flag, ...]
@@ -74,7 +75,7 @@ class FakeQueueServer:
     def pop_next_descriptor(self):
         return self._descs.pop(0) if self._descs else None
 
-    def submit_job(self, payload, summary=None, job_id=None):
+    def submit_job(self, payload, summary=None, job_id=None, priority='normal', cycle=False):
         if self.submit_should_raise:
             raise RuntimeError("submit boom")
         # Mirror the real ExptServer: a given job_id is reused verbatim (pyctrl
@@ -86,6 +87,7 @@ class FakeQueueServer:
             jid = int(job_id)
         self.submitted.append((jid, payload))
         self.submitted_summaries.append(summary)
+        self.submitted_priorities.append(priority)
         return jid
 
     def link_descriptor_to_job(self, desc_id, job_id):
