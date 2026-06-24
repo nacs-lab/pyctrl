@@ -55,9 +55,16 @@ def build_descriptor_summary(descriptor):
     num_per_group = int(_num(runp.get("NumPerGroup"), 0))
     num_images = int(_num(runp.get("NumImages"), 0))
     rep = _rep_from_opts(desc)
-    nseqs = 1
+    # nseqs = product over DISTINCT scan dims. Co-swept params share a dim (same npts, enforced
+    # by ScanGroup) -> count that dim's length ONCE, not once per param -- otherwise a 3-param
+    # co-sweep on dim 1 reads as an 80x80x80 grid. A genuine multi-dim grid (different dims)
+    # still multiplies. Matches ScanGroup.nseq() / the run loop's _build_scan_order.
+    by_dim = {}
     for ax in axes:
-        nseqs *= max(int(ax.get("npts") or 1), 1)
+        by_dim[ax.get("dim", 0)] = max(int(ax.get("npts") or 1), 1)
+    nseqs = 1
+    for n in by_dim.values():
+        nseqs *= n
     if not axes:
         nseqs = 0
 
