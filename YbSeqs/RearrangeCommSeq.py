@@ -72,6 +72,33 @@ def _fold_distortion_zernike(args):
     return args
 
 
+def _fold_step_xyz(args):
+    """Fold scalar ``extras.step_x`` / ``step_y`` / ``step_z`` into the 3-vector
+    ``extras.step_size`` = ``[x, y, z]`` the pingponggrating xyz dispatcher reads.
+
+    Mirrors :func:`_fold_distortion_zernike`. Lets a scan sweep a SCALAR axis
+    (e.g. ``extras.step_y.scan(...)``) for a perpendicular (y) or axial (z) move
+    instead of a list-valued ``step_size`` axis. A list-valued swept axis breaks
+    the lab-side N-D scan grid: a 2-D scan with one ``(npts, 3)`` list-of-lists
+    axis plus a scalar axis fails to build ("concatenation axis doesn't match
+    along axis 0"), so the scan errors at dequeue before any shot runs. We build
+    the 3-vector here, per shot. An explicit ``step_size`` already present wins;
+    ``step_x`` / ``step_y`` / ``step_z`` are consumed (popped)."""
+    extras = args.get("extras") if isinstance(args, dict) else None
+    if not isinstance(extras, dict):
+        return args
+    comps = {}
+    for axis, key in (("x", "step_x"), ("y", "step_y"), ("z", "step_z")):
+        if key in extras:
+            comps[axis] = float(extras.pop(key))
+    if not comps:
+        return args
+    extras.setdefault("step_size", [comps.get("x", 0.0),
+                                    comps.get("y", 0.0),
+                                    comps.get("z", 0.0)])
+    return args
+
+
 @seq_capabilities(owns_frames=True)   # grabs + stores its own frames mid-sequence (the handoff)
 def RearrangeCommSeq(s):
     # Per-seq coordination flags (DynProps reads return a bool, not a SubProps).
@@ -205,6 +232,7 @@ def pre_run(s1):
     args = rearrange_runtime.collect_kwargs(s1.C.rearrange_kwargs)
     args = rearrange_runtime.translate_zernike_zN(args)
     args = _fold_distortion_zernike(args)
+    args = _fold_step_xyz(args)
     args.setdefault("client_scan_id", str(ctx.scan_id))
     try:
         c.setup_rearrangement(**args)
