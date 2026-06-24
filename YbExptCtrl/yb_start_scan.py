@@ -42,8 +42,67 @@ Design inspired by the MATLAB original; no brassboard-seq code.
 """
 
 import json
+import os
+import time
 
 from scan_export import scangroup_to_descriptor
+
+# Process/import anchors for client-submit timing: perf_counter for durations, wall for the
+# absolute "descriptor enqueued at" stamp that cross-correlates with the backend's bucket-B log.
+# For scans that import yb_start_scan before build() (e.g. BeamProfilePushoutScan), the gap from
+# this import to the ybStartScan() call captures build()+arg-parse too.
+_IMPORT_PERF = time.perf_counter()
+
+
+def _client_timing_on():
+    """Same toggle as the run loop: env ``YB_RUN_TIMING`` truthy OR the ``RUN_TIMING_ON`` file.
+
+    Zero added cost on a normal submit when OFF (an env read + at most one ``os.path.exists``)."""
+    v = str(os.environ.get("YB_RUN_TIMING", "")).strip().lower()
+    if v not in ("", "0", "false", "no", "off"):
+        return True
+    try:
+        from run_timing import log_dir
+        return os.path.exists(os.path.join(log_dir(), "RUN_TIMING_ON"))
+    except Exception:  # noqa: BLE001 - any probe failure -> treated as OFF
+        return False
+
+
+def _emit_client_timing(label, did, t_enter, t_export, t_json, t_send, wall_send, desc_bytes):
+    """Print + append one client-submit timing row (best-effort; never raises into a submit).
+
+    ``t_enter`` is perf_counter at ybStartScan entry (after build); ``wall_send`` is ``time.time()``
+    right before the ZMQ send -> the absolute moment the descriptor is enqueued on the backend, the
+    anchor that lines up with the runner log's ``setup timing (bucket B ...)`` stamp."""
+    try:
+        ms = lambda a, b: (b - a) * 1e3
+        pre_ms = (t_enter - _IMPORT_PERF) * 1e3   # import(yb_start_scan) -> ybStartScan(): build()+args
+        export_ms, json_ms, send_ms = ms(t_enter, t_export), ms(t_export, t_json), ms(t_json, t_send)
+        # Full submit-script wall-time from PROCESS SPAWN to send (interpreter + ALL imports +
+        # build + export + json + send) via the OS process create-time. Lets the analyzer split the
+        # pre-send gap into "human delay before launch" vs "slow script launch" without guessing.
+        try:
+            import psutil
+            proc_age_ms = (wall_send - psutil.Process().create_time()) * 1e3
+        except Exception:  # noqa: BLE001 - psutil missing/blocked -> -1 sentinel
+            proc_age_ms = -1.0
+        lt = time.localtime(wall_send)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", lt) + (".%03d" % int((wall_send % 1) * 1000))
+        print("[client_timing] %s id=%s | proc_age=%.0fms (spawn->send) build+args=%.1fms "
+              "export=%.1fms json=%.1fms send=%.1fms desc_bytes=%d | descriptor ENQUEUED at %s"
+              % (label, did, proc_age_ms, pre_ms, export_ms, json_ms, send_ms, desc_bytes, stamp))
+        from run_timing import log_dir
+        path = os.path.join(log_dir(), "client_submit_timing.csv")
+        new = not os.path.exists(path)
+        with open(path, "a", encoding="utf-8") as fh:
+            if new:
+                fh.write("wall_enqueued,label,id,proc_age_ms,build_args_ms,export_ms,json_ms,"
+                         "send_ms,desc_bytes\n")
+            fh.write("%s,%s,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n"
+                     % (stamp, str(label).replace(",", " "), did, proc_age_ms, pre_ms, export_ms,
+                        json_ms, send_ms, desc_bytes))
+    except Exception:  # noqa: BLE001 - diagnostics must never break a submit
+        pass
 
 
 def ybStartScan(seq, scangroup, *, url=None, label=None, description=None,
@@ -75,15 +134,25 @@ def ybStartScan(seq, scangroup, *, url=None, label=None, description=None,
             is ``g.runp().Scramble`` (default off), NOT the ``random`` opt -- see the module
             docstring.
     """
+    timing = _client_timing_on()
+    t_enter = time.perf_counter()
     desc = scangroup_to_descriptor(scangroup, seq, opts=opts or None, label=label,
                                    description=description, background=background, cycle=cycle)
+    t_export = time.perf_counter()
     desc_json = json.dumps(desc, ensure_ascii=False)
+    t_json = time.perf_counter()
     lbl = label or desc["seq"]
+    wall_send = time.time()           # absolute moment the descriptor is handed to the backend
     if submit is None:
         from runner import resolve_url
         target = resolve_url([url] if url else [])
-        return submit_descriptor(target, desc_json, lbl)
-    return int(submit(desc_json, lbl))
+        did = submit_descriptor(target, desc_json, lbl)
+    else:
+        did = int(submit(desc_json, lbl))
+    if timing:
+        _emit_client_timing(lbl, did, t_enter, t_export, t_json, time.perf_counter(),
+                            wall_send, len(desc_json))
+    return did
 
 
 def submit_descriptor(url, descriptor_json, label="", timeout_ms=2000):
