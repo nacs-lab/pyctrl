@@ -123,10 +123,11 @@ def _axes_from_params(params):
 # =========================================================================== #
 # Surface B -- the DataManager scan-config fields, from the (dispatched) ScanGroup
 # =========================================================================== #
-def scangroup_scan_config(scangroup, scan_name=None, expconfig=None, description=None):
+def scangroup_scan_config(scangroup, scan_name=None, expconfig=None, description=None,
+                          background=False):
     """Build the scan-config fields the monitor's ``DataManager`` reads for live scan-info.
 
-    Returns ``{ScanGroup, ScanName?, description?, PlotScale, expConfig?}`` where
+    Returns ``{ScanGroup, ScanName?, description?, background?, PlotScale, expConfig?}`` where
     ``ScanGroup.base.vars`` is
     the ``{params:[dim-struct,...], size:[...]}`` shape ``extract_scan_dims`` expects (the
     swept leaves + per-dim length) and ``ScanGroup.base.params`` is the fixed/``g()``-override
@@ -134,8 +135,10 @@ def scangroup_scan_config(scangroup, scan_name=None, expconfig=None, description
     ``ScanName.scanname`` (uint16 char codes, as ``_extract_scan_title`` decodes). ``description``
     (the descriptor's free-text run purpose/context) is stamped as a top-level ``description`` key
     only when non-empty -- the analysis dashboard reads it for the run's collapsible note + run
-    search. ``expconfig`` (the baseline ``SeqConfig.consts`` snapshot) is embedded verbatim for
-    provenance.
+    search. ``background`` (True for a background/calibration-lane run) is stamped as a top-level
+    ``background`` key only when True, so the saved scan is explicitly marked as a background run
+    (the data is otherwise saved exactly like a normal scan, with its own scan_id + folder).
+    ``expconfig`` (the baseline ``SeqConfig.consts`` snapshot) is embedded verbatim for provenance.
 
     Best-effort: a ScanGroup that doesn't support the query API yields a minimal dict."""
     cfg = {}
@@ -159,6 +162,8 @@ def scangroup_scan_config(scangroup, scan_name=None, expconfig=None, description
         cfg["ScanName"] = {"scanname": [ord(c) for c in str(scan_name)]}
     if description:
         cfg["description"] = str(description)
+    if background:
+        cfg["background"] = True
     if expconfig is not None:
         cfg["expConfig"] = _jsonable(expconfig)
     return cfg

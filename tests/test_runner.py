@@ -59,9 +59,12 @@ class TestSingleBackendGuard:
 class FakeQueueServer:
     """An ExptServer-shaped fake for the descriptor/job queue + dummy flag."""
 
-    def __init__(self, descriptors=(), jobs=()):
+    def __init__(self, descriptors=(), jobs=(), bg_jobs=(), bg_descs=(),
+                 background_enabled=True, foreground_work=False):
         self._descs = list(descriptors)        # each {'id','descriptor'}
         self._jobs = list(jobs)                 # each {'id','payload'}
+        self._bg_jobs = list(bg_jobs)           # each {'id','payload','seqName'} (background lane)
+        self._bg_descs = list(bg_descs)         # background descriptors
         self._next_job_id = 100
         self.submitted = []                     # [(job_id, payload), ...]
         self.submitted_summaries = []           # [summary_or_None, ...] (parallel to submitted)
@@ -69,11 +72,35 @@ class FakeQueueServer:
         self.linked = []                        # [(desc_id, job_id), ...]
         self.desc_finished = []                 # [(desc_id, status, msg), ...]
         self.dummy_running = []                 # [flag, ...]
+        self.bg_running = []                    # [(flag, name), ...]
+        self.requeued = []                      # [(job_id, status), ...]
         self.mark_idle_calls = 0                 # end-of-job idle-status resets
         self.submit_should_raise = False
+        self._background_enabled = background_enabled
+        self._foreground_work = foreground_work
 
     def pop_next_descriptor(self):
         return self._descs.pop(0) if self._descs else None
+
+    # -- background lane --
+    def get_background_enabled(self):
+        return self._background_enabled
+
+    def has_foreground_work(self):
+        return self._foreground_work
+
+    def pop_next_background_descriptor(self):
+        return self._bg_descs.pop(0) if self._bg_descs else None
+
+    def pop_next_background_job(self):
+        return self._bg_jobs.pop(0) if self._bg_jobs else None
+
+    def requeue_background(self, job_id, status, cycle_enabled=True):
+        self.requeued.append((job_id, status))
+        return True
+
+    def set_background_running(self, flag, name=''):
+        self.bg_running.append((flag, name))
 
     def submit_job(self, payload, summary=None, job_id=None, priority='normal', cycle=False):
         if self.submit_should_raise:
@@ -266,6 +293,86 @@ class TestConsumeLoop:
             run_job_fn=lambda *a, **k: ran.append(1) or type("R", (), {"status": "ok"})(),
             dispatch_pop=lambda s: 0, sleep=lambda dt: None)
         assert ran == [1]                        # job ran; loop survived the reset error
+
+
+# --------------------------------------------------------------------------- #
+# consume_loop -- background (calibration) tier: foreground > background > idle
+# --------------------------------------------------------------------------- #
+class TestConsumeLoopBackground:
+    def test_runs_a_background_job_and_requeues(self):
+        # No foreground work -> the background job runs via run_job_fn, then requeue_background.
+        srv = FakeQueueServer(bg_jobs=[{"id": 7, "payload": b"{}", "seqName": "Cal"}])
+        calls = []
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1),
+            run_job_fn=lambda s, p, job_id=None, **k:
+                calls.append((p, job_id)) or type("R", (), {"status": "ok"})(),
+            dispatch_pop=lambda s: 0, dispatch_bg=lambda s: 0,
+            idle=type("I", (), {"step": lambda self, sl: None})(), sleep=lambda dt: None)
+        assert calls == [(b"{}", 7)]
+        assert srv.requeued == [(7, "ok")]               # completion owned by the loop
+        assert srv.bg_running == [(1, "Cal"), (0, "")]   # running indicator set then cleared
+        assert srv.mark_idle_calls == 1                  # foreground-idle status reset
+
+    def test_foreground_work_blocks_background(self):
+        # has_foreground_work() True -> background lane is skipped; idle keep-alive runs instead.
+        srv = FakeQueueServer(bg_jobs=[{"id": 7, "payload": b"{}"}], foreground_work=True)
+        steps = []
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
+            dispatch_bg=lambda s: 0,
+            idle=type("I", (), {"step": lambda self, sl: steps.append("step")})(),
+            sleep=lambda dt: None)
+        assert steps == ["step"]                         # idle ran, NOT the background job
+        assert srv.requeued == []
+        assert srv.dummy_running == [1]
+
+    def test_disabled_toggle_skips_background(self):
+        # Global toggle off -> background lane skipped even with no foreground work.
+        srv = FakeQueueServer(bg_jobs=[{"id": 7, "payload": b"{}"}], background_enabled=False)
+        steps = []
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
+            dispatch_bg=lambda s: 0,
+            idle=type("I", (), {"step": lambda self, sl: steps.append("step")})(),
+            sleep=lambda dt: None)
+        assert steps == ["step"]
+        assert srv.requeued == []
+
+    def test_foreground_job_preempts_background(self):
+        # A queued foreground job is popped first; the background lane is never consulted.
+        srv = FakeQueueServer(jobs=[{"id": 1, "payload": b"fg"}],
+                              bg_jobs=[{"id": 7, "payload": b"bg"}])
+        seen = []
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1),
+            run_job_fn=lambda s, p, job_id=None, **k:
+                seen.append((p, job_id)) or type("R", (), {"status": "ok"})(),
+            dispatch_pop=lambda s: 0, dispatch_bg=lambda s: 0, sleep=lambda dt: None)
+        assert seen == [(b"fg", 1)]                      # foreground ran; background untouched
+        assert srv.requeued == []
+
+    def test_yielded_background_is_requeued(self):
+        # A background run that yields (foreground appeared mid-run) is re-queued, not discarded.
+        srv = FakeQueueServer(bg_jobs=[{"id": 7, "payload": b"{}", "seqName": "Cal"}])
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1),
+            run_job_fn=lambda *a, **k: type("R", (), {"status": "yielded"})(),
+            dispatch_pop=lambda s: 0, dispatch_bg=lambda s: 0, sleep=lambda dt: None)
+        assert srv.requeued == [(7, "yielded")]
+
+    def test_coarse_server_without_background_lane_falls_to_idle(self):
+        # A server lacking the background methods (older/MATLAB) -> background tier is a no-op;
+        # the dummy keep-alive runs. (Uses a minimal server with only the foreground surface.)
+        class Coarse:
+            def pop_next_job(self):
+                return None
+        steps = []
+        runner.consume_loop(
+            Coarse(), should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
+            idle=type("I", (), {"step": lambda self, sl: steps.append("step")})(),
+            sleep=lambda dt: None)
+        assert steps == ["step"]
 
 
 # --------------------------------------------------------------------------- #

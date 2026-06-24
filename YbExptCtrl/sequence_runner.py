@@ -124,6 +124,7 @@ def run_job(server, descriptor_json, job_id=None, dispatch=None, run=None,
             # (ybBuildScanJob's Scan.Params), so the scan loop just RUNS the order it is given.
             result = run(disp.seq, disp.scangroup, control=control, scan_name=disp.label,
                          description=_extract_description(descriptor_json),
+                         background=is_background,
                          **_build_run_kwargs(disp, rng))
         except Exception as e:  # noqa: BLE001 - a compile/run failure fails THIS job only
             return _fail(server, job_id, "run error: %s" % e, disp.seq_name,

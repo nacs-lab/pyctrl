@@ -28,7 +28,8 @@ class FakeRunSeq:
 class Recorder:
     """Bundles injected fakes + their call logs for one run."""
 
-    def __init__(self, abort_after=None, begin=4242, restart_once_tag=None):
+    def __init__(self, abort_after=None, begin=4242, restart_once_tag=None,
+                 yield_after=None):
         self.compiles = []          # swept values compiled (one per distinct point)
         self.runs = []              # tags run_real was called with (incl. retries)
         self.pre = []               # (cur_seq_num, arg) seen by pre_cb
@@ -36,7 +37,9 @@ class Recorder:
         self.seq_nums = []          # on_seq_num publications
         self.teardowns = 0
         self.checks = 0
+        self.yields = 0             # should_yield() calls
         self._abort_after = abort_after
+        self._yield_after = yield_after
         self._begin = begin
         self._restart_once_tag = restart_once_tag
         self._restart_fired = set()
@@ -63,6 +66,10 @@ class Recorder:
     def check_pause_abort(self):
         self.checks += 1
         return self._abort_after is not None and self.checks >= self._abort_after
+
+    def should_yield(self):
+        self.yields += 1
+        return self._yield_after is not None and self.yields >= self._yield_after
 
     def pre_cb(self, n, arg):
         self.pre.append((n, arg))
@@ -140,6 +147,31 @@ def test_gate_abort_stops_and_does_not_count_aborted_shot():
     assert rec.runs == [1.0]
     assert sc.G.seq_id() == 2                         # advanced once (shot 1 only)
     assert rec.teardowns == 1                         # teardown fires on the abort path too
+
+
+def test_gate_yield_stops_with_yielded_status():
+    # A background scan yields (steps aside) at the 2nd shot's gate -> status 'yielded',
+    # only shot 1 completed. Same clean-stop boundary as abort, different status.
+    rec = Recorder(yield_after=2)
+    res, sc = _run(_scan([1.0, 2.0, 3.0]), rec)
+    assert res == {"status": "yielded", "nseq": 1}
+    assert rec.runs == [1.0]
+    assert rec.teardowns == 1                         # clean teardown on the yield path too
+
+
+def test_abort_precedes_yield():
+    # When both trip at the same gate, abort wins (discard) over yield (re-queue).
+    rec = Recorder(abort_after=2, yield_after=2)
+    res, _ = _run(_scan([1.0, 2.0, 3.0]), rec)
+    assert res["status"] == "aborted"
+
+
+def test_rep_zero_yields_to_foreground():
+    # A forever (rep=0) background scan still bails out via yield (not just abort).
+    rec = Recorder(yield_after=3)
+    res, _ = _run(_scan([1.0, 2.0]), rec, rep=0)
+    assert res["status"] == "yielded"
+    assert res["nseq"] == 2                            # 2 shots before the 3rd gate yielded
 
 
 def test_begin_scan_none_is_a_refused_start():

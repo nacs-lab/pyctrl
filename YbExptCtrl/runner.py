@@ -548,7 +548,8 @@ def make_engine_run(server, camera, seq_config, log=None):
     from run_seq import run_scan_group
     log = log or _noop_log
 
-    def run(seq, scangroup, control=None, scan_name=None, description=None, **opts):
+    def run(seq, scangroup, control=None, scan_name=None, description=None,
+            background=False, **opts):
         num_images = _num_images(scangroup)
         post = list(opts.pop("post_cb", []) or [])
         pre = list(opts.pop("pre_cb", []) or [])
@@ -572,7 +573,7 @@ def make_engine_run(server, camera, seq_config, log=None):
         with run_timing.setup_stage("scan_prep"):   # incl. code-snapshot hashing (bucket B)
             _write_scan_prep(scan_id, scangroup, camera, num_images, log,
                              scan_name=scan_name, seq_config=seq_config, params=params_order,
-                             seq=seq, description=description)
+                             seq=seq, description=description, background=background)
         # Stamp the data-folder id (scan_id) onto the running job so the queue/history shows it
         # (MATLAB fills this via set_job_file_id; pyctrl mints scan_id here, with no job_id in
         # scope, so set_running_job_file_id targets the single running job). Display + a
@@ -1178,7 +1179,7 @@ def _scan_descriptor(scangroup, seq, log):
 
 def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
                      scan_name=None, seq_config=None, params=None, seq=None,
-                     description=None):
+                     description=None, background=False):
     """Write the scan-config the monitor's DataManager reads (best-effort; never crash a job).
 
     frameSize = the camera ROI (W, H); the rest from the descriptor runp. ``params`` is the
@@ -1194,7 +1195,8 @@ def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
         from scan_prep import write_scan_config
         roi = camera.current_roi() if camera is not None else [0, 0, 0, 0]
         rp = scangroup.runp()
-        scan_meta = _scan_meta(scangroup, scan_name, seq_config, log, description=description)
+        scan_meta = _scan_meta(scangroup, scan_name, seq_config, log, description=description,
+                               background=background)
         num_per_group = len(params) if params is not None else int(_runp_num(rp, "NumPerGroup", 0))
         # Per-image loading-pattern declaration (port of ybLoadingPatternsJson): drives the live
         # monitor's per-pattern grids/thresholds + the offline analysis's per-pattern calibration.
@@ -1217,16 +1219,17 @@ def _write_scan_prep(scan_id, scangroup, camera, num_images, log, *,
         log("scan-config write failed: %s" % e)
 
 
-def _scan_meta(scangroup, scan_name, seq_config, log, description=None):
+def _scan_meta(scangroup, scan_name, seq_config, log, description=None, background=False):
     """Build the DataManager scan-info fields (ScanGroup/ScanName/PlotScale/expConfig) from the
     dispatched ScanGroup. ``description`` (the descriptor's free-text run purpose) is stamped as a
-    top-level ``description`` key. Best-effort -> ``None`` (frame-metadata-only config) on any
-    failure."""
+    top-level ``description`` key; ``background`` stamps a top-level ``background`` flag so the
+    saved scan is explicitly marked as a background/calibration run. Best-effort -> ``None``
+    (frame-metadata-only config) on any failure."""
     try:
         from scan_summary import scangroup_scan_config
         consts = getattr(seq_config, "consts", None) if seq_config is not None else None
         return scangroup_scan_config(scangroup, scan_name=scan_name, expconfig=consts,
-                                     description=description)
+                                     description=description, background=background)
     except Exception as e:  # noqa: BLE001
         log("scan-meta build skipped: %s" % e)
         return None

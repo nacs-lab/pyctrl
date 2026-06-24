@@ -264,10 +264,12 @@ def test_run_job_records_aborted_status(server):
     def dispatch(_descriptor_json):
         return _Disp(sg)
 
-    def run(seq, scangroup, control, scan_name, **kw):
+    def run(seq, scangroup, control, scan_name, description=None, background=False, **kw):
         # Drive the REAL scan loop with injected compile/run seams + the real control channel
         # run_job built over the real server. kw is the prep-derived run order (empty here ->
-        # plain sequential, since the stub's runp() raises).
+        # plain sequential, since the stub's runp() raises). description/background are
+        # descriptor-level fields run_job threads to the engine run seam (make_engine_run.run),
+        # NOT run_scan_group kwargs -- absorb them here so they don't reach run_scan_group.
         return run_scan_group(
             _seqfn, scangroup, control=control, compile_point=_compile_point,
             run_real=_DwellRunReal(_DWELL), seq_config=SeqConfig(), **kw)

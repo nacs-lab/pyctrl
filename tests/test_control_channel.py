@@ -184,3 +184,66 @@ def _no_sleep(_dt):
 
 def _forbid_sleep(_dt):
     raise AssertionError("gate slept on a non-pause request")
+
+
+# --------------------------------------------------------------------------- #
+# should_yield -- the background-lane yield predicate (NOT a SeqRequest)
+# --------------------------------------------------------------------------- #
+class _FgSource:
+    """A control source exposing has_foreground_work (+ a SeqRequest we assert stays clean)."""
+
+    def __init__(self, fg):
+        self._fg = fg
+        self.req = SeqRequest.NoRequest
+        self.checked = 0
+
+    def check_request(self):
+        self.checked += 1
+        return int(self.req)
+
+    def has_foreground_work(self):
+        return self._fg
+
+    def start_scan(self):
+        return 1
+
+
+class TestShouldYield:
+    def test_foreground_control_never_yields(self):
+        # is_background=False -> should_yield is always False, even with foreground work queued.
+        cc = ControlChannel(_FgSource(fg=True), is_background=False)
+        assert cc.should_yield() is False
+
+    def test_background_yields_when_foreground_queued(self):
+        cc = ControlChannel(_FgSource(fg=True), is_background=True)
+        assert cc.should_yield() is True
+
+    def test_background_does_not_yield_without_foreground(self):
+        cc = ControlChannel(_FgSource(fg=False), is_background=True)
+        assert cc.should_yield() is False
+
+    def test_source_without_predicate_never_yields(self):
+        # getattr-guard: an older source lacking has_foreground_work -> no yield (no crash).
+        class _NoPred:
+            def check_request(self):
+                return int(SeqRequest.NoRequest)
+
+        cc = ControlChannel(_NoPred(), is_background=True)
+        assert cc.should_yield() is False
+
+    def test_should_yield_never_touches_seq_request(self):
+        # Cardinal rule: yielding sets NO control flag, so the incoming foreground scan's
+        # begin_scan sees a clean slate (NoRequest). should_yield must not even read it.
+        src = _FgSource(fg=True)
+        cc = ControlChannel(src, is_background=True)
+        cc.should_yield()
+        assert src.checked == 0
+        assert src.req == SeqRequest.NoRequest
+
+    def test_predicate_failure_is_swallowed(self):
+        class _Boom:
+            def has_foreground_work(self):
+                raise RuntimeError("boom")
+
+        cc = ControlChannel(_Boom(), is_background=True)
+        assert cc.should_yield() is False

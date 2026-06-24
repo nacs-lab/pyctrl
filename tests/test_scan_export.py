@@ -237,3 +237,52 @@ class TestYbStartScan:
 
         ybStartScan("S", g, label="my run", submit=fake_submit)
         assert seen["lb"] == "my run"
+
+
+# --------------------------------------------------------------------------- #
+# background (calibration) lane: additive descriptor keys (byte-identical when off)
+# --------------------------------------------------------------------------- #
+class TestBackgroundFlags:
+    def test_absent_by_default(self):
+        # A normal scan's descriptor must NOT carry background/cycle (purely additive ->
+        # byte-identical to before the feature).
+        g = ScanGroup()
+        g().X = 1.0
+        d = scangroup_to_descriptor(g, "S")
+        assert "background" not in d
+        assert "cycle" not in d
+
+    def test_present_when_background(self):
+        g = ScanGroup()
+        g().X = 1.0
+        d = scangroup_to_descriptor(g, "S", background=True)
+        assert d["background"] is True
+        assert d["cycle"] is True                    # cycle defaults True for background
+
+    def test_cycle_false_emitted(self):
+        g = ScanGroup()
+        g().X = 1.0
+        d = scangroup_to_descriptor(g, "S", background=True, cycle=False)
+        assert d["background"] is True
+        assert d["cycle"] is False
+
+    def test_cycle_alone_does_not_leak_without_background(self):
+        # cycle is meaningless without background -> not emitted, descriptor stays clean.
+        g = ScanGroup()
+        g().X = 1.0
+        d = scangroup_to_descriptor(g, "S", cycle=False)
+        assert "background" not in d
+        assert "cycle" not in d
+
+    def test_ybstartscan_threads_background(self):
+        g = ScanGroup()
+        g().X = 1.0
+        captured = {}
+
+        def fake_submit(dj, lb):
+            captured["desc"] = json.loads(dj)
+            return 5
+
+        ybStartScan("S", g, background=True, cycle=False, submit=fake_submit)
+        assert captured["desc"]["background"] is True
+        assert captured["desc"]["cycle"] is False
