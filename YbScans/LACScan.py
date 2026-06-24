@@ -52,8 +52,7 @@ def LACScan(url=None, reps=None):
     # 11 pts @ 2 mA. matlab_colon -> MATLAB-exact float64 (X feeds VBiasCoilX,
     # a byte-affecting analog value). Recenter / expand next run if the peak
     # pins to an edge or sits off-center.
-    xvals = matlab_colon(0.030, 0.002, 0.050)                # 11 pts, centered on 0.040 A
-    #g().GreenMOT.BiasCoilCurrent.X.scan(1, xvals)
+    # g().GreenMOT.BiasCoilCurrent.X.scan(1, xvals)
 
     # ---- everything else at expConfig defaults (unscanned -> commented out) --
     # The 2026-06-05 "fast+flat" loading optimum is already the apparatus default
@@ -61,21 +60,29 @@ def LACScan(url=None, reps=None):
     # Phase-8 overrides differ slightly from expConfig and now fall back to it:
     # BlueMOT.LoadingTime 0.23 -> 0.30 s and GreenMOT.CoolDown.HoldTime 0.12 ->
     # 0.20 s (a touch more saturated/longer); the rest are identical to expConfig.
-    g().Init.VSLMservo = 3.5
-    ampscan = np.linspace(0.4, 0.6, 10)
-    g().Imag399.Amp1.scan(1, ampscan)  
-    g().Imag399.Amp2.scan(1, ampscan)  
-    # g().BlueMOT.LoadingTime = 0.23
+    # g().Init.VSLMservo = 3.5
+    ampscan = np.linspace(0.1, 0.5, 10)
+    
+    #g().Imag399.Amp1.scan(1, ampscan)  
+    #g().Imag399.Amp2.scan(2, ampscan)  
+    g().Imag399.Amp1 = 0.4 
+    g().Imag399.Amp2 = 0.3
+    g().BlueMOT.LoadingTime = 0.5
     # g().BlueMOT.FreqDetuning = -44e6
     # g().BlueMOT.Amp = 0.6
-    # g().GreenMOT.BiasCoilCurrent.Y = 0.268
-    # g().GreenMOT.BiasCoilCurrent.Z = 0.18
+    # g().GreenMOT.BiasCoilCurrent.X.scan(1, np.linspace(0.037, 0.041, 12))
+    # g().GreenMOT.BiasCoilCurrent.Y.scan(2, np.linspace(0.24, 0.28, 18))
+    # g().GreenMOT.BiasCoilCurrent.Z.scan(1, np.linspace(0.16, 0.20, 11))
     # g().GreenMOT.PowerBroaden.HandoverTime = 0.015
-    # g().GreenMOT.CoolDown.FreqDetuning = 0.35e6
-    # g().GreenMOT.CoolDown.Amp = 0.25
-    # g().GreenMOT.CoolDown.HoldTime = 0.12
+    g().GreenMOT.CoolDown.FreqDetuning = 0.5e6
+    g().GreenMOT.CoolDown.Amp = 0.25
+    g().GreenMOT.CoolDown.HoldTime = 0.2
     # g().GreenMOT.CoolDown.RampdownTime = 0.05
-    # LAC at default (single-atom verified).
+    # LAC
+    # g().LAC.FreqDetuning = 0.11e6
+    # g().LAC.Amp = 0.2
+    g().LAC.Time = 0.02 #.scan(1, np.linspace(0.02, 0.05, 5))
+    # g().LAC.DeadTime = 10e-3
 
     # ---- run params (runp) ------------------------------------------------
     rp = g.runp()
@@ -89,17 +96,17 @@ def LACScan(url=None, reps=None):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    g.runp().loading_phase = "phase/47x47_feedbackwarm4.pt"   # server-side WGS phase path
-    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    g.runp().loading_phase = "phase/33x33_feedback9.pt"   # server-side WGS phase path
+    g.runp().loading_defocus = -5;                     # ANSI z4 loading defocus (rad)
 
     opts = {}
     if reps is not None:
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
 
-    did = ybStartScan("TweezerLoadingSeq", g, url=url, label="LACScan_Xbias", **opts)
-    print("submitted LACScan X-bias sweep (%d pts %.3f..%.3f A) -> descriptor id %s (url=%s)"
-          % (len(xvals), xvals[0], xvals[-1], did, url or "default"))
+    did = ybStartScan("TweezerLoadingSeq", g, url=url, label="LACScan", **opts)
+    # print("submitted LACScan sweep (%d pts %.3f..%.3f A) -> descriptor id %s (url=%s)"
+    #       % (len(xvals), xvals[0], xvals[-1], did, url or "default"))
     return did
 
 

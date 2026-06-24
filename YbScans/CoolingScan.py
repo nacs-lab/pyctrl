@@ -91,7 +91,7 @@ def _set_fixed(g, c, blue_amp, *, blue_amp2=None, blue_det_hz=None, time_s=100e-
     The TWO 399 imaging beams are set independently: beam 1 = ``blue_amp`` (-> AmpAbsImag), beam 2 =
     ``blue_amp2`` (-> Amp399Imag2). ``blue_amp2=None`` makes beam 2 TRACK beam 1 (the legacy
     single-imaging-beam behaviour -- keeps build()/build_blue_amp byte-identical). When optimising
-    cooling for a pattern with two distinct imaging amps (e.g. 47x47_feedbackwarm4 -> 0.30/0.20),
+    cooling for a pattern with two distinct imaging amps (e.g. 33x33_feedback9 -> 0.30/0.20),
     pass blue_amp/blue_amp2 = the pattern's Imag399.Amp1/Amp2 so the hold images at the real beams.
     """
     g().Pushout.Time = float(time_s)
@@ -124,8 +124,8 @@ def _runp(g):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    # g.runp().loading_phase = "phase/33x33_uniform.pt"   # server-side WGS phase path
-    # g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    g.runp().loading_phase = "phase/33x33_feedback9.pt"   # server-side WGS phase path
+    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
 
 
 def build_blue_amp(amps):
@@ -137,7 +137,7 @@ def build_blue_amp(amps):
     _set_fixed(g, c, blue_amp=0.3, fix_blue=False, fix_x=True, fix_h=True)
     amps_f = [float(a) for a in amps]
     g().Pushout.Blue.Amp1.scan(1, amps_f)
-    g().Pushout.Blue.Amp2.scan(1, amps_f)   # beam 2 co-varies with beam 1 on the SAME axis (dim 1)
+    g().Pushout.Blue.Amp2.scan(2, amps_f)
     _runp(g)
     return g
 
@@ -170,7 +170,7 @@ def build_2d(beam, blue_amp, freq_det, amps, fixed_freq=None, fixed_amp=None, ti
     return g
 
 
-def build_amp2d(amp1, amp2, time_s=0.2, pattern="47x47_feedbackwarm4"):
+def build_amp2d(amp1, amp2, time_s=0.2, pattern="33x33_feedback9"):
     """Stage-A1 proxy amp map: 2-D ``Pushout.Blue.Amp1`` (dim 1) x ``Amp2`` (dim 2) at a LONG pushout.
 
     The middle ``PushouthXStep`` replays the imaging illumination for ``time_s`` -- long so the
@@ -190,6 +190,8 @@ def build_amp2d(amp1, amp2, time_s=0.2, pattern="47x47_feedbackwarm4"):
     _set_fixed(g, c, blue_amp=0.0, time_s=time_s, fix_blue=False, fix_x=True, fix_h=True)
     g().Pushout.Blue.Amp1.scan(1, [float(a) for a in amp1])
     g().Pushout.Blue.Amp2.scan(2, [float(a) for a in amp2])
+    g().Imag399.Amp1 = 0.2
+    g().Imag399.Amp2 = 0.3
     _runp(g)
     return g
 
@@ -226,7 +228,7 @@ def main():
                     help="amp2d: Pushout.Blue.Amp1 colon (beam 1 -> AmpAbsImag)")
     ap.add_argument("--amp2", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=(0.05, 0.05, 0.5),
                     help="amp2d: Pushout.Blue.Amp2 colon (beam 2 -> Amp399Imag2)")
-    ap.add_argument("--pattern", default="47x47_feedbackwarm4",
+    ap.add_argument("--pattern", default="33x33_feedback9",
                     help="amp2d: ByPattern key to seed cooling/freq from (default warm4)")
     # blue_amp sweep range (colon lo:step:hi)
     ap.add_argument("--amp-lo", type=float, default=0.1)

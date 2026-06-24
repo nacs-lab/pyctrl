@@ -51,7 +51,7 @@ import sys
 # TRACKS the array you image, not bare base. Set to a server-side phase path to image + track a
 # specific array; None -> use expConfig's SLM.Loading default (what a no-pattern scan loads
 # anyway). To override one hold value, edit its g().Pushout.* line in build() with a literal.
-LOADING_PHASE = "phase/47x47_feedbackwarm4.pt"
+LOADING_PHASE = "phase/33x33_feedback9.pt"
 LOADING_DEFOCUS = -5            # ANSI z4 loading defocus (rad); applied only when LOADING_PHASE is set
 
 
