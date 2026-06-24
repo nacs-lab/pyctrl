@@ -75,7 +75,7 @@ def build(mj=0):
     elif mj == 1:
         # |mj|=1 "check trap depth": stronger + longer to drive the weaker,
         # trap-shifted |mj|=1 feature (Spectrum556Scan.m active block).
-        g().Pushout.Green.Amp = 0.1
+        g().Pushout.Green.Amp = 0.08
         g().Pushout.Time = 20e-3
     else:
         raise ValueError("mj must be 0 or 1, got %r" % (mj,))
@@ -88,9 +88,23 @@ def build(mj=0):
 
     # ---- swept param: Pushout.Green.Freq ----------------------------------
     if mj == 0:
-        # mj=0 calibration window: 41 pts @ 10 kHz, centered ~107.7, brackets the
-        # current 107.735 MHz resonance (FWHM ~58 kHz -> ~6 pts across the dip).
-        freqs = [v * 1e6 for v in matlab_colon(107.5, 0.01, 107.9)]   # 41 pts, MATLAB-exact
+        # mj=0 calibration window: 41 pts @ 10 kHz, CENTERED on the current expConfig
+        # Resonance556mj0Freq (+/-0.2 MHz) so it tracks the previous day's fit. The line
+        # has drifted to ~107.82, which sat at the right EDGE of the old fixed 107.5-107.9
+        # window (2026-06-24) -- centering keeps the dip mid-window as the resonance drifts.
+        # Falls back to a recent center if the config can't be read on the submit side.
+        STEP_MHZ, HALF_MHZ = 0.01, 0.20
+        center_mhz = 107.82
+        try:
+            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../pyctrl
+            if _root not in sys.path:
+                sys.path.insert(0, _root)
+            import expConfig
+            center_mhz = expConfig.build_config()["consts"]["Resonance556mj0Freq"] / 1e6
+        except Exception:
+            pass
+        freqs = [v * 1e6 for v in
+                 matlab_colon(center_mhz - HALF_MHZ, STEP_MHZ, center_mhz + HALF_MHZ)]  # 41 pts
     else:
         # |mj|=1 window: 31 pts @ 100 kHz over (103.5:0.1:106.5) MHz for the 33x33
         # centered_level family (dip ~104.9 MHz at servo 1.9; matches the sinc_dcfree /
@@ -98,7 +112,7 @@ def build(mj=0):
         # seed has a large depth spread, so this window brackets the per-site dip spread.
         freqs = [v * 1e6 for v in matlab_colon(103.5, 0.1, 106.5)]    # 31 pts, MATLAB-exact
     g().Pushout.Green.Freq.scan(1, freqs)
-
+    
     # ---- run params (runp); no byte effect, drive the live run ------------
     rp = g.runp()
     rp.NumPerGroup = 2000
@@ -111,7 +125,7 @@ def build(mj=0):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    g.runp().loading_phase = "phase/33x33_uniform.pt"
+    g.runp().loading_phase = "phase/33x33_feedback9.pt"
     g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
     return g
 

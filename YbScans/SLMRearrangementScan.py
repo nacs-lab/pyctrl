@@ -33,13 +33,12 @@ import sys
 # Initial (loading) and final (target) SLM patterns, resolved to a server-side phase + baked
 # Zernike by _pattern_cfg below (port of ybLoadingPatternCfg.m). For a plain rearrangement leave
 # them equal. The rearrangement MODEL (warmup_kwargs.model_filename) must match the pattern family.
-INIT_PATTERN = "47x47_feedbackwarm4"
-TARGET_PATTERN = "47x47_feedbackwarm4"
+INIT_PATTERN = "33x33_feedback9"
+TARGET_PATTERN = "33x33_feedback9"
 # ------------------------------------------------------------------------------------ #
 
 MODEL_FILENAME = "SLMnet/checkpoints/sinc_3x3_experiment/models/direct/direct_best.pth"
 # MODEL_FILENAME = "slmnet/checkpoints/experiment_sinc_ampmap_v3/best_model.pth"
-
 
 def _pattern_cfg(name):
     """Port of ybLoadingPatternCfg.m: pattern name -> {phase_path, baked_zernike, legacy}."""
@@ -51,7 +50,7 @@ def _pattern_cfg(name):
         "33x33_uniform": ("phase/33x33_uniform.pt", [0, 0, 0, 0, 0]),
         "3270_z4eq4":    ("phase/3270_z4eq4.pt",    [0, 0, 0, 0, -4]),
         # NAME-IMPLIED (confirm the baked Zernike before trusting)
-        "33x33_1068_zernike-4": ("phase/33x33_1068_zernike-4.pt", [0, 0, 0, 0, -4]),
+        "33x33_feedback9": ("phase/33x33_feedback9.pt", [0, 0, 0, 0, 0]),
         "11x11withzernike-4":   ("phase/11x11withzernike-4.pt",   [0, 0, 0, 0, -4]),
         "10x10_z4eq8":          ("phase/10x10_z4eq8.pt",          [0, 0, 0, 0, -8]),
         "15x15_z4eq8":          ("phase/15x15_z4eq8.pt",          [0, 0, 0, 0, -8]),
@@ -103,8 +102,9 @@ def SLMRearrangementScan(url=None, reps=None):
     rp.warmup_kwargs.derive_threshold = 0.35
 
     # ---- rearrange_kwargs (g(); per-shot setup, sweepable) -----------------------------
-    g().rearrange_kwargs.nsteps = 150   # sweep (timing-vs-nsteps)
-    g().rearrange_kwargs.step_period_ms = 1#.scan(1, [0.696, 0.75, 1.0, 1.392, 2.0, 3.0, 5.0])   # pinned (period = 1 ms)
+    # g().rearrange_kwargs.step_size = 0.25
+    g().rearrange_kwargs.nsteps.scan(1, [25, 50, 75, 100, 125, 150])   # sweep (timing-vs-nsteps)
+    g().rearrange_kwargs.step_period_ms = 0.696#.scan(1, [1, 1.5, 2, 2.3, 2.5, 2.7, 2.8, 2.9, 3.0, 3.1, 3.2, 3.3, 3.5, 3.7, 4])   # pinned (period = 1 ms)
     g().rearrange_kwargs.protocol = "rearrange"
     g().rearrange_kwargs.extras.block_max_size = 256
     g().rearrange_kwargs.extras.pattern = "every-other"
