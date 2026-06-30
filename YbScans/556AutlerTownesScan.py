@@ -66,14 +66,14 @@ def build(field_G=30, eom616_freq=282.52e6, ryd308_amp=0.4, green_amp=None,
     # (one 30 G point can't refit it). RydbergSpectrum556Scan still carries the 06-10 constants.
     RES0_MHZ = 107.8037
     ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
-    center_mhz = RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G     # 30 G -> 143.1827 MHz
+    center_mhz = 143.3#RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G     # 30 G -> 143.1827 MHz
 
     g = ScanGroup()
 
     # ---- high-field push-out params (RydbergPushoutStep reads these) -------
     # 556 probe push amp: field-scaled (0.2 @ 0 G -> 0.5 @ 30 G) unless overridden. A weaker probe
     # resolves the AT doublet better; raise/lower with --amp if the two dips smear or don't push.
-    AMP_AT_0G, AMP_AT_30G = 0.2, 0.5
+    AMP_AT_0G, AMP_AT_30G = 0.2, 0.2
     if green_amp is None:
         green_amp = AMP_AT_0G + (AMP_AT_30G - AMP_AT_0G) * field_G / 30.0
     g().Pushout.Green.Amp = green_amp
@@ -97,12 +97,12 @@ def build(field_G=30, eom616_freq=282.52e6, ryd308_amp=0.4, green_amp=None,
     rp.isHC = 0
     rp.isGrid2 = 0
     # --- optional per-scan SLM loading-pattern override (see RydbergSpectrum556Scan). ---
-    # g.runp().loading_phase = "phase/33x33_uniform.pt"
-    # g.runp().loading_defocus = -5
+    g.runp().loading_phase = "phase/33x33_feedback9.pt"
+    g.runp().loading_defocus = -5
     return g
 
 
-def AutlerTownes556Scan(url=None, reps=4, field_G=30, eom616_freq=282.52e6,
+def AutlerTownes556Scan(url=None, reps=4, field_G=30, eom616_freq=282.23e6,
                         ryd308_amp=0.4, green_amp=None, half_mhz=3.0, step_mhz=0.1):
     """Build + submit the 556 Autler-Townes scan. Returns the queued descriptor id."""
     _bootstrap()
@@ -127,18 +127,18 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit the 30 G 556 Autler-Townes scan.")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=4,
+    ap.add_argument("--reps", type=int, default=100,
                     help="passes over the sweep (0 = forever); default 4 for the inspect run; "
                          "use >100 for the site-resolved splitting run")
     ap.add_argument("--field", type=float, default=30,
                     help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 30)")
-    ap.add_argument("--eom616", type=float, default=282.52e6,
+    ap.add_argument("--eom616", type=float, default=235.3e6,
                     help="616-EOM freq (Hz) = 308 resonance (default 282.52e6, the measured 30 G revival)")
     ap.add_argument("--ryd308-amp", type=float, default=0.4,
                     help="308 coupling AOM amp, max 0.4 (default 0.4)")
     ap.add_argument("--amp", type=float, default=None,
                     help="override the 556 probe push amp (else field-scaled 0.5 @ 30 G)")
-    ap.add_argument("--half", type=float, default=3.0,
+    ap.add_argument("--half", type=float, default=2.5,
                     help="556 window half-width in MHz (default 3.0; widen if the doublet is clipped)")
     ap.add_argument("--step", type=float, default=0.1,
                     help="556 window step in MHz (default 0.1)")

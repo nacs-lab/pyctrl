@@ -56,14 +56,14 @@ def RydbergPushoutStep(s, g):
     s.add('TTL369Shutter', 1)
 
     # Turn on the 556 rydberg shutter, turn off the 556 MOT shutter
-    s.add('TTL556RydbergShutter', 0)
-    s.add('TTL556MOTaShutter', 1)
+    s.add('TTL556RydbergShutter', 1)
+    s.add('TTL556MOTaShutter', 0) #h 
     s.add('TTL556MOTbShutter', 0)
     s.add('TTL556MOTcShutter', 0)
     
     s.wait(50e-3)
 
-    s.add_step(1e-3).add('VSLMservo', ramp_to(0.4))  # 0.5 for STIRAP
+    s.add_step(1e-3).add('VSLMservo', ramp_to(0.03))  # 0.5 for STIRAP
 
     s.add('TTLScopeTrig', 1)
 

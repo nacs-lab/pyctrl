@@ -52,7 +52,7 @@ def _bootstrap():
             sys.path.insert(0, p)
 
 
-def build(field_G=30, green_amp=0.5, ryd308_amp=0.1, green_freq_mhz=None):
+def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
     """ScanGroup for the 30 G 616-revival sweep (seq = ``RydbergPushoutSurvivalSeq``).
 
     Fixes ``Pushout.Green.Freq`` on the field-shifted 556 resonance and sweeps
@@ -72,18 +72,16 @@ def build(field_G=30, green_amp=0.5, ryd308_amp=0.1, green_freq_mhz=None):
     # 556 push-out resonance (MHz): mirrors RydbergSpectrum556Scan's calibration (2026-06-10 fit).
     # RES0_MHZ = 107.8049
     # ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
-    res556_mhz = 142.3425 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz (model)
+    res556_mhz = 143.30 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz (model)
     if green_freq_mhz is not None:
         res556_mhz = float(green_freq_mhz)   # explicit override: the located dip after drift
 
     # 616-EOM sweep window (MHz): the Spectrum308Scan.m "revival" window, centred near the 30 G
     # EOM value (~282.89 MHz). 21 pts @ 0.5 MHz. Edit these to re-centre / refine.
-    EOM_LO_MHZ, EOM_STEP_MHZ, EOM_HI_MHZ = 275.0, 0.5, 290.0
+    EOM_LO_MHZ, EOM_STEP_MHZ, EOM_HI_MHZ = 210, 1, 260
 
     g = ScanGroup()
 
-    # ---- imaging ----------------------------------------------------------
-    g().Imag399.ExposureTime = 50e-3
 
     # ---- swept axis: Init.EOM616.Freq (byte-affecting; slow-EOM ramp target) ----
     eom_freqs = [v * 1e6 for v in matlab_colon(EOM_LO_MHZ, EOM_STEP_MHZ, EOM_HI_MHZ)]
@@ -105,7 +103,7 @@ def build(field_G=30, green_amp=0.5, ryd308_amp=0.1, green_freq_mhz=None):
     rp = g.runp()
     rp.NumPerGroup = 2000
     rp.NumImages = 2
-    rp.Scramble = 1
+    rp.Scramble = 0
     rp.isInit = 0
     rp.isHC = 0
     rp.isGrid2 = 0
@@ -113,12 +111,12 @@ def build(field_G=30, green_amp=0.5, ryd308_amp=0.1, green_freq_mhz=None):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    # g.runp().loading_phase = "phase/33x33_uniform.pt"   # server-side WGS phase path
-    # g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    g.runp().loading_phase = "phase/33x33_feedback9.pt"   # server-side WGS phase path
+    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
     return g
 
 
-def Revival616Scan(url=None, reps=3, field_G=30, green_amp=0.5, ryd308_amp=0.2,
+def Revival616Scan(url=None, reps=3, field_G=30, green_amp=0.2, ryd308_amp=0.4,
                    green_freq_mhz=None):
     """Build + submit the 30 G 616-revival scan. Returns the queued descriptor id."""
     _bootstrap()
@@ -144,18 +142,17 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit the 30 G 616-EOM revival scan (556 on resonance).")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=6,
+    ap.add_argument("--reps", type=int, default=None,
                     help="passes over the sweep (0 = forever); default 3 for a short A/B run")
-    ap.add_argument("--field", type=float, default=30,
+    ap.add_argument("--field", dest="field_G", type=float, default=None,
                     help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 30)")
-    ap.add_argument("--green-amp", type=float, default=0.5,
-                    help="556 Rydberg push-out amp (default 0.5, the 30 G value)")
-    ap.add_argument("--ryd308-amp", type=float, default=0.3,
-                    help="308 pulse amp, max 0.4 (default 0.2)")
-    ap.add_argument("--green-freq-mhz", type=float, default=None,
+    ap.add_argument("--556-amp", dest="green_amp", type=float, default=None,
+                    help="556 Rydberg push-out amp (default 0.12, the 30 G value)")
+    ap.add_argument("--308-amp", dest="ryd308_amp", type=float, default=None,
+                    help="308 pulse amp, max 0.4 (default 0.4)")
+    ap.add_argument("--green-freq-mhz", dest="green_freq_mhz", type=float, default=None,
                     help="override the fixed 556 push freq in MHz (else RES0+slope*field); "
                          "pass the freshly located 30 G dip when it has drifted out of the model")
     args = ap.parse_args()
-    Revival616Scan(url=args.url, reps=args.reps, field_G=args.field,
-                   green_amp=args.green_amp, ryd308_amp=args.ryd308_amp,
-                   green_freq_mhz=args.green_freq_mhz)
+    # Flag names match Revival616Scan's params; None = not passed -> use the signature default.
+    Revival616Scan(**{k: v for k, v in vars(args).items() if v is not None})

@@ -34,7 +34,7 @@ def RydbergPushoutSurvivalSeq(s):
     s.C.Init.EOM616.FreqOld = freq616global
     s.add('FreqEOM616', freq616global)
     # Slow EOM ramp. 3.0 (not 3): SeqVal operand -> must be FLOAT64.
-    time = abs((Freq_EOM616 - freq616global) * 20e-9 * 3.0) + 20e-3
+    time = abs((Freq_EOM616 - freq616global) * 2e-9 * 3.0) + 20e-3
     s.add_step(time).add('FreqEOM616', ramp_to(Freq_EOM616))
 
     # server_pre_run/server_post_run (MemoryMap-free): inject freq616global <- the last 616-EOM
