@@ -4,11 +4,15 @@ The scan-long Siglent AWG coordinator. Two phases, mirroring MATLAB:
 
   * :meth:`AWGManager.setup` (BATCH UPLOAD, once at scan start / dequeue) -- for each named AWG,
     loads its ``Consts()`` defaults, walks every sequence in the ScanGroup to find the UNIQUE
-    waveform-shaping combos, generates + pre-builds one WVDT command per unique combo, connects,
-    uploads the first, sets amplitude once, and arms gated/burst output.
-  * :meth:`AWGManager.recall_for_seq` (PER-SHOT SWITCH, once per sequence) -- re-sends the
-    pre-built WVDT command for this shot's active waveform (~2 ms), skipping the resend when the
-    waveform key is unchanged from the previous shot.
+    waveform-shaping combos, connects, and (per the box's firmware capability) either PRE-STORES
+    every unique waveform under a stable name (``ARWV`` path, fw >= 6.01.01.38) or pre-builds one
+    ``WVDT`` command per combo (re-upload fallback, older fw). Sets amplitude once + arms gated burst.
+  * :meth:`AWGManager.recall_for_seq` (PER-SHOT SWITCH, once per sequence) -- switches to this
+    shot's waveform, skipping when the waveform key is unchanged. **ARWV path:** ``ARWV NAME,<name>``
+    (~ms, no re-upload; the stored waveform carries its baked ``FREQ`` so width comes along).
+    **Fallback:** re-send the full pre-built ``WVDT`` to the ``active`` slot (~2 ms). The path is
+    chosen at ``setup`` from ``connection.arwv_recall`` (problem-memory ``bug-awg-arwv-broken``:
+    37R6 ARWV broken -> 38R3 fixed; AWG308 may still be on 37R6 -> fallback).
   * :meth:`AWGManager.cleanup` -- disconnect all and clear state.
 
 State is **process-global** (class attribute ``_state``), the faithful analog of the MATLAB
@@ -78,40 +82,67 @@ class AWGManager:
                     keys.append(key)
                     param_list.append(params)
 
-            logger.info("AWGManager: %s -- %d unique waveform(s) for %d sequences",
-                        awg_name, len(keys), total_seqs)
-
             conn = make_conn(defaults["resource_address"], defaults["channel"])
             conn.connect()
+            use_arwv = bool(getattr(conn, "arwv_recall", False))
 
             amp_vpp = param_list[0]["max_amplitude_vpp"]
             num_points = defaults["num_points"]
 
-            cmd_map = {}
-            for i, key in enumerate(keys):
-                p = dict(param_list[i])
-                p["max_amplitude_vpp"] = amp_vpp
-                p["num_points"] = num_points
-                binary_data, info = gaussian_pulse_waveform(p)
-                cmd_map[key] = conn.build_waveform_cmd(binary_data, amp_vpp, info["freq_hz"])
-                logger.info("  wf_%03d: %d pts, freq=%gHz, key: %s",
-                            i + 1, info["num_points"], info["freq_hz"], key)
+            logger.info("AWGManager: %s -- %d unique waveform(s) for %d sequences (mode=%s)",
+                        awg_name, len(keys), total_seqs, "arwv" if use_arwv else "reupload")
 
-            # Send the first waveform to initialize output, then config (amplitude set ONCE here).
-            if keys:
-                conn.send_waveform(cmd_map[keys[0]])
-                time.sleep(0.05)
-            conn.set_amplitude(amp_vpp)
-            conn.configure_burst()
-            conn.enable_output()
-
-            state[awg_name] = {
+            entry = {
                 "connection": conn,
-                "cmd_map": cmd_map,
                 "awg_name": awg_name,
                 "defaults": defaults,
+                "mode": "arwv" if use_arwv else "reupload",
                 "last_key": keys[0] if keys else None,
             }
+
+            if use_arwv:
+                # ARWV path (fw >= 38R3): pre-store every unique waveform under a stable name,
+                # switch per shot with ARWV NAME (no re-upload). ARWV restores the baked FREQ.
+                conn.set_arb_mode()
+                name_map = {}
+                for i, key in enumerate(keys):
+                    p = dict(param_list[i])
+                    p["max_amplitude_vpp"] = amp_vpp
+                    p["num_points"] = num_points
+                    binary_data, info = gaussian_pulse_waveform(p)
+                    name = "wf_%03d" % i
+                    conn.store_waveform(
+                        conn.build_waveform_cmd(binary_data, amp_vpp, info["freq_hz"], name=name))
+                    name_map[key] = name
+                    logger.info("  %s <- %d pts, freq=%gHz, key: %s",
+                                name, info["num_points"], info["freq_hz"], key)
+                conn.set_amplitude(amp_vpp)
+                conn.configure_burst()
+                conn.enable_output()
+                if keys:
+                    conn.recall_by_name(name_map[keys[0]])
+                entry["name_map"] = name_map
+            else:
+                # Re-upload fallback (older fw, e.g. AWG308 on 37R6): cache one WVDT per combo,
+                # re-send the active-slot WVDT per shot.
+                cmd_map = {}
+                for i, key in enumerate(keys):
+                    p = dict(param_list[i])
+                    p["max_amplitude_vpp"] = amp_vpp
+                    p["num_points"] = num_points
+                    binary_data, info = gaussian_pulse_waveform(p)
+                    cmd_map[key] = conn.build_waveform_cmd(binary_data, amp_vpp, info["freq_hz"])
+                    logger.info("  wf_%03d: %d pts, freq=%gHz, key: %s",
+                                i + 1, info["num_points"], info["freq_hz"], key)
+                if keys:
+                    conn.send_waveform(cmd_map[keys[0]])   # init output
+                    time.sleep(0.05)
+                conn.set_amplitude(amp_vpp)
+                conn.configure_burst()
+                conn.enable_output()
+                entry["cmd_map"] = cmd_map
+
+            state[awg_name] = entry
 
         cls._state = state
         logger.info("AWGManager: setup complete (%s)", ", ".join(awg_names))
@@ -139,12 +170,21 @@ class AWGManager:
 
             key = cls._build_key(params)
             if key == entry["last_key"]:
-                continue                      # unchanged from last shot -> skip the resend
-            if key in entry["cmd_map"]:
-                entry["connection"].send_waveform(entry["cmd_map"][key])
-                entry["last_key"] = key
+                continue                      # unchanged from last shot -> skip the switch
+            if entry["mode"] == "arwv":
+                name = entry["name_map"].get(key)
+                if name is not None:
+                    entry["connection"].recall_by_name(name)   # ARWV NAME -- ~ms, no re-upload
+                    entry["last_key"] = key
+                else:
+                    logger.warning("AWGManager: no stored waveform for %s key: %s", awg_name, key)
             else:
-                logger.warning("AWGManager: no waveform for %s key: %s", awg_name, key)
+                cmd = entry["cmd_map"].get(key)
+                if cmd is not None:
+                    entry["connection"].send_waveform(cmd)     # fallback: re-send WVDT to active
+                    entry["last_key"] = key
+                else:
+                    logger.warning("AWGManager: no waveform for %s key: %s", awg_name, key)
 
     # --------------------------------------------------------------------- #
     # teardown
@@ -152,10 +192,15 @@ class AWGManager:
     @classmethod
     def cleanup(cls):
         for awg_name, entry in cls._state.items():
+            conn = entry["connection"]
             try:
-                entry["connection"].disconnect()
+                conn.disable_output()       # OUTP OFF + burst OFF -> AWG quiet after the scan
+            except Exception as err:        # noqa: BLE001
+                logger.warning("AWGManager: error disabling output %s: %s", awg_name, err)
+            try:
+                conn.disconnect()
                 logger.info("AWGManager: disconnected %s", awg_name)
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:        # noqa: BLE001
                 logger.warning("AWGManager: error disconnecting %s: %s", awg_name, err)
         cls._state = {}
 

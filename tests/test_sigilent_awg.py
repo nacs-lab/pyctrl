@@ -40,6 +40,7 @@ class FakeConn:
         self.amplitudes = []      # set_amplitude calls
         self.burst_configured = 0
         self.output_enabled = 0
+        self.output_disabled = 0
         self.disconnected = 0
 
     def connect(self):
@@ -62,8 +63,33 @@ class FakeConn:
     def enable_output(self):
         self.output_enabled += 1
 
+    def disable_output(self):
+        self.output_disabled += 1
+
     def disconnect(self):
         self.disconnected += 1
+
+
+class FakeConnARWV(FakeConn):
+    """ARWV-capable fake (fw >= 38R3): arwv_recall=True + named store / set_arb_mode / recall_by_name."""
+    def __init__(self, resource, channel):
+        super().__init__(resource, channel)
+        self.arwv_recall = True
+        self.stored = []          # named WVDT cmds via store_waveform
+        self.recalled = []        # names via recall_by_name
+        self.arb_mode = 0
+
+    def build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz, name="active"):
+        return AWGConnection.build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz, name=name)
+
+    def set_arb_mode(self):
+        self.arb_mode += 1
+
+    def store_waveform(self, cmd):
+        self.stored.append(cmd)
+
+    def recall_by_name(self, name):
+        self.recalled.append(name)
 
 
 class FakeScanGroup:
@@ -226,6 +252,7 @@ def test_cleanup_disconnects_and_clears_state():
                      consts=_DEFAULTS, connection_factory=FakeConn)
     conn = AWGManager._state["AWG556"]["connection"]
     AWGManager.cleanup()
+    assert conn.output_disabled == 1        # OUTP OFF -> quiet after the scan
     assert conn.disconnected == 1
     assert AWGManager._state == {}
     assert AWGManager.active_awgs() == []
@@ -268,3 +295,89 @@ def test_build_key_uses_only_waveform_fields():
     assert "resource_address" not in key
     assert "max_amplitude_vpp" not in key
     assert "channel" not in key
+
+
+# --------------------------------------------------------------------------- #
+# ARWV recall path (firmware >= 38R3) -- pre-store named + ARWV NAME switch (no re-upload)
+# --------------------------------------------------------------------------- #
+def test_setup_arwv_path_stores_named_and_recalls_first():
+    conns = []
+
+    def factory(resource, channel):
+        c = FakeConnARWV(resource, channel)
+        conns.append(c)
+        return c
+
+    seqs = [_seq_with_freq(f) for f in (130.0, 131.0, 130.0, 132.0)]   # 3 unique
+    AWGManager.setup("AWG556", FakeScanGroup(seqs),
+                     consts=_DEFAULTS, connection_factory=factory)
+    conn = conns[0]
+    entry = AWGManager._state["AWG556"]
+    assert entry["mode"] == "arwv"
+    assert len(entry["name_map"]) == 3          # one stored name per unique combo
+    assert sorted(entry["name_map"].values()) == ["wf_000", "wf_001", "wf_002"]
+    assert len(conn.stored) == 3                # stored once each (setup-time)
+    assert conn.arb_mode == 1                   # arb DDS mode set once
+    assert conn.amplitudes == [11]              # amplitude set ONCE
+    assert conn.burst_configured == 1 and conn.output_enabled == 1
+    assert conn.recalled == ["wf_000"]          # first waveform recalled to init output
+    assert conn.sent == []                      # ARWV path NEVER re-sends WVDT to 'active'
+    assert "cmd_map" not in entry               # no per-shot WVDT cache on the ARWV path
+
+
+def test_recall_arwv_switches_by_name_on_change_skips_on_no_change():
+    conns = []
+
+    def factory(resource, channel):
+        c = FakeConnARWV(resource, channel)
+        conns.append(c)
+        return c
+
+    seqs = [_seq_with_freq(f) for f in (130.0, 131.0, 132.0)]
+    AWGManager.setup("AWG556", FakeScanGroup(seqs),
+                     consts=_DEFAULTS, connection_factory=factory)
+    conn = conns[0]
+    n0 = len(conn.recalled)                     # 1 (first recall in setup, key=130)
+
+    AWGManager.recall_for_seq({"AWG556": {"carrier_freq_MHz": 130.0}})   # unchanged -> skip
+    assert len(conn.recalled) == n0
+    AWGManager.recall_for_seq({"AWG556": {"carrier_freq_MHz": 131.0}})   # switch -> recall
+    assert len(conn.recalled) == n0 + 1
+    AWGManager.recall_for_seq({"AWG556": {"carrier_freq_MHz": 131.0}})   # same -> skip
+    assert len(conn.recalled) == n0 + 1
+    AWGManager.recall_for_seq({"AWG556": {"carrier_freq_MHz": 132.0}})   # switch -> recall
+    assert len(conn.recalled) == n0 + 2
+    assert conn.sent == []                      # never re-uploads on the ARWV path
+
+
+def test_recall_arwv_unknown_key_warns_and_does_not_recall():
+    AWGManager.setup("AWG556", FakeScanGroup([_seq_with_freq(130.0)]),
+                     consts=_DEFAULTS, connection_factory=FakeConnARWV)
+    conn = AWGManager._state["AWG556"]["connection"]
+    n0 = len(conn.recalled)
+    AWGManager.recall_for_seq({"AWG556": {"carrier_freq_MHz": 999.0}})   # never stored
+    assert len(conn.recalled) == n0
+
+
+def test_build_waveform_cmd_named_slot():
+    conn = AWGConnection("USB0::TEST::INSTR", "C1")    # no connect() -> no VISA
+    binary = struct.pack(">5h", 1, 2, 3, 4, 5)
+    cmd = conn.build_waveform_cmd(binary, 11, 250000.0, name="wf_007")
+    text = cmd[:-10].decode("ascii")
+    assert text.startswith("C1:WVDT WVNM,wf_007,WVTP,USER,AMPL,11,OFST,0,FREQ,250000")
+    assert cmd.endswith(binary)
+
+
+@pytest.mark.parametrize("idn,fw", [
+    ("Siglent Technologies,SDG6022X,SDG6XFCC900309,6.01.01.38R3", (6, 1, 1, 38)),
+    ("Siglent Technologies,SDG6022X,SN,6.01.01.37R6", (6, 1, 1, 37)),
+    ("FAKE,SDG6X,0,1", None),                          # too few numbers -> unknown
+])
+def test_parse_fw(idn, fw):
+    assert AWGConnection._parse_fw(idn) == fw
+
+
+def test_arwv_min_fw_gate():
+    from devices.sigilent_awg.awg_connection import ARWV_MIN_FW
+    assert (6, 1, 1, 38) >= ARWV_MIN_FW            # 38R3 -> ARWV recall
+    assert not ((6, 1, 1, 37) >= ARWV_MIN_FW)      # 37R6 -> re-upload fallback

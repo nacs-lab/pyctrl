@@ -7,16 +7,29 @@ in :meth:`connect` so this module is import-safe with no VISA backend present (N
 
 SDG6X hard-won rules baked in (see the experiment-running skill / AWG_Integration_Plan.md):
   * **Big-endian int16** waveform bytes (produced by :mod:`gaussian_pulse_waveform`).
-  * **ARWV recall is broken** on firmware 6.01.01.37R6 -> we never use ARWV; switching a waveform
-    re-sends the full WVDT to the ``active`` slot (``AWGManager`` caches the pre-built command).
+  * **ARWV recall was broken on firmware 6.01.01.37R6 -> FIXED on 6.01.01.38R3** (problem-memory
+    ``bug-awg-arwv-broken``). When the connected box reports fw >= 6.01.01.38 (:attr:`arwv_recall`),
+    the no-reload per-shot path is used: pre-store every unique waveform once (``WVDT WVNM,<name>``,
+    :meth:`store_waveform`) then switch with :meth:`recall_by_name` (``ARWV NAME,<name>``, ~ms) --
+    ``ARWV`` restores the waveform's baked ``FREQ`` so one command sets the whole pulse. On older
+    firmware (37R6, e.g. the still-un-flashed AWG308) ``ARWV`` is a no-op, so the fallback re-sends
+    the full WVDT to the ``active`` slot every shot (:meth:`send_waveform`).
   * **Amplitude is set once** (:meth:`set_amplitude`) in setup -- a per-shot ``BSWV AMP`` would add
     ~400 ms (two ``*OPC?`` round-trips).
-  * In DDS mode ``FREQ`` lives INSIDE the WVDT command (unlike TrueArb, where ``FREQ`` would clobber
-    ``SRATE`` and a ``SRATE VALUE`` must be re-sent after each upload).
+  * In DDS mode ``FREQ`` lives INSIDE the WVDT command. ``SRATE MODE,DDS`` is only needed/valid on
+    fw < 38R3; 38R3 removed true-arb mode (DDS is the only mode), so that command now returns an
+    execution error -- :meth:`connect` only sends it on older firmware.
+  * **Same-session readback lag:** ``ARWV?``/``TRIGger:SOURce?`` can return a STALE value right after
+    a set in the same VISA session (the set still took effect). Don't gate logic on an immediate
+    same-session readback of those.
 """
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+# ARWV NAME recall of user waveforms works on SDG6X firmware >= 6.01.01.38 (37R6 broken, 38R3 fixed).
+ARWV_MIN_FW = (6, 1, 1, 38)
 
 
 class AWGConnection:
@@ -27,6 +40,8 @@ class AWGConnection:
         self.channel = channel
         self.dev = None
         self._rm = None
+        self.firmware = None       # parsed fw tuple, e.g. (6, 1, 1, 38); None if unknown
+        self.arwv_recall = False   # True iff fw >= ARWV_MIN_FW -> use ARWV NAME (no re-upload)
 
     def connect(self):
         """Open the USB-VISA handle, clear it, and switch the channel to DDS mode.
@@ -55,11 +70,30 @@ class AWGConnection:
         self.dev.read_termination = "\n"
         self.dev.write("*CLS")
         idn = self.dev.query("*IDN?").strip()
-        logger.info("AWG connected: %s", idn)
-        # DDS mode: FREQ in the WVDT command controls playback rate.
-        self.dev.write("%s:SRATE MODE,DDS" % self.channel)
-        self.dev.query("*OPC?")
+        self.firmware = self._parse_fw(idn)
+        self.arwv_recall = self.firmware is not None and self.firmware >= ARWV_MIN_FW
+        logger.info("AWG connected: %s (fw=%s, arwv_recall=%s)",
+                    idn, self.firmware, self.arwv_recall)
+        # DDS mode: FREQ in the WVDT command controls playback rate. Older fw (< 38R3) needs
+        # SRATE MODE,DDS; 38R3 removed true-arb mode -> the command returns an execution error
+        # (DDS is the only/default mode), so only send it when it is valid.
+        if self.firmware is None or self.firmware < ARWV_MIN_FW:
+            self.dev.write("%s:SRATE MODE,DDS" % self.channel)
+            self.dev.query("*OPC?")
         return idn
+
+    @staticmethod
+    def _parse_fw(idn):
+        """Firmware tuple from an *IDN? string ('...,SDG6022X,<sn>,6.01.01.38R3') -> (6,1,1,38).
+
+        Returns None if it can't be parsed (capability then defaults to the safe re-upload path).
+        """
+        try:
+            fw = idn.split(",")[-1].strip()          # '6.01.01.38R3'
+            nums = re.findall(r"\d+", fw)             # ['6','01','01','38','3']
+            return tuple(int(x) for x in nums[:4]) if len(nums) >= 4 else None
+        except Exception:  # noqa: BLE001
+            return None
 
     def disconnect(self):
         try:
@@ -75,7 +109,7 @@ class AWGConnection:
         self.dev = None
         self._rm = None
 
-    def build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz):
+    def build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz, name="active"):
         """Build a DDS-mode WVDT command (``bytes``) for ``binary_data``.
 
         Mirrors AWGConnection.m exactly: an IEEE-488.2 block header ``#<ndigits><nbytes>``
@@ -83,17 +117,45 @@ class AWGConnection:
         in :meth:`set_amplitude` so the upload does not override the channel amplitude; ``FREQ``
         is the DDS playback frequency (``1e6 / pulse_width_us``).
 
+        ``name`` is the SDG storage slot: ``"active"`` (the live slot -- the re-upload fallback
+        path) or a unique stored name (``"wf_000"`` ... -- the ARWV recall path). ``ARWV NAME``
+        restores the baked ``FREQ`` of the stored waveform, so width comes along with the recall.
+
         Pure (no device access) -- unit-testable without hardware.
         """
         num_bytes = len(binary_data)
         ieee_header = "#%d%d" % (len(str(num_bytes)), num_bytes)
-        cmd_prefix = ("%s:WVDT WVNM,active,WVTP,USER,AMPL,%g,OFST,0,FREQ,%g,WAVEDATA,%s"
-                      % (self.channel, amplitude_vpp, freq_hz, ieee_header))
+        cmd_prefix = ("%s:WVDT WVNM,%s,WVTP,USER,AMPL,%g,OFST,0,FREQ,%g,WAVEDATA,%s"
+                      % (self.channel, name, amplitude_vpp, freq_hz, ieee_header))
         return cmd_prefix.encode("ascii") + bytes(binary_data)
 
     def send_waveform(self, cmd):
-        """Send a pre-built WVDT command (``bytes``) to switch the active waveform (~2 ms)."""
+        """Send a pre-built WVDT command (``bytes``) to switch the active waveform (~2 ms).
+
+        The re-upload fallback switch (older firmware): re-sends the full WVDT to the ``active``
+        slot. Fire-and-forget (no ``*OPC?``)."""
         self.dev.write_raw(cmd)
+
+    def store_waveform(self, cmd):
+        """Upload a pre-built NAMED WVDT to SDG storage (setup-time; waits ``*OPC?``).
+
+        Used once per unique waveform at scan start for the ARWV recall path; the per-shot switch
+        is then the cheap :meth:`recall_by_name`."""
+        self.dev.write_raw(cmd)
+        self.dev.query("*OPC?")
+
+    def set_arb_mode(self):
+        """Put the channel in arbitrary-waveform DDS output mode (before ARWV recall / gated burst)."""
+        self.dev.write("%s:BSWV WVTP,ARB" % self.channel)
+        self.dev.write("%s:ARWV MODE,DDS" % self.channel)
+        self.dev.query("*OPC?")
+
+    def recall_by_name(self, name):
+        """Switch the active output waveform to a STORED one by name (~ms; fw >= ARWV_MIN_FW).
+
+        No re-upload -- ``ARWV NAME,<name>`` re-points the active waveform (and restores its baked
+        ``FREQ``). Fire-and-forget (no ``*OPC?``); the same-session ``ARWV?`` readback may lag."""
+        self.dev.write("%s:ARWV NAME,%s" % (self.channel, name))
 
     def set_amplitude(self, amp_vpp):
         self.dev.write("%s:BSWV AMP,%g" % (self.channel, amp_vpp))
@@ -117,4 +179,13 @@ class AWGConnection:
 
     def enable_output(self):
         self.dev.write("%s:OUTP ON" % self.channel)
+        self.dev.query("*OPC?")
+
+    def disable_output(self):
+        """Turn the channel output + burst OFF so the AWG is QUIET (called at scan end / cleanup).
+
+        Without this the AWG is left armed gated -- and a statically-high gate makes it free-run a
+        continuous waveform train after the scan."""
+        self.dev.write("%s:BTWV STATE,OFF" % self.channel)
+        self.dev.write("%s:OUTP OFF" % self.channel)
         self.dev.query("*OPC?")

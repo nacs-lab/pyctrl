@@ -1,0 +1,127 @@
+"""STIRAPPushoutStep.py -- transliteration of ``matlab_new/YbSteps/STIRAPPushoutStep.m``.
+
+``g = s.C.Pushout``. STIRAP (two-photon 556 + 308) push-out step. Applies the Ryd bias field,
+**switches the 556 + 308 AOMs from their DDS source to the Siglent AWG** (``TTL556RydAWGSwitch`` /
+``TTL308RydAWGSwitch``), opens the Rydberg shutters, lowers the trap (``VSLMservo`` ramp to
+``VRydTrap``), turns the trap fully off (``TTLSampleAndHold``/``AmpSLM``), then fires the **forward
+STIRAP** pulse (308 gate, then 556 gate, overlapped via ``STIRAP.delay``), restores the trap,
+pulses the QICK microwave (``TTLQickTrig`` for ``STIRAP.gap``), optionally fires the **reverse
+STIRAP** (556 then 308, via ``STIRAP.reverse_delay``), and finally restores trap depth / shutters /
+616 idle and zeroes the coil + the AWG switches.
+
+AWG context: the 556/308 Gaussian pulses themselves are produced by the Siglent SDG6X AWGs
+(out-of-band, NOT in the byte blob). This step only drives the FPGA TTLs that (a) switch the AOM
+RF source to the AWG and (b) **gate** the AWG burst (``TTL556RydAWG`` / ``TTL308RydAWG`` -- gated
+external trigger). The AWG waveform for this shot is pre-stored + selected by ``AWGManager``
+(``ARWV NAME`` recall on fw >= 38R3, re-upload fallback otherwise) -- see ``devices/sigilent_awg``.
+
+Reads resolve config with a ``Consts()`` fallback default (``g.X.Y(Consts().Pushout...)``).
+
+Deviations from the .m (pyctrl-only): the four ``Freq/Amp_Pushout399`` + ``Freq/Amp_Pushout556``
+reads are **computed-but-unused** in the .m (the body adds literal ``0`` to ``Amp556MOTX`` /
+``Amp556RydbergMOTh``, never these), and pyctrl's config has ``Pushout.Blue.Amp1/Amp2`` (not
+``Blue.Amp``), so those dead reads are dropped -- zero byte effect. Likewise ``Time_Pushout369``
+(its 369-pushout block is commented out in the .m). Bare TTL ``0``/``1`` + the ``5*I/100`` coil
+math mirror ``RydbergPushoutStep`` (concrete config floats -> no explicit-float coercion needed).
+"""
+
+from consts import Consts
+from ramp_to import ramp_to
+
+
+def STIRAPPushoutStep(s, g):
+    guassian_pulse_width = 4e-6
+    time_delay = g.STIRAP.delay(Consts().Pushout.STIRAP.delay)
+    time_delay_reverse = g.STIRAP.reverse_delay(Consts().Pushout.STIRAP.reverse_delay)
+    STIRAP_gap = g.STIRAP.gap(Consts().Pushout.STIRAP.gap)
+
+    Amp_SLM = g.SLMAOMAmp(Consts().SLM.AOM.Amp)
+    Amp_Pushout369 = g.Amp369(0)
+    ifReverse = g.STIRAP.ifReverse(True)
+    t_waitSTIRAP = g.STIRAP.waitTime(0)
+
+    # Ramp the tweezer down and wait; set a B-field along Z.
+    I_RydCoil = g.BiasCoilCurrent.Ryd(5)
+    V_RydCoil = 5 * I_RydCoil / 100
+    s.add('VRydCoil', V_RydCoil)
+
+    # Switch the 556 + 308 AOMs from their DDS source to the AWG.
+    s.add('TTL556RydAWGSwitch', 1)
+    s.add('TTL308RydAWGSwitch', 1)
+
+    # Get 369 ready.
+    s.add('Amp369', Amp_Pushout369)
+    s.add('TTL369Shutter', 1)
+
+    # Turn on the 556 rydberg shutter, close the 556 MOTa shutter.
+    s.add('TTL556RydbergShutter', 1)
+    s.add('TTL556MOTaShutter', 0)
+
+    # Wait until the coil current settles.
+    s.wait(50e-3)
+
+    # Change trap depth for Rydberg.
+    V_RydTrap = g.VRydTrap(0.4)
+    s.add_step(1e-3).add('VSLMservo', ramp_to(V_RydTrap))
+
+    # Pre-lock the 308 cavity.
+    s.add('AmpAOM616', 0)
+    s.wait(1e-6)
+
+    # Turn the tweezer off completely.
+    s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
+    s.wait(1e-6)
+
+    # --- Forward STIRAP pulse (308 gate then 556 gate, overlapped via STIRAP.delay) ---
+    s.add('TTL308RydAWG', 1).add('TTLScopeTrig', 1)
+    s.wait(time_delay)
+    s.add('TTL556RydAWG', 1)
+    s.wait(guassian_pulse_width / 2)
+    s.add('TTL308RydAWG', 0)
+    s.wait(guassian_pulse_width / 2)
+    s.add('TTL556RydAWG', 0)
+
+    # Turn the trap back on.
+    s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
+    s.wait(t_waitSTIRAP)   # wait until the stirap pulse finishes
+
+    # Microwave Rabi (QICK), gated for STIRAP_gap.
+    s.add('TTLQickTrig', 1)
+    s.wait(STIRAP_gap)
+    s.add('TTLQickTrig', 0)
+
+    # --- Reverse STIRAP (556 gate then 308 gate, via STIRAP.reverse_delay) ---
+    if ifReverse:
+        s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
+        s.wait(1e-6)
+        s.add('TTL556RydAWG', 1)
+        s.wait(time_delay_reverse)
+        s.add('TTL308RydAWG', 1)
+        s.wait(guassian_pulse_width / 2)
+        s.add('TTL556RydAWG', 0)
+        s.wait(guassian_pulse_width / 2)
+        s.add('TTL308RydAWG', 0).add('TTL556RydAWG', 0).add('TTLScopeTrig', 0)
+
+    # Back to the original trap depth: turn the trap back on.
+    s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
+
+    s.add('TTLScopeTrig', 0)
+    s.add('AmpAbsImag', 0)
+    s.add('AmpBlueMOT', 0)
+
+    s.add('Amp556MOTX', 0)
+    s.add('Amp556RydbergMOTh', 0)
+
+    s.add('AmpAOM308', 0)
+    s.add('AmpAOM616', 0.11)
+    s.add('TTL369Shutter', 0)
+    s.add('Amp369', 0)
+
+    # Ramp the tweezer up and wait.
+    s.add_step(1e-3).add('VSLMservo', ramp_to(Consts().Init.VSLMServo))
+
+    # Switch the AOMs back from AWG to DDS, zero the coil.
+    s.add('TTL556RydAWGSwitch', 0)
+    s.add('TTL308RydAWGSwitch', 0)
+    s.add('VRydCoil', 0)
+    s.wait(50e-3)
