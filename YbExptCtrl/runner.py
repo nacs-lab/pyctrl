@@ -1331,6 +1331,14 @@ def serve(url, *, server_factory=None, with_camera=True, with_idle=True, log=pri
         stop["flag"] = True
 
     _install_signal_handlers(_request_stop)
+    # Orphan guard: run_monitor (our spawner) owns detection + the .h5 writer.
+    # If it dies (e.g. the 2026-07-01 hdf5.dll segfault that killed the parent
+    # process), we would otherwise keep firing the scan loop forever with no
+    # consumer/saver -- every shot silently lost. Watch YB_PARENT_PID and trip
+    # the SAME graceful stop flag on its death so the `finally: _teardown`
+    # releases the DCAM handle (a held handle wedges the next backend --
+    # bug-pyctrl-orca-restart-race-dcam-wedge) before we hard-exit.
+    _start_parent_watchdog(_request_stop, log=log)
 
     camera = None
     try:
@@ -1414,6 +1422,70 @@ def _await_camera_init(server, seq_config=None, wait_s=CAMERA_INIT_WAIT_S, log=p
         if camera is None:
             break
     return camera
+
+
+def _pid_alive(pid):
+    """True iff process ``pid`` is running. Windows uses OpenProcess + exit-code
+    probe (os.kill(pid, 0) is unreliable there); POSIX uses signal 0. Errs on the
+    side of 'alive' on any unexpected error so a probe glitch never false-kills a
+    healthy run."""
+    if pid <= 0:
+        return True
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            SYNCHRONIZE = 0x00100000
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            h = kernel32.OpenProcess(
+                SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not h:
+                return False   # gone (or access-denied on a foreign pid, which our own child never is)
+            try:
+                STILL_ACTIVE = 259
+                code = ctypes.c_ulong()
+                ok = kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+                return bool(ok) and code.value == STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(h)
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False   # ESRCH / no such process
+    except Exception:  # noqa: BLE001
+        return True    # unknown probe failure -> assume alive, don't false-kill
+
+
+def _start_parent_watchdog(request_stop, poll_interval_s=3.0, log=None):
+    """Daemon thread: call ``request_stop()`` when the pid in ``YB_PARENT_PID``
+    dies. Trips the graceful stop flag (NOT a hard exit) so ``serve``'s
+    ``finally: _teardown`` releases the camera/NI/ZMQ before the process ends.
+    No-op if YB_PARENT_PID is unset/invalid (e.g. a hand-started runner)."""
+    import threading
+    raw = os.environ.get("YB_PARENT_PID", "")
+    try:
+        parent_pid = int(raw)
+    except (TypeError, ValueError):
+        parent_pid = 0
+    if parent_pid <= 0:
+        return None
+    log = log or _noop_log
+
+    def _loop():
+        while True:
+            time.sleep(poll_interval_s)
+            if not _pid_alive(parent_pid):
+                try:
+                    log("[runner] parent pid %d gone -- stopping backend "
+                        "(no consumer/saver alive)" % parent_pid)
+                except Exception:  # noqa: BLE001
+                    pass
+                request_stop()
+                return
+
+    t = threading.Thread(target=_loop, name="runner-parent-watchdog", daemon=True)
+    t.start()
+    return t
 
 
 def _install_signal_handlers(handler):

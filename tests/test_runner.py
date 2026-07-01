@@ -9,6 +9,7 @@ is the NEEDS-HARDWARE entry and is not run here.
 
 import os
 import signal
+import time
 
 import pytest
 
@@ -803,3 +804,48 @@ def _stop_after(n):
         return False
 
     return stop
+
+
+# --------------------------------------------------------------------------- #
+# parent-watchdog -- orphan guard (regression: 2026-07-01 hdf5.dll segfault
+# killed run_monitor, orphaned backend kept firing with no .h5 writer alive)
+# --------------------------------------------------------------------------- #
+class TestParentWatchdog:
+    def test_pid_alive_self_true(self):
+        assert runner._pid_alive(os.getpid()) is True
+
+    def test_pid_alive_nonpositive_true(self):
+        # 0 / negative => "no parent to watch" => treated as alive (no-op guard).
+        assert runner._pid_alive(0) is True
+        assert runner._pid_alive(-1) is True
+
+    def test_pid_alive_dead_pid_false(self):
+        # A very high pid is almost certainly not running.
+        assert runner._pid_alive(2_000_000_000) is False
+
+    def test_watchdog_noop_without_env(self, monkeypatch):
+        monkeypatch.delenv("YB_PARENT_PID", raising=False)
+        assert runner._start_parent_watchdog(lambda: None) is None
+
+    def test_watchdog_noop_bad_env(self, monkeypatch):
+        monkeypatch.setenv("YB_PARENT_PID", "not-an-int")
+        assert runner._start_parent_watchdog(lambda: None) is None
+
+    def test_watchdog_trips_stop_when_parent_dies(self, monkeypatch):
+        import threading
+        monkeypatch.setenv("YB_PARENT_PID", "424242")
+        # Force the parent to read as dead immediately.
+        monkeypatch.setattr(runner, "_pid_alive", lambda pid: False)
+        fired = threading.Event()
+        t = runner._start_parent_watchdog(fired.set, poll_interval_s=0.01)
+        assert t is not None
+        assert fired.wait(2.0), "watchdog did not trip stop when parent died"
+
+    def test_watchdog_quiet_while_parent_alive(self, monkeypatch):
+        monkeypatch.setenv("YB_PARENT_PID", str(os.getpid()))
+        monkeypatch.setattr(runner, "_pid_alive", lambda pid: True)
+        calls = {"n": 0}
+        runner._start_parent_watchdog(lambda: calls.__setitem__("n", calls["n"] + 1),
+                                      poll_interval_s=0.01)
+        time.sleep(0.1)
+        assert calls["n"] == 0
