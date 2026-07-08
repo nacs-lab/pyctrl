@@ -541,6 +541,52 @@ def load_configs(log=None):
     log("config loaded (expConfig snapshot + engine config.yml=%s)" % cfg)
 
 
+# Tolerance for "exposure unchanged". The Orca quantizes the requested exposure to its internal
+# readout-time grid (~6.4 us/step: e.g. a 0.035 s request reads back as 0.0350064 s), so the
+# slop MUST exceed one quantization step or every job would see a ~6 us mismatch and re-apply
+# spuriously. 20 us comfortably covers the quantization while still catching any real change
+# (the 35 vs 50 ms moves we care about are 15000 us).
+_EXPOSURE_EPS_S = 20e-6
+
+
+def sync_camera_exposure(camera, seq_config, pattern_name, log=None):
+    """Pre-run hook: set the live camera exposure to the resolved (ByPattern-overlaid)
+    ``Orca.ExposureTime``, but ONLY when it differs from what the camera currently reports.
+
+    Mirrors the manual dashboard "Apply Settings" (``camera_apply_settings``): the camera is
+    inited ONCE at startup from the BASE ``Orca.ExposureTime``, so a per-pattern overlay that
+    raises/lowers the exposure (e.g. ``ByPattern["3270_tri"]["Orca"]["ExposureTime"]``) would
+    otherwise be ignored by the hardware until a restart. Resolving the overlay here and applying
+    iff changed makes the camera follow the active pattern automatically, with no manual step and
+    no redundant re-arm when nothing moved. ROI is preserved (only exposure is touched).
+    Best-effort: any failure logs and leaves the camera as-is (a run must not die over this)."""
+    log = log or _noop_log
+    if camera is None or not getattr(camera, "connected", True):
+        return
+    try:
+        import expConfig_helper
+        from devices.orca.orca_camera import orca_config_defaults
+        # Resolve against the active pattern overlay (base Orca <- ByPattern[pattern]); fall back
+        # to the base consts when no pattern / no per-pattern Orca override.
+        consts = expConfig_helper.apply_pattern(seq_config.consts, pattern_name)
+        target = (consts.get("Orca", {}) or {}).get("ExposureTime")
+        if not target:
+            target = orca_config_defaults(seq_config)[1]
+        if not target:
+            return
+        target = float(target)
+        current = camera.get_exposure()
+        if current is not None and abs(float(current) - target) <= _EXPOSURE_EPS_S:
+            return                                   # unchanged -> do NOT re-apply
+        roi = camera.current_roi()
+        actual_roi, actual_exp = camera.apply_settings(roi, target)
+        log("Orca exposure synced: %.6gs -> %.6gs (pattern=%s, roi=%s)"
+            % (float(current) if current is not None else float("nan"),
+               float(actual_exp), pattern_name, actual_roi))
+    except Exception as e:  # noqa: BLE001 - never fail a run over an exposure sync
+        log("Orca exposure sync skipped (%s)" % e)
+
+
 def make_engine_run(server, camera, seq_config, log=None):
     """Build the live ``run`` seam handed to :func:`sequence_runner.run_job`.
 
@@ -632,6 +678,11 @@ def make_engine_run(server, camera, seq_config, log=None):
         pat0 = _first_loading_pattern(scangroup.runp(), default_phase=_ld_phase, all_scans=_ld_all)
         import expConfig_helper
         expConfig_helper.set_current_pattern((pat0 or {}).get("name"))
+        # Pre-run camera exposure sync: now the per-pattern overlay is active, push the resolved
+        # Orca.ExposureTime to the live camera IFF it changed (the camera was inited once at
+        # startup from the BASE exposure). No-op when unchanged -> no spurious re-arm. Best-effort.
+        sync_camera_exposure(camera, seq_config, (pat0 or {}).get("name"),
+                             log=lambda m: log("[runner] %s" % m))
         slm_ses = _make_slm_session(scangroup, scan_id, log,
                                     default_phase=_ld_phase, all_scans=_ld_all)
         # Fresh per-shot health for this scan, so a failing previous scan can't
@@ -668,6 +719,8 @@ def make_engine_run(server, camera, seq_config, log=None):
                 session=slm_ses, camera=camera, server=server, client=slm_client,
                 scan_id=scan_id, is_rearrange=is_rearrange, n_rounds=_n_rounds(scangroup),
                 pattern_name=(pat0 or {}).get("name"), server_grid_knm=server_grid_knm,
+                frame_patterns=_frame_patterns(scangroup, num_images, seq_config,
+                                               log=lambda m: log("[runner] %s" % m)),
                 log=lambda m: log("[runner] %s" % m)))
         # Capture ownership comes from the SEQ's own declaration (@seq_capabilities(owns_frames=
         # True)), NOT a runp sniff: the seq that does the mid-sequence grab is the source of truth.
@@ -999,6 +1052,39 @@ def _n_rounds(scangroup):
         return max(int(_runp_num(scangroup.runp(), "NumImages", 2)) - 1, 1)
     except Exception:  # noqa: BLE001
         return 1
+
+
+def _frame_patterns(scangroup, num_images, seq_config, log=None):
+    """Per-camera-frame pattern NAMES for the multi-round rearrangement detector
+    (RearrangeCommSeq2): ``[loading, middle, ..., final]``, one per frame -- so each frame is
+    detected with its OWN per-pattern registry grid + thresholds (independent site counts).
+
+    Single source of truth = the SAME per-frame declaration the runner writes for detection /
+    thresholds (``_loading_patterns_json``: an explicit ``runp().imagePatternsJson`` when the scan
+    set one -- which the two-round SLMRearrangementScan does with [loading, middle, final] -- else
+    the synthesized initial/final). Reading the NAMES from there (not from the ScanGroup's
+    ``rearrange_kwargs`` param node, whose scannable ``extras`` leaves don't take the ``(default)``
+    fallback-call at the group level) guarantees detection matches the declared frames exactly.
+    Returns None for a single-frame scan / no declaration -> the single-detector path is unchanged."""
+    n = int(num_images)
+    if n < 2:
+        return None
+    try:
+        items = _loading_patterns_json(scangroup.runp(), n, *_loading_defaults(seq_config))
+    except Exception as e:  # noqa: BLE001 - no declaration -> single-detector fallback
+        if log is not None:
+            log("[runner] frame-pattern derivation failed (%s); single-detector detection" % e)
+        return None
+    if not items:
+        return None
+    names = [str((it or {}).get("name") or "").strip() or None for it in items]
+    # Size to the frame count: pad the tail with the last declared name (a scan may declare fewer
+    # than num_images entries), truncate any surplus. All-None -> None (nothing declared).
+    if not any(names):
+        return None
+    if len(names) < n:
+        names = names + [names[-1]] * (n - len(names))
+    return names[:n]
 
 
 def _make_slm_session(scangroup, scan_id, log, default_phase=None, all_scans=False):

@@ -50,7 +50,8 @@ class ScanContext:
 
     def __init__(self, *, session, camera, server, client, scan_id,
                  is_rearrange=False, n_rounds=1, pattern_name=None,
-                 server_grid_knm=None, calib_root=None, log=None):
+                 server_grid_knm=None, calib_root=None, log=None,
+                 frame_patterns=None):
         self.session = session          # SlmScanSession (scan-long slm lock owner)
         self.camera = camera            # OrcaCamera (or None)
         self.server = server            # ExptServer (store_imgs / seq_finish / seq_cancel)
@@ -59,7 +60,19 @@ class ScanContext:
         self.is_rearrange = bool(is_rearrange)
         self.n_rounds = int(n_rounds)
         self.pattern_name = pattern_name  # frame-0 loading pattern (per-pattern detection)
+        # Per-camera-frame pattern names (loading, [middle...], final) for the multi-round scan
+        # (RearrangeCommSeq2). Each frame is detected with its OWN per-pattern registry grid +
+        # thresholds (independent site counts / orderings), NOT the single server grid -- the
+        # caller (the seq callback) is responsible for keeping the site count in agreement with
+        # what the SLM server scores that round (a mismatch is surfaced, never silently off-by-one).
+        # None / single-round -> the single-detector path below is used unchanged (ground truth).
+        self.frame_patterns = list(frame_patterns) if frame_patterns else None
         self.log = log or (lambda _m: None)
+        # Cache of per-pattern detectors (built lazily on first use), keyed by pattern name. The
+        # frame-0 detector is the ``_detector`` built below (server-grid-anchored when available);
+        # additional per-round detectors are pure per-pattern-registry (server_grid_knm=None) so
+        # each round scores against its own pattern's grid + fits.
+        self._detector_cache = {}
         # The mid-shot detector's grid source, in priority order:
         #   (1) SINGLE SOURCE OF TRUTH -- the SERVER's actual init_grid (``server_grid_knm``, the
         #       exact array ``rearrange(bits)`` scores ``bits[i]`` against), mapped to camera px
@@ -71,10 +84,16 @@ class ScanContext:
         #   (2) the per-pattern registry grid+thresholds (knm -> affine -> ROI-crop), and
         #   (3) the day-folder grid+thresholds.
         # The ROI comes from the live camera.
-        roi_provider = (camera.current_roi if camera is not None else None)
-        self._detector = _Detector(calib_root or _DATA_ROOT, pattern_name=pattern_name,
-                                   roi_provider=roi_provider, server_grid_knm=server_grid_knm,
-                                   log=self.log)
+        self._calib_root = calib_root or _DATA_ROOT
+        self._roi_provider = (camera.current_roi if camera is not None else None)
+        self._server_grid_knm = server_grid_knm
+        self._detector = _Detector(self._calib_root, pattern_name=pattern_name,
+                                   roi_provider=self._roi_provider,
+                                   server_grid_knm=server_grid_knm, log=self.log)
+        # The frame-0 detector doubles as the cache entry for the loading pattern name so
+        # detect_*_for(pattern_name, ...) reuses it (server-grid-anchored) instead of rebuilding.
+        if pattern_name:
+            self._detector_cache[pattern_name] = self._detector
 
     def detect_bits(self, img):
         """Detect atoms in ``img`` -> '0'/'1' string, or '' on a calibration mismatch (so the
@@ -87,6 +106,35 @@ class ScanContext:
         the SLM server's rearrange call IN PLACE OF the bitstring; a missing/degenerate per-site fit
         -> 0.0 so the server (which rounds at 0.5) drops uncertain sites."""
         return self._detector.probs(img)
+
+    # ----------------------------------------------------------------------- #
+    # per-pattern detection (multi-round scan: each frame its OWN pattern grid)
+    # ----------------------------------------------------------------------- #
+    def detector_for(self, pattern_name):
+        """The cached :class:`_Detector` for ``pattern_name`` (built from that pattern's registry
+        grid + thresholds, INDEPENDENT of any other frame's pattern), building it on first use.
+
+        ``pattern_name`` None / "" -> the frame-0 detector (server-grid-anchored when available;
+        the single-round behaviour). Any OTHER name -> a pure per-pattern-registry detector
+        (``server_grid_knm=None``): a distinct pattern round scores against its own derived grid,
+        so a middle/final pattern with a different site count than the loading pattern detects
+        correctly. Falls back to the day folder inside the detector when the registry is absent."""
+        if not pattern_name:
+            return self._detector
+        det = self._detector_cache.get(pattern_name)
+        if det is None:
+            det = _Detector(self._calib_root, pattern_name=pattern_name,
+                            roi_provider=self._roi_provider, server_grid_knm=None, log=self.log)
+            self._detector_cache[pattern_name] = det
+        return det
+
+    def detect_probs_for(self, pattern_name, img):
+        """:meth:`detect_probs` against ``pattern_name``'s own registry grid (multi-round scan)."""
+        return self.detector_for(pattern_name).probs(img)
+
+    def detect_bits_for(self, pattern_name, img):
+        """:meth:`detect_bits` against ``pattern_name``'s own registry grid (multi-round scan)."""
+        return self.detector_for(pattern_name).bits(img)
 
     # ----------------------------------------------------------------------- #
     # shot-error reporting (feeds the dashboard's "shots failing" banner)

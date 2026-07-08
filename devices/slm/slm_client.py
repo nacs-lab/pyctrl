@@ -109,10 +109,11 @@ class SlmClient:
         self._check(resp)
         return _json_or_empty(resp)
 
-    def _post_json(self, path, body, extra_headers=None):
+    def _post_json(self, path, body, extra_headers=None, timeout=None):
         resp = self._sess().post(self.url + path, json=body,
                                  headers=self._headers(extra_headers),
-                                 timeout=self._timeout_s, verify=self._verify_ssl)
+                                 timeout=self._timeout_s if timeout is None else float(timeout),
+                                 verify=self._verify_ssl)
         self._check(resp)
         return _json_or_empty(resp)
 
@@ -152,11 +153,17 @@ class SlmClient:
             try:
                 return self._post_json("/lock/acquire", body)
             except SlmHTTPError as err:
-                retriable = err.status in (408, 423)
+                # 408 block-timeout / 423 contention are the normal retriable lock outcomes.
+                # 503 is the priority-gate "setup_rearrangement in progress" busy response
+                # (Retry-After: 5): transient by design, so wait it out rather than dying --
+                # this covers a DIFFERENT scan colliding with an in-flight setup (a scan's OWN
+                # setup no longer orphans, see SETUP_TIMEOUT_S). The deadline check below still
+                # bounds the total wait.
+                retriable = err.status in (408, 423, 503)
                 if not retriable or clock() >= deadline:
                     raise
-                if not server_block:
-                    sleep(0.2)   # client-side poll back-off when not using server blocking
+                if not server_block or err.status == 503:
+                    sleep(0.2)   # client-side poll back-off (no-server-block, or busy-gate 503)
 
     def release_lock(self, device="all"):
         return self._post_json("/lock/release",
@@ -169,13 +176,22 @@ class SlmClient:
     # ----------------------------------------------------------------------- #
     # rearrangement setup
     # ----------------------------------------------------------------------- #
+    # setup_rearrangement is heavy: model load + torch.compile + CUDA-graph capture + grid
+    # derive, tens of seconds (30-90 s on a cold model). It MUST outlast the shared 30 s read
+    # timeout: a client-side timeout does NOT cancel the server work -- the server keeps compiling
+    # with ``_rearrange_setup_busy`` set, so the NEXT call (e.g. the scan's own slm_ses.begin()
+    # -> /lock/acquire) hits the busy gate and 503s "setup_rearrangement in progress". That is the
+    # scan-wedges-on-its-own-setup failure. Give setup its own generous read timeout.
+    SETUP_TIMEOUT_S = 180.0
+
     def setup_rearrangement(self, **kwargs):
         """One-time / per-shot rearrangement config. Mirrors ``slm_client.m::setup_rearrangement``
         body shaping: grids pass through, ``initial_phase``/``final_phase`` map to
         ``*_filepath``, ``extras`` (a dict) is merged in, everything else forwarded verbatim.
         Only the keys you pass are sent -- the server keeps cached values for the rest."""
         body = _build_setup_body(kwargs)
-        return self._post_json("/slm/setup_rearrangement", body)
+        return self._post_json("/slm/setup_rearrangement", body,
+                               timeout=self.SETUP_TIMEOUT_S)
 
     def reload_rearrange(self):
         """Write the cached initial phase to the SLM + prime the GPU path (start-of-shot reset).
