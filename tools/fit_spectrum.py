@@ -60,6 +60,11 @@ def main():
     ap.add_argument("--xlabel", default="push-out freq [MHz]",
                     help="x-axis label for the saved plot (default 'push-out freq [MHz]'; "
                          "use e.g. '616-EOM freq [MHz]' for the revival scan)")
+    ap.add_argument("--site-mask", default=None,
+                    help="restrict the averaged spectrum to a site subset: a registered "
+                         "name (e.g. 'stable') or a .npy path (bool[nSites] or int indices). "
+                         "Omit to use the scan PATTERN's configured mask (if any); pass "
+                         "'full' to force the whole array even when the pattern has one.")
     args = ap.parse_args()
 
     import numpy as np
@@ -67,8 +72,16 @@ def main():
     from yb_analysis.analysis.fittings.lorentzian import fit_lorentzian, fit_double_lorentzian
 
     sid = _latest_scan_id() if args.scan == "latest" else args.scan
+    # 'full' -> force the whole array (site_mask=False); omit -> pattern default.
+    _sm_arg = False if (args.site_mask or "").lower() == "full" else args.site_mask
     d = analyze_scan(sid, include_per_site=False, include_diag_aggregate=False,
-                     include_per_iteration=False, sync_slm_diag=False)
+                     include_per_iteration=False, sync_slm_diag=False,
+                     site_mask=_sm_arg)
+    if d.get("site_mask_error"):
+        print("WARNING site_mask: %s (fell back to full array)" % d["site_mask_error"])
+    elif d.get("site_mask_active"):
+        print("site_mask %r active: %d/%d sites"
+              % (d.get("site_mask_spec"), d.get("n_sites_used"), d.get("n_sites")))
     scan_dir = d.get("scan_dir")
     x = np.asarray(d["sweep"]["values"][0], float)
     y = np.asarray(d["summary"]["survival_mean"], float)
