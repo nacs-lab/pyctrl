@@ -536,10 +536,23 @@ class ExptServer(object):
 
     def finish_recv(func):
         def f(self, *args, **kwargs):
-            # finish receiving messages
-            msg = self.safe_recv()
-            while msg is not None:
-                msg = self.safe_recv()
+            # Discard any UNCONSUMED remainder of the CURRENT multipart
+            # request before replying -- and nothing else. RCVMORE is true
+            # only while the last-received message still has frames pending,
+            # so this can never touch another client's queued request.
+            #
+            # The previous version drained with bare recv(NOBLOCK) until the
+            # socket was empty, which also swallowed every OTHER client's
+            # request that had queued up while the handler ran. Each eaten
+            # request was a silently dropped verb whose REQ client hung until
+            # its own timeout -- the monitor's get_imgs stalling ~30 s at scan
+            # boundaries (20-shot dashboard freezes) and ~1-3% of all client
+            # requests vanishing under normal dashboard polling load.
+            try:
+                while self.__sock.getsockopt(zmq.RCVMORE):
+                    self.__sock.recv(zmq.NOBLOCK)
+            except Exception:
+                pass
             func(self, *args, **kwargs)
         return f
 
