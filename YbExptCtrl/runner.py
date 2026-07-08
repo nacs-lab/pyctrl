@@ -727,12 +727,23 @@ def make_engine_run(server, camera, seq_config, log=None):
             with run_timing.setup_stage("new_run"):
                 seq_manager.new_run()
 
+        # Surface an intermittent NI DAC underflow onto the dashboard shot-health chip (same
+        # channel as the rearrange-setup failures). The scan stops cleanly (status "ni_error",
+        # shots-so-far kept) instead of a hard job crash -- this makes the loss visible.
+        def _on_shot_error(message, point):
+            log("[runner] %s" % message)
+            try:
+                server.record_shot_error(message, scan_id=scan_id, kind="ni_dac_underflow")
+            except Exception:  # noqa: BLE001
+                pass
+
         try:
             return run_scan_group(seq, scangroup, control=control,
                                   pre_cb=pre, post_cb=post,
                                   new_run=_timed_new_run,
                                   on_compile=seq_on_compile,
-                                  on_globals=seq_on_globals, **opts)
+                                  on_globals=seq_on_globals,
+                                  on_shot_error=_on_shot_error, **opts)
         finally:
             # Flush any in-flight async image saves BEFORE teardown, so the last shots' frames are
             # published before we stop the camera / release locks. No-op for sync/legacy servers.

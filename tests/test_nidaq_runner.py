@@ -34,6 +34,69 @@ def test_to_channel_major_transposes():
     assert list(cm[1]) == [4.0, 5.0, 6.0]
 
 
+def test_to_channel_major_single_channel():
+    # sample-major [nsamps=3, nchns=1] -> channel-major [1, 3] (the squeeze happens at write).
+    cm = nidaq_runner._to_channel_major(np.array([[1.0], [2.0], [3.0]]))
+    assert cm.shape == (1, 3)
+    assert list(cm[0]) == [1.0, 2.0, 3.0]
+
+
+# --------------------------------------------------------------------------- #
+# _write_and_start: single-channel squeeze (DaqError -200524 regression, PicoMotor308)
+# --------------------------------------------------------------------------- #
+class _RecordTask:
+    """Captures what task.write() received; fakes the nidaqmx Task surface _write_and_start uses."""
+    def __init__(self):
+        self.written = None
+
+        class _Timing:
+            def cfg_samp_clk_timing(self, *a, **k):
+                pass
+        self.timing = _Timing()
+
+    def stop(self):
+        pass
+
+    def write(self, data, auto_start=False):
+        self.written = data
+
+    def start(self):
+        pass
+
+
+@pytest.fixture
+def fake_nidaqmx(monkeypatch):
+    """Stub nidaqmx.constants so _write_and_start's import works without the package."""
+    import sys
+    import types
+    mod = types.ModuleType("nidaqmx")
+    consts = types.ModuleType("nidaqmx.constants")
+    consts.AcquisitionType = types.SimpleNamespace(FINITE=object())
+    consts.Edge = types.SimpleNamespace(RISING=object())
+    mod.constants = consts
+    monkeypatch.setitem(sys.modules, "nidaqmx", mod)
+    monkeypatch.setitem(sys.modules, "nidaqmx.constants", consts)
+
+
+def _write(samples):
+    task = _RecordTask()
+    nidaq_runner._TASK_META[task] = (nidaq_runner._RATE, "/Dev1/PFI0")
+    nidaq_runner._write_and_start(task, samples)
+    return task.written
+
+
+def test_write_single_channel_is_1d(fake_nidaqmx):
+    # (1, nsamps) 2-D must be squeezed to 1-D, else nidaqmx raises -200524.
+    written = _write(np.array([[0.0, 0.0, 0.0]]))   # 1 channel, 3 samples
+    assert np.asarray(written).ndim == 1
+    assert list(written) == [0.0, 0.0, 0.0]
+
+
+def test_write_multi_channel_stays_2d(fake_nidaqmx):
+    written = _write(np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))   # 2 channels
+    assert np.asarray(written).shape == (2, 3)
+
+
 # --------------------------------------------------------------------------- #
 # structural equality helpers
 # --------------------------------------------------------------------------- #

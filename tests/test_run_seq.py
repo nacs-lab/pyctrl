@@ -198,6 +198,52 @@ def test_restart_flag_retries_the_shot():
     assert rec.compiles == [1.0, 2.0, 3.0]
 
 
+class _FakeDaqError(Exception):
+    """Stand-in for nidaqmx.errors.DaqError (carries .error_code)."""
+    def __init__(self, error_code):
+        super().__init__("DAC conversion attempted before data to be converted was available.\n"
+                         "Status Code: %d" % error_code)
+        self.error_code = error_code
+
+
+def test_ni_underflow_stops_scan_cleanly_and_surfaces():
+    # run_real raises -200018 at point 3: the scan STOPS cleanly (status "ni_error"), keeps the
+    # 2 shots already done, surfaces the failure, and never re-runs the dead seq.
+    rec = Recorder()
+    surfaced = []
+
+    def run_real(seq):
+        rec.runs.append(seq.tag)
+        if seq.tag == 3.0:
+            raise _FakeDaqError(-200018)
+        seq.C.RESTART = 0
+
+    sc = SeqConfig()
+    res = run_scan_group(
+        _seqfn, _scan([1.0, 2.0, 3.0]), control=rec, compile_point=rec.compile_point,
+        run_real=run_real, seq_config=sc, on_seq_num=rec.on_seq_num,
+        config_teardown=rec.teardown,
+        on_shot_error=lambda msg, pt: surfaced.append((pt, msg)))
+    assert res == {"status": "ni_error", "nseq": 2}     # 2 shots kept, clean stop (not a crash)
+    assert rec.runs == [1.0, 2.0, 3.0]                  # point 3 attempted ONCE, not re-run
+    assert len(surfaced) == 1 and surfaced[0][0] == 3   # surfaced for point 3
+    assert rec.teardowns == 1                           # teardown still fired
+
+
+def test_non_ni_error_still_propagates():
+    rec = Recorder()
+
+    def run_real(seq):
+        rec.runs.append(seq.tag)
+        raise ValueError("some other failure")          # not a -200018 underflow
+
+    sc = SeqConfig()
+    with pytest.raises(ValueError):
+        run_scan_group(_seqfn, _scan([1.0, 2.0]), control=rec,
+                       compile_point=rec.compile_point, run_real=run_real, seq_config=sc)
+    assert len(rec.runs) == 1                            # crashed on the first shot, no swallowing
+
+
 def test_callbacks_receive_seq_num_and_arg():
     rec = Recorder()
     _run(_scan([5.0, 6.0]), rec, pre_cb=[rec.pre_cb], post_cb=[rec.post_cb])

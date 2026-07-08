@@ -53,7 +53,7 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
                    control=None, compile_point=None, run_real=None,
                    seq_config=None, new_run=None, on_seq_num=None,
                    config_teardown=None, sleep=time.sleep, rng=None,
-                   on_compile=None, on_globals=None):
+                   on_compile=None, on_globals=None, on_shot_error=None):
     """Run a ScanGroup as a scan (port of ``runSeq2(func, scangroup, ...)``).
 
     Returns a result dict ``{"status": "ok"|"aborted"|"yielded", "nseq": <shots completed>}``.
@@ -164,7 +164,23 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
                 run_cb(pre_cb, idx)
             cur = seqlist[idx]
             # set_global for scan vars: usevar dormant -> empty -> no-op (kept for fidelity).
-            run_real(cur)                               # run_seq2.run_real times its own substages
+            try:
+                run_real(cur)                           # run_seq2.run_real times its own substages
+            except BaseException as e:                  # noqa: BLE001 - classify NI underflow
+                if not _is_transient_ni(e):
+                    raise                               # a real fault -> propagate (hard error)
+                # Intermittent NI-DAQmx -200018 underflow (FPGA-PFI0/6738 race). The mitigation
+                # (onboard-FIFO preload in nidaq_runner) should prevent it; if it still fires, do
+                # NOT nuke the job: the failed shot left the libnacs host_seq mid-run (can't be
+                # re-run -- "Unfinished sequence cannot be restarted"), so SURFACE it (dashboard
+                # shot-health chip) and STOP the scan cleanly at this boundary, keeping the shots
+                # already completed + running teardown. Returns like an abort, distinct status.
+                _publish_shot_error(
+                    on_shot_error,
+                    "NI DAC underflow (DAQmx -200018) at point %s -- scan stopped (%d shots kept): %s"
+                    % (indices[idx - 1], counter["cur_seq_num"], e),
+                    indices[idx - 1])
+                return "ni_error"
             with run_timing.stage("post_cb"):
                 run_cb(post_cb, idx)
             if not _restart(cur):
@@ -180,8 +196,10 @@ def run_scan_group(seqfn, scangroup, indices=None, rep=1, is_random=False,
         if new_run is not None:
             new_run()                                   # SeqManager.new_run() (engine reset)
         outcome = _scan_loop(run_one, nseq, rep, is_random, rng)
-        # outcome: False (ran to completion) | "abort" (user abort) | "yield" (bg stepped aside).
-        status = {"abort": "aborted", "yield": "yielded"}.get(outcome, "ok")
+        # outcome: False (ran to completion) | "abort" (user abort) | "yield" (bg stepped aside) |
+        # "ni_error" (intermittent NI DAC underflow -- stop cleanly, keep the shots already done).
+        status = {"abort": "aborted", "yield": "yielded",
+                  "ni_error": "ni_error"}.get(outcome, "ok")
         return {"status": status, "nseq": counter["cur_seq_num"]}
     finally:
         run_timing.scan_summary()                       # log mean/median/max per stage (no-op if OFF)
@@ -317,6 +335,30 @@ def _bump_seq_id(seq_config):
 def _publish(on_seq_num, n):
     if on_seq_num is not None:
         on_seq_num(n)
+
+
+# DAQmx -200018: "DAC conversion attempted before data to be converted was available" -- the
+# externally-clocked FINITE AO task underflowed (FPGA PFI0 vs the 6738 FIFO). Match on the code
+# (a nidaqmx DaqError carries .error_code) AND the message text, since it can reach the run loop
+# re-raised as a plain Exception by the engine.
+_NI_UNDERFLOW_CODE = -200018
+
+
+def _is_transient_ni(exc):
+    """True if ``exc`` is the intermittent NI DAC-underflow we stop-cleanly on (not a hard crash)."""
+    if int(getattr(exc, "error_code", 0) or 0) == _NI_UNDERFLOW_CODE:
+        return True
+    msg = str(exc)
+    return str(_NI_UNDERFLOW_CODE) in msg or "DAC conversion attempted before data" in msg
+
+
+def _publish_shot_error(on_shot_error, message, point):
+    if on_shot_error is None:
+        return
+    try:
+        on_shot_error(message, point)
+    except Exception:  # noqa: BLE001 - surfacing must never break the run/teardown
+        pass
 
 
 def _noop():

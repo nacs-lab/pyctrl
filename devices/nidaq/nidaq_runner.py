@@ -190,11 +190,39 @@ def _build_task(channels, clocks, triggers, rate):
     clk_src = None
     for ch in channels:
         dev, chn = _chan_key(ch)
-        task.ao_channels.add_ao_voltage_chan("%s/ao%s" % (dev, chn))
+        ao = task.ao_channels.add_ao_voltage_chan("%s/ao%s" % (dev, chn))
+        # FIX for the intermittent DAQmx -200018 underflow ("DAC conversion attempted before data
+        # ... available"): preload the WHOLE finite waveform into the card's 65,535-sample onboard
+        # FIFO, so there is NO host->FIFO DMA during the externally-clocked (FPGA PFI0) generation
+        # -- the host can't be late feeding a sample, which is exactly what -200018 is. The MATLAB
+        # driver instead set Rate=500e3 (> the real clock) for trailing-edge tolerance; the pyctrl
+        # port had to drop to 400e3 (6738 -200332 at 14 chn), losing that margin -> the underflow
+        # returned (job #949 556AutlerTownesScan_30G, 204/610 lost; recurred 5+ sessions). Our
+        # waveforms are ~210 samples x 14 chn (~3 k) << the 65,535 shared FIFO, so the preload fits
+        # easily. Best-effort: a card/nidaqmx that rejects the property falls back to the streaming
+        # path (the old behavior). ponytail: FIFO preload kills the host-feed race; the deeper
+        # FPGA-PFI0 edge-count question stays a maintenance-window item.
+        try:
+            ao.ao_use_only_on_brd_mem = True
+        except Exception:  # noqa: BLE001 - unsupported -> keep the streaming path
+            pass
         if clk_src is None:
             task.triggers.start_trigger.cfg_dig_edge_start_trig(
                 "/%s/%s" % (dev, triggers[dev]), trigger_edge=Edge.RISING)
             clk_src = "/%s/%s" % (dev, clocks[dev])   # external sample clock (PFI0)
+    # With an EXTERNAL clock, `rate` is only DAQmx's expected-max hint (buffer sizing + the
+    # device's computed max-rate); the real timing is the FPGA PFI0 edges. The MATLAB driver set
+    # it ABOVE the real clock on purpose (trailing-edge tolerance). Use the device's OWN computed
+    # ceiling for this channel mapping (samp_clk_max_rate) when it beats our nominal `rate`, so we
+    # restore that margin without hard-coding a value the 6738 would reject (-200332). Best-effort:
+    # fall back to the nominal `rate` if the query/clamp is unavailable. (Secondary to the onboard
+    # FIFO preload above, which is the actual -200018 fix.)
+    try:
+        dev_max = float(task.timing.samp_clk_max_rate)
+        if dev_max > rate:
+            rate = dev_max
+    except Exception:  # noqa: BLE001 - query unsupported -> keep the nominal rate
+        pass
     _TASK_META[task] = (rate, clk_src)
     return task
 
@@ -214,7 +242,17 @@ def _write_and_start(task, samples):
     task.timing.cfg_samp_clk_timing(
         rate, source=clk_src, active_edge=Edge.RISING,
         sample_mode=AcquisitionType.FINITE, samps_per_chan=nsamps)
-    task.write(samples, auto_start=False)
+    # nidaqmx wants a 1-D array for a SINGLE-channel task; a (1, nsamps) 2-D array is misread
+    # (DaqError -200524, "number of channels in the data does not match"). Squeeze the lone
+    # channel axis -- harmless for the multi-channel path (left untouched). Seen first on the
+    # 1-NI-channel PicoMotor308 seq (2026-06-26).
+    write_data = samples
+    if hasattr(samples, "shape"):
+        if samples.shape[0] == 1:
+            write_data = samples[0]
+    elif len(samples) == 1:
+        write_data = samples[0]
+    task.write(write_data, auto_start=False)
     task.start()
 
 
