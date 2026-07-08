@@ -24,4 +24,5 @@ tests/reference/*.pretty.json
 
 # Throwaway scratch: diagnostic run/submit/analysis scripts + figures + JSON dumps.
 tmp/
+tmp_*.py
 tools/seq_dump_timing.json
