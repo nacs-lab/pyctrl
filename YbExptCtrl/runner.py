@@ -324,6 +324,17 @@ def consume_loop(server, *, should_stop, run_job_fn=None, dispatch_pop=None,
                 finally:
                     _safe_set_background_running(server, 0)
                 continue
+            # TRULY idle (no job, no background): if the dummy keep-alive is OFF, release
+            # the process-global NI Task. A cached-open Task keeps Dev1's AO channels
+            # RESERVED (DAQmx) even between scans, so the dashboard's out-of-band DC set
+            # (ni_set_driver.py, a separate process) was refused with -50103 "resource is
+            # reserved" until a backend restart. Releasing here is race-free (this thread
+            # is the only NiDAQRunner owner) and cheap to undo: the next scan's
+            # _get_session sees _session is None and rebuilds. With the keep-alive ON the
+            # session is deliberately KEPT -- dummy shots re-drive the NI defaults every
+            # cycle, so an out-of-band set would be stomped anyway; the write path tells
+            # the operator to turn Dummy off instead.
+            _release_ni_when_idle(server, log)
             # Tier 3: the DummySeq keep-alive (off/default/last) when nothing else runs.
             if idle is not None:
                 _safe_set_dummy_running(server, 1)
@@ -1564,6 +1575,41 @@ def _safe_set_background_running(server, flag, name=""):
     if fn is not None:
         try:
             fn(flag, name)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _release_ni_when_idle(server, log=None):
+    """Release the cached NI Task while the backend is TRULY idle (consume-loop idle branch).
+
+    An open (even stopped) DAQmx Task keeps its AO channels reserved, blocking the dashboard's
+    out-of-band DC set (``ni_set_driver.py``, a separate process) with -50103 "resource is
+    reserved". Called ONLY from the consume loop's no-job/no-background branch, so it runs on
+    the run-loop thread -- the sole NiDAQRunner owner -- and cannot race a shot.
+
+    Skipped while the dummy keep-alive is ON (mode != 'off'): the very next dummy shot would
+    re-arm the session anyway (and re-drive the NI defaults, stomping any out-of-band set), and
+    releasing between dummy shots would just force a ~0.7 s channel rebuild every cycle. A
+    server without ``dummy_mode`` (fakes / coarse hubs) is treated as dummy-off. Best-effort:
+    never raises into the loop; a no-session call is a cheap no-op (the common idle iteration).
+    """
+    mode_fn = getattr(server, "dummy_mode", None)
+    if mode_fn is not None:
+        try:
+            if mode_fn() != "off":
+                return
+        except Exception:  # noqa: BLE001 - can't read the mode -> don't touch the session
+            return
+    try:
+        from devices.nidaq import NiDAQRunner
+        if not NiDAQRunner.has_session():
+            return
+        NiDAQRunner.clear_session()
+    except Exception:  # noqa: BLE001 - releasing is best-effort; never stop the loop
+        return
+    if log is not None:
+        try:
+            log("NI session released (idle, dummy off) -- out-of-band NI writes allowed")
         except Exception:  # noqa: BLE001
             pass
 

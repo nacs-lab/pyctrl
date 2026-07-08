@@ -96,6 +96,16 @@ class NiDAQRunner:
             _close_task(cls._session)
             cls._session = None
 
+    @classmethod
+    def has_session(cls):
+        """True iff a (cached) NI Task is currently open.
+
+        While a Task is open DAQmx keeps its AO channels RESERVED (even stopped/idle), so any
+        out-of-band writer in another process -- e.g. the dashboard's one-off DC set via
+        ``nidaq_io_handler.set_channel`` -- is refused with DAQmx -50103 "resource is reserved".
+        The consume loop uses this to release the session when the backend goes truly idle."""
+        return cls._session is not None
+
     # ----------------------------------------------------------------------- #
     # session cache (structural invalidation)
     # ----------------------------------------------------------------------- #

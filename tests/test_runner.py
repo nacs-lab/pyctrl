@@ -297,6 +297,71 @@ class TestConsumeLoop:
 
 
 # --------------------------------------------------------------------------- #
+# consume_loop -- idle NI-session release (dashboard out-of-band DC set, -50103)
+# --------------------------------------------------------------------------- #
+class _FakeNiTask:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class TestConsumeLoopNiRelease:
+    """A truly-idle iteration (no job, no background, dummy OFF) must close the cached NI
+    Task so an out-of-band writer (dashboard NI set, a separate process) isn't refused with
+    DAQmx -50103 'resource is reserved'. With the dummy keep-alive ON (or a job running) the
+    session is deliberately kept."""
+
+    @pytest.fixture(autouse=True)
+    def _ni_session(self):
+        from devices.nidaq import NiDAQRunner
+        NiDAQRunner.reset_cache()
+        task = _FakeNiTask()
+        NiDAQRunner._session = task
+        yield task
+        NiDAQRunner.reset_cache()
+
+    def test_idle_dummy_off_releases_session(self, _ni_session):
+        from devices.nidaq import NiDAQRunner
+        srv = FakeQueueServer()
+        srv.dummy_mode = lambda: "off"
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
+            sleep=lambda dt: None)
+        assert _ni_session.closed and not NiDAQRunner.has_session()
+
+    def test_idle_without_dummy_mode_attr_releases(self, _ni_session):
+        # A server without dummy_mode (coarse fakes) counts as dummy-off -> release.
+        from devices.nidaq import NiDAQRunner
+        runner.consume_loop(
+            FakeQueueServer(), should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
+            sleep=lambda dt: None)
+        assert not NiDAQRunner.has_session()
+
+    def test_idle_dummy_on_keeps_session(self, _ni_session):
+        from devices.nidaq import NiDAQRunner
+        srv = FakeQueueServer()
+        srv.dummy_mode = lambda: "last"
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
+            sleep=lambda dt: None)
+        assert NiDAQRunner.has_session() and not _ni_session.closed
+
+    def test_job_iteration_keeps_session(self, _ni_session):
+        # A job iteration never reaches the idle branch -> the session cache is untouched
+        # (it is the scan's own, actively cached, Task).
+        from devices.nidaq import NiDAQRunner
+        srv = FakeQueueServer(jobs=[{"id": 1, "payload": b"{}"}])
+        srv.dummy_mode = lambda: "off"
+        runner.consume_loop(
+            srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
+            run_job_fn=lambda *a, **k: type("R", (), {"status": "ok"})(),
+            sleep=lambda dt: None)
+        assert NiDAQRunner.has_session() and not _ni_session.closed
+
+
+# --------------------------------------------------------------------------- #
 # consume_loop -- background (calibration) tier: foreground > background > idle
 # --------------------------------------------------------------------------- #
 class TestConsumeLoopBackground:
