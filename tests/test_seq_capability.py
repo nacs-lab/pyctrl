@@ -37,8 +37,10 @@ def test_decorator_default_is_false():
 def test_rearrange_seqs_declare_owns_frames():
     from RearrangeCommSeq import RearrangeCommSeq
     from RearrangeCommSeq2 import RearrangeCommSeq2
+    from RearrangeSTIRAPSeq import RearrangeSTIRAPSeq
     assert has_capability(RearrangeCommSeq, "owns_frames") is True
     assert has_capability(RearrangeCommSeq2, "owns_frames") is True
+    assert has_capability(RearrangeSTIRAPSeq, "owns_frames") is True
 
 
 def test_normal_seq_does_not_declare_it():

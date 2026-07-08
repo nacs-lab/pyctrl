@@ -1047,7 +1047,16 @@ def _is_rearrange_scan(scangroup):
 
 
 def _n_rounds(scangroup):
-    """Rounds of rearrangement = NumImages - 1 (NumImages = n_rounds + 1); >= 1."""
+    """Rounds of rearrangement for the scan context. The scan's EXPLICIT declaration
+    (``g().rearrange_kwargs.extras.n_rounds`` -- every rearrangement scan sets it) wins;
+    fallback is ``NumImages - 1`` (the pure-rearrangement layout, NumImages = n_rounds + 1).
+    The explicit value must win because a hybrid science scan has extra post-rearrangement
+    frames (e.g. RearrangeSTIRAPScan: NumImages=3 with a single round). >= 1."""
+    try:
+        v = scangroup.getseq(1)["rearrange_kwargs"]["extras"]["n_rounds"]
+        return max(int(v), 1)
+    except Exception:  # noqa: BLE001 - not declared -> frame-count fallback
+        pass
     try:
         return max(int(_runp_num(scangroup.runp(), "NumImages", 2)) - 1, 1)
     except Exception:  # noqa: BLE001

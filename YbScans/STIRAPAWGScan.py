@@ -64,7 +64,7 @@ def build():
     # parked on the 20um-array 2D dip center (scans 20260707_180931 + _183401, 17x17_20um):
     # 616=234.46 / 556=143.33, dip survival ~0.06-0.09 (~90-93% transfer, deepest of the spacing
     # series 10/14.5/20um -> Rydberg blockade). was 142.62 (14.5um scan 20260707_170113)
-    g().AWG.AWG556.carrier_freq_MHz = 143.4 #.scan(2, np.linspace(142, 144.4, 11)) # = 143.33  #
+    g().AWG.AWG556.carrier_freq_MHz = 143.33  #
     g().AWG.AWG556.pulse_width_us = 5  # old params: steepness 4, pw 4us
     g().AWG.AWG556.steepness = 4
     g().AWG.AWG556.max_amplitude_vpp = 11 #11
@@ -91,7 +91,7 @@ def build():
     # ---- STIRAP push-out params (STIRAPPushoutStep reads these) ----
     # parked on the 20um-array 2D dip center (scans 20260707_180931 + _183401, 17x17_20um):
     # 616=234.46 / 556=143.33. was 233.88 (14.5um 20260707_170113); 233.97 (10um _132639)
-    g().Init.EOM616.Freq = 234.5e6 #.scan(1, np.linspace(233.5e6, 235.5e6, 11))  #= 234.45e6  #
+    g().Init.EOM616.Freq = 234.43e6  #
     g().Pushout.VRydTrap = 0.03
     # TTL gate width = pulse width (else the gaussian is clipped/repeated); fixed at 4us
     g().Pushout.STIRAP.guassian_pulse_width = 5e-6

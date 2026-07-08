@@ -914,3 +914,34 @@ class TestParentWatchdog:
                                       poll_interval_s=0.01)
         time.sleep(0.1)
         assert calls["n"] == 0
+
+
+# =========================================================================== #
+# _n_rounds -- explicit scan declaration wins over the NumImages-1 fallback
+# =========================================================================== #
+class TestNRounds:
+    def _group(self):
+        import sys
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        p = os.path.join(root, "lib")
+        if p not in sys.path:
+            sys.path.insert(0, p)
+        from scan_group import ScanGroup
+        return ScanGroup()
+
+    def test_explicit_n_rounds_wins_over_frame_count(self):
+        # Hybrid science scan layout: 3 frames (load / verify / post-science) but ONE
+        # rearrangement round -- NumImages-1 would wrongly report 2.
+        g = self._group()
+        g().rearrange_kwargs.extras.n_rounds = 1
+        g.runp().NumImages = 3
+        assert runner._n_rounds(g) == 1
+
+    def test_fallback_is_numimages_minus_one(self):
+        g = self._group()
+        g.runp().NumImages = 3
+        assert runner._n_rounds(g) == 2
+
+    def test_defaults_to_one(self):
+        g = self._group()
+        assert runner._n_rounds(g) == 1
