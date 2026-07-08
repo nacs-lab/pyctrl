@@ -88,7 +88,7 @@ DEFAULT_LOADING_DEFOCUS = -5.0
 # shared across patterns / with the day folder). OFF by default because it changes what
 # EVERY scan writes to the SLM — flip to True and verify in a hardware window. Per-scan
 # override (any scan, no toggle needed): runp().loading_phase / loading_defocus.
-DEFAULT_LOADING_PATTERN_PHASE = "phase/33x33_uniform.pt"
+DEFAULT_LOADING_PATTERN_PHASE = "phase/33x33_feedback9.pt"  # 2026-06-30: was 33x33_uniform; switched to the active trap-depth-flattened array
 ALL_SCANS_LOAD_PATTERN = False
 
 

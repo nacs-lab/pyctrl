@@ -124,6 +124,10 @@ def _channel_alias():
     a["VElectrode6"] = "Dev1/17"
     a["VElectrode7"] = "Dev1/18"
     a["VElectrode8"] = "Dev1/19"
+    a["VImage1PIDMode"] = "Dev1/20"
+    a["VImage1PIDSet"] = "Dev1/21"
+    a["VPicoMotor369h"] = "Dev1/22"
+    a["VPicoMotor369v"] = "Dev1/23"
     return a
 
 
@@ -138,7 +142,7 @@ def _consts():
     c["Orca"] = {"ROI": [1000, 100, 2100, 2100], "ExposureTime": 0.050004}
 
     # 556nm resonance (calibrate daily by spectroscopy; 3P1 mj=0 near-magic)
-    c["Resonance556mj0Freq"] = 107.8199e6  # fit 2026-06-23 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.957, FWHM 61.2 kHz, 208 shots, scan 20260623094903, 33x33_feedback9 array); +44.6 kHz vs prior (within linewidth -- NOTE prior cal was 47x47_uniform; this array is 33x33_feedback9, deeper traps -> larger light shift). was 107.7753e6 (06-12, 47x47_uniform); 107.7673e6 (06-11); 107.7677e6 (06-10); 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
+    c["Resonance556mj0Freq"] = 107.8861e6  # fit 2026-07-05 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.960, FWHM 58.0 kHz, 205 shots, scan 20260705112318, 33x33_feedback9); -2.5 kHz vs prior (within linewidth). was 107.8762e6 (07-03); 107.8560e6 (07-02); 107.8448e6 (06-30); 107.8499e6 (06-29); 107.8478e6 (06-28, NEW LUT); 107.8389e6 (06-26); 107.8199e6 (06-23, 33x33_feedback9); 107.7753e6 (06-12, 47x47_uniform); 107.7673e6 (06-11); 107.7677e6 (06-10); 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
     c["Resonance399Freq"] = 310e6              # not magic; changes with trap depth
 
     # Init: 2D MOT & Zeeman, electric fields, SLM servo
@@ -146,7 +150,7 @@ def _consts():
         "TwoDMOT": {"FreqDetuning": -20e6, "Amp": 1},
         "Zeeman": {"FreqDetuning": -36.5e6, "Amp": 0.6},
         "EOM616": {"Freq": 252.07e6, "FreqOld": 252.07e6},
-        "Electrodes": {"Vx": -0.0233, "Vy": 0.0027, "Vz": 0.004859},
+        "Electrodes": {"Vx": -0.042, "Vy": 0.0066, "Vz": 0.0059},  # 2026-06-28 DC-Stark E-field null via StarkV*Revival616Scan (per-axis 616-EOM revival vs electrode V, parabola vertex; each axis fit after the prior was nulled). Vx -0.0233->-0.042 (scan 20260628170653, R2=0.9994, a=1.637 MHz/V^2); Vy 0.0027->0.0066 (scan 20260628174713, R2=0.9999, a=1165 MHz/V^2); Vz 0.004859->0.0059 (scan 20260628182552, R2=0.9994, a=1000 MHz/V^2). Min-Stark 308 resonance (616-EOM) ~282.08 MHz at the null
         "VSLMServo": 3.7,                        # 112 sites at 6A at 30dB
     }
 
@@ -156,7 +160,7 @@ def _consts():
         "BiasCoilCurrent": {"Ryd": 3, "X": 0.1, "Y": 0, "Z": 0},
         "FreqDetuning": -44e6,                 # fast-loading opt 2026-06-05; was -40e6
         "Amp": 0.6,
-        "LoadingTime": 600e-3,                 # fast-loading opt 2026-06-05 (loading saturates ~0.21); was 500e-3
+        "LoadingTime": 700e-3,                 # fast-loading opt 2026-06-05 (loading saturates ~0.21); was 500e-3
     }
 
     # GreenMOT
@@ -174,7 +178,7 @@ def _consts():
         # Y~0.281; moved Y 0.268->0.280 to null the vertical gradient (corrY
         # -0.18@0.268 -> ~-0.05@0.280) at ~98% of peak load. X re-checked at the same
         # time (scan 20260621_172015): 0.039 still the 0.038-0.040 viable-window center.
-        "BiasCoilCurrent": {"Ryd": 0, "X": 0.0385, "Y": 0.265, "Z": 0.18},
+        "BiasCoilCurrent": {"Ryd": 0, "X": 0.0388, "Y": 0.265, "Z": 0.18},
         # fast-loading opt 2026-06-05: HandoverTime was 30e-3
         "PowerBroaden": {"HandoverTime": 15e-3, "FreqDetuning": 0.7e6, "Amp": 0.8},
         # fast-loading opt 2026-06-05: HoldTime was 200e-3, Amp was 0.2
@@ -232,6 +236,35 @@ def _consts():
             "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
             "h": {"FreqDetuning": 0.16e6, "Amp": 0.13},
         },
+        # StrobeImag399Step: per super-cycle = BEAM 1 pulse -> BEAM 2 pulse -> 556 recool, within ONE
+        # camera exposure (arXiv:2507.01011 scheme, our regime). The two COUNTER-PROPAGATING 399 imaging
+        # beams (AmpAbsImag=img1, Amp399Imag2=img2) ALTERNATE -- each on for BeamPulseTime, the other off,
+        # 556 off -- so a pair cancels net photon recoil ("400 ns pulses ... mitigate momentum transfer
+        # from a single beam", here 1 us). Then a recool window (399 off, 556 on). period = 2*BeamPulseTime
+        # + RecoolTime; n_cycles = round(Orca.ExposureTime/period) -> the train auto-fills the camera frame
+        # (choose the collect window via Orca.ExposureTime, base or a ByPattern overlay).
+        #
+        # BeamPulseTime/RecoolTime set the LOOP structure -> FIXED scalars, NEVER a .scan() axis; sweep
+        # them across ROUNDS (tools/strobe_imaging_round.py --pulse-time). BeamPulseTime 1 us ~ AOM rise
+        # -> partial pulse; verify on scope (trigger on the first PD pulse -- no scope-sync TTL wired).
+        # WARN: small RecoolTime -> many cycles -> big sequence; validate at short Orca.ExposureTime first.
+        #
+        # Cool556 here is a SEPARATE recool set from the during-imaging Imag399.Cool556: with the 399 OFF
+        # during recool there is no light shift -> the optimum detuning/amp differs. Seeded from
+        # Imag399.Cool556; retune via tools/strobe_imaging_round.py cool mode.
+        # PulsesPerBurst (N): per super-cycle, fire N alternating beam1/beam2 SHORT pulses (the image
+        # burst -- short pulses keep the per-beam momentum kick + heating low) THEN one recool window.
+        # period = 2*N*BeamPulseTime + RecoolTime; duty = 2*N*BeamPulseTime/period. Raise N to raise duty
+        # (more photons) WITHOUT lengthening the single-beam pulse. WARN: events ~ cycles*N -> a high-N,
+        # short-pulse train over a 100 ms exposure is a LARGE sequence (~1e5 pulse events); watch the
+        # engine. N/BeamPulseTime/RecoolTime are loop counts -> FIXED scalars, never a .scan() axis.
+        "Strobe": {
+            "BeamPulseTime": 1e-6, "RecoolTime": 5e-6, "PulsesPerBurst": 5,
+            "Cool556": {
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.13},
+            },
+        },
     }
 
     # Cool556
@@ -268,17 +301,21 @@ def _consts():
     c["SLMRearrange"] = {"Time": 100e-3}
 
     # AWG defaults (Siglent SDG6X)
+    # shape: gaussian / rise_gaussian / fall_gaussian / rise_linear / fall_linear;
+    # smooth_width_us: EXTRA half-cosine edge window (0 = sharp; ignored for gaussian).
+    # pulse_width_us stays the MAIN window; total playback = pulse_width_us + smooth_width_us.
+    # (devices/sigilent_awg/pulse_waveform.py; shape gallery: pyctrl/tmp/pulse_10_examples.png)
     c["AWG556"] = {
         "resource_address": "USB0::62700::4353::SDG6XFCC900309::0::INSTR",
         "channel": "C1", "max_amplitude_vpp": 11, "num_points": 10000,
         "pulse_width_us": 4, "carrier_freq_MHz": 130.78, "steepness": 3.5,
-        "amplitude_scale": 1.0,
+        "amplitude_scale": 1.0, "shape": "gaussian", "smooth_width_us": 0.0,
     }
     c["AWG308"] = {
         "resource_address": "USB0::62700::4353::SDG6XFCD801391::0::INSTR",
         "channel": "C1", "max_amplitude_vpp": 6, "num_points": 10000,
         "pulse_width_us": 4, "carrier_freq_MHz": 200, "steepness": 3.5,
-        "amplitude_scale": 1.0,
+        "amplitude_scale": 1.0, "shape": "gaussian", "smooth_width_us": 0.0,
     }
 
     # 60 Hz AC-line trigger. When enabled, the FPGA waits for an edge on a TTL INPUT line at the
@@ -376,270 +413,6 @@ def _consts():
                 "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
             },
         },
-        # Two-layer 15x15 "diamond" array (phase/2x15x15_xyoffset_5um.pt): layers at +-2.5 um
-        # = +-0.768 rad of the 2*rho^2-1 defocus map (1 rad ~ 3.26 um), 5 um xy offset, ~450
-        # sites. Imaging (399) / cooling-during-imaging (556 X/h) / RNR cooling / VSLMServo are
-        # an EXACT copy of 33x33_uniform (2026-06-12, per request -- same science camera + 556
-        # tones). The midplane sits on the camera at the standard loading_defocus = -5 because
-        # the phase is zernike-free / z=0 stack-centered (like a 2-D array's focal plane).
-        # CAVEAT: ~450 sites vs 33x33's 1089 => the SAME VSLMServo = 1.9 gave a ~2.4x DEEPER
-        # per-trap depth (the |mj|=1 light shift fell BELOW the push-out AOM band, traps far too
-        # deep, and the copied-from-33x33 cooling/imaging amps were badly mismatched). VSLMServo
-        # turned down 1.9 -> 1.0 (2026-06-13, per request) to bring per-trap depth back into the
-        # 33x33-calibrated regime (loading re-checked fine: 0.59, CV 20%). Re-opt CONVERGED 2026-06-13:
-        # imaging-cooling X det 0.16 -> 0.30 MHz (below); RNR Cool556 unchanged (insensitive at this
-        # depth). Best detection box is 13 / maskSigma 3 (infid 6.3% -> 4.6%) but that is a GLOBAL
-        # scan_prep setting, NOT applied here pending a per-pattern hook. Operating survival ~0.82-0.85
-        # is the +-2.5 um OPTICAL-DEFOCUS limit (confirmed: unchanged 1 s vs 5 ms hold, and imaging-amp
-        # 0.18-0.22 saturates) -- not cooling/hold/photons; a real fix needs per-layer focus.
-        "2x15x15_xyoffset_5um": {
-            "Init": {
-                "VSLMServo": 1.0
-            },
-            # 2026-06-13 detection box matched to the defocused 2-layer PSF (offline sweep on scan
-            # 20260613_174025): boxSize 9->13 / maskSigma 2->3 cut median infidelity 6.3% -> 4.6%
-            # (SNR 2.40 -> 2.54). Read per-pattern by scan_prep._pattern_detection_box (gated --
-            # other patterns keep the global 9/2). Inert as a sequence const (no step reads it).
-            "boxSize": 13, "maskSigma": 3,
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    # 2026-06-13 imaging-cooling re-opt at VSLMServo 1.0 (interleaved X<->h, Blue 0.18
-                    # / 1 s stress hold): the deep-trap-shifted X cooling resonance moved X det
-                    # 0.16 -> 0.30 MHz (det=0 is dead); h unchanged. Stress survival 0.80 -> 0.85,
-                    # then a broad plateau (the residual cap is the +-2.5 um optical defocus, not cooling).
-                    "X": {"FreqDetuning": 0.30e6, "Amp": 0.20},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.13},
-                },
-            },
-            # Cool556 (release-recapture): re-checked 2026-06-13 (X & h 2-D at 30 & 50 us release) --
-            # recapture survival is INSENSITIVE to the cooling detuning over 0.1-0.4 MHz at this depth
-            # (broad ~0.36 plateau at 50 us), so the copied 33x33 seed is left UNCHANGED (only avoid amp>=0.20).
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.135e6, "Amp": 0.13},
-                "h": {"FreqDetuning": 0.13e6, "Amp": 0.12},
-            },
-        },
-        "47x47_feedbackwarm2": {
-            # Initialize the SLM servo to 3.7
-            "Init": {
-                "VSLMServo": 3.5
-            },
-            # imaging (399) + cooling-during-imaging (556 X/h).
-            # 556 X/h cooling-during-imaging re-optimized for 47x47_uniform 2026-06-11 (CoolingScan,
-            # real imaging amp Blue 0.18 + 1 s hold, interleaved X<->h to the joint fixed point;
-            # survival ~0.915). Only h.Amp moved (0.13 -> 0.14); X (det +0.16, amp 0.20) and h det
-            # +0.16 confirmed. ExposureTime omitted (cross-ref to Orca.ExposureTime, re-resolved).
-            # 2026-06-12: briefly tried Imag399.Amp 0.2 (larger histogram split, +14% SNR) but it
-            # cost survival 0.905 -> ~0.80 even after re-tuning cooling (X->0.22, h->0.16) -- reverted
-            # to 0.18 and these 0.18-optimum X/h values (full data in Notion 06/12).
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                },
-            },
-            # RNR / release-recapture cooling (556) -- re-optimized for 47x47_uniform 2026-06-11
-            # (CoolingScan_RNR, 50us release, interleaved X<->h coordinate ascent to the joint
-            # fixed point; survival ~0.29 at 50us, loading ~0.58, broad flat plateau).
-            # Was X {0.135e6, 0.13}, h {0.13e6, 0.12} (seeded from the prior array).
-            # 2026-06-12: h FreqDetuning 0.14e6 -> 0.12e6. Re-run at the more sensitive 30us
-            # release (50us was washed out, spread ~0.06; 30us spread ~0.22, ~4x contrast);
-            # interleaved X<->h converged, survival ~0.54 at 30us. X {0.13e6, 0.14} and h.Amp
-            # 0.12 confirmed; only h det moved one fine step (0.14->0.12, ~4.6 SEM, ~0.02 gain).
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.13e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.12e6, "Amp": 0.12},
-            },
-            "LAC": {
-                "FreqDetuning": 0.11e6, "Amp": 0.16, "Time": 10e-3, "DeadTime": 10e-3,
-                "BlueLAC": {
-                    "FreqDetuning": -3.8e6, "Amp": 0.17, "Time": 500e-3, "DeadTime": 30e-3,
-                    "BiasCoilCurrent": {"Ryd": 0},
-                    "Resonance556mj0Freq": None,       # cross-ref -> Resonance556mj0Freq (set below)
-                    "X": {"FreqDetuning": 0.22 * 1e6, "Amp": 0.04},
-                }
-            }
-        },
-        "47x47_feedbackwarm3": {
-            # Round-3 iterative WGS feedback array: warm-started from 47x47_feedbackwarm2.pt with
-            # the full per-site trap-depth correction measured on warm2 (scan 20260612_170355).
-            # Same cooling/imaging overlay as 47x47_feedbackwarm2 (same 47x47 array family).
-            "Init": {
-                "VSLMServo": 3.5
-            },
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.2, "Amp2": 0.2,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.20},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.13e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.12e6, "Amp": 0.12},
-            },
-            "LAC": {
-                "FreqDetuning": 0.11e6, "Amp": 0.16, "Time": 10e-3, "DeadTime": 10e-3,
-                "BlueLAC": {
-                    "FreqDetuning": -3.8e6, "Amp": 0.17, "Time": 500e-3, "DeadTime": 30e-3,
-                    "BiasCoilCurrent": {"Ryd": 0},
-                    "Resonance556mj0Freq": None,       # cross-ref -> Resonance556mj0Freq (set below)
-                    "X": {"FreqDetuning": 0.22 * 1e6, "Amp": 0.04},
-                }
-            }
-        },
-        "47x47_feedbackwarm4": {
-            # Round-4 iterative WGS feedback array: warm-started from 47x47_feedbackwarm3.pt with the
-            # full per-site correction measured on warm3 (scan 20260612_225239). Started as an exact
-            # copy of the 47x47_feedbackwarm3 overlay (same 47x47 array family). VSLMServo 3.5.
-            # 556 COOLING re-optimized 2026-06-20 for the TWO 399 imaging beams (Amp1/Amp2 = 0.30/0.20)
-            # via interleaved X<->h coordinate ascent:
-            #   imaging-during-imaging (Imag399.Cool556): X 0.16/0.20->0.20/0.24, h 0.16/0.14->0.20/0.22.
-            #   release-recapture (Cool556 below): X 0.13/0.14->0.16/0.14, h 0.12/0.12->0.16/0.12 @30us.
-            # IMAGING re-opt (det -4, Amp1 0.38, Amp2 0.17) was TESTED 2026-06-20 but REVERTED: clean
-            # final-number measurement showed only fidelity 0.9845->0.9865 at EQUAL ~96% single-shot
-            # survival (imaging loss is small vs fixed/detection loss), so not worth the change. Kept
-            # 0.30/0.20 @ -5. Magnitude-along-3:2 sweep then explored separately (scans 20260620_~0145+).
-            "Init": {
-                "VSLMServo": 3.5
-            },
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.3, "Amp2": 0.2,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.20e6, "Amp": 0.24},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-            "LAC": {
-                "FreqDetuning": 0.11e6, "Amp": 0.16, "Time": 10e-3, "DeadTime": 10e-3,
-                "BlueLAC": {
-                    "FreqDetuning": -3.8e6, "Amp": 0.17, "Time": 500e-3, "DeadTime": 30e-3,
-                    "BiasCoilCurrent": {"Ryd": 0},
-                    "Resonance556mj0Freq": None,       # cross-ref -> Resonance556mj0Freq (set below)
-                    "X": {"FreqDetuning": 0.22 * 1e6, "Amp": 0.04},
-                }
-            }
-        },
-        # 47x47_feedbackwarm5 (2026-06-22, Claude session): amplitude-scaling depth-flatten of warm4
-        # (amp_fb.py -> phase/47x47_feedbackwarm5.pt; Dphi 0.009 rad, speckle-preserving) using the
-        # 24-rep mj=1 depth map (scans 063408+064238; baseline CV 4.15% on 1034 fit sites). EXACT
-        # clone of the warm4 overlay EXCEPT the imaging fix: Imag399.Amp1 0.30 -> 0.10 -- warm4's
-        # stale 0.30 was heating atoms out (survival 0.05); 0.10 gives survival 0.96 / fidelity 0.99.
-        "47x47_feedbackwarm5": {
-            "Init": {
-                "VSLMServo": 3.5
-            },
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.10, "Amp2": 0.20,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.20e6, "Amp": 0.24},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-            "LAC": {
-                "FreqDetuning": 0.11e6, "Amp": 0.16, "Time": 10e-3, "DeadTime": 10e-3,
-                "BlueLAC": {
-                    "FreqDetuning": -3.8e6, "Amp": 0.17, "Time": 500e-3, "DeadTime": 30e-3,
-                    "BiasCoilCurrent": {"Ryd": 0},
-                    "Resonance556mj0Freq": None,       # cross-ref -> Resonance556mj0Freq (set below)
-                    "X": {"FreqDetuning": 0.22 * 1e6, "Amp": 0.04},
-                }
-            }
-        },
-        # 47x47_feedbackwarm6 (2026-06-22, Claude session): amplitude-scaling depth-flatten round 2
-        # (amp_fb.py warm-started from warm5 -> phase/47x47_feedbackwarm6.pt; Dphi 0.007 rad). warm5
-        # measured CV 4.14% -> 2.77% (common sites) after round 1; this round pushes toward the floor.
-        # Identical overlay to warm5 (imaging Amp1 0.10 / Amp2 0.20, servo 3.5).
-        "47x47_feedbackwarm6": {
-            "Init": {
-                "VSLMServo": 3.5
-            },
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.10, "Amp2": 0.20,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.20e6, "Amp": 0.24},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-            "LAC": {
-                "FreqDetuning": 0.11e6, "Amp": 0.16, "Time": 10e-3, "DeadTime": 10e-3,
-                "BlueLAC": {
-                    "FreqDetuning": -3.8e6, "Amp": 0.17, "Time": 500e-3, "DeadTime": 30e-3,
-                    "BiasCoilCurrent": {"Ryd": 0},
-                    "Resonance556mj0Freq": None,       # cross-ref -> Resonance556mj0Freq (set below)
-                    "X": {"FreqDetuning": 0.22 * 1e6, "Amp": 0.04},
-                }
-            }
-        },
-        # Production 33x33 array (renamed 2026-06-22 from 33x33_consistency_s1_fbamp5): the
-        # sinc^2-corrected uniform hologram flattened to depth-uniform via amplitude-scaling
-        # feedback (phase phase/33x33_feedback1.pt). Same camfb-family overlay as 33x33_uniform
-        # (servo 1.9, LAC 20 ms, imaging 0.11/0.10, cooling X 0.16/0.26 h 0.20/0.22).
-        "33x33_feedback1": {
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"Time": 20e-3},
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # 33x33_feedback1 + dead-spot revival (2026-06-22): amplitude-scaling round that doubled the
-        # far-field intensity request (realized ~1.4x) of the 34 spots with no depth fit on fbamp5
-        # (dim top-right + bottom-left corners + 4 near-DC ring sites); good 1034 spots preserved
-        # (CV 2.2%). Phase phase/33x33_feedback2.pt. Overlay is loading/imaging/cooling being
-        # re-optimized 2026-06-22 (started as an exact clone of 33x33_feedback1).
-        "33x33_feedback2": {
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"Time": 20e-3},
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
         # feedback9 (2026-06-22): CLEAN final flatten = feedback6 flattened by its OWN combined-40rep map,
         # NO corner/near-DC boosts (those perturb the bulk speckle -> feedback8 bulk degraded to 3.99%).
         # This is the UNIFORM production array: split-half true depth CV 2.45% < 2.5% for ~1061 spots
@@ -649,200 +422,225 @@ def _consts():
         "33x33_feedback9": {
             "Orca": {"ExposureTime": 0.035},
             "Init": {"VSLMServo": 1.9},
+            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "Imag399": {
+                # 2026-07-01 re-baseline AFTER the two-beam 399 realignment (which RESTORED the 06-29
+                #     power ceiling; dose/amp shifted ~1.6x so the old amps are void). Amp scan r400-r401
+                #     (0 pushout): joint plateau Amp1 0.56 / Amp2 0.33 (heating turnover ~0.64). Cooling
+                #     X + h both re-confirmed head-to-head (100-shot single-point pairs): X(0.158,0.267)
+                #     kept vs fitted candidate (0.174,0.283) -- no gain; h(0.14,0.24) kept vs (0.14,0.195)
+                #     -- no gain. Final 260-shot characterization: surv 0.9893 +/- 0.0003 (runs 0.986-0.991),
+                #     per-site fid median 0.9928 / d' 4.17, spatially FLAT (<=0.13%/array) -- fid below the
+                #     0.995 target; remaining lever = exposure 35->50 ms (not taken). NOTE mid-campaign the
+                #     r400 DIM amp cells poisoned the threshold accumulator -> store refit + verify (see
+                #     memory bug-threshold-dim-scan-contamination); numbers above are post-fix.
+                # 2026-07-05 DAILY-CAL AMP RE-OPT (399 dose drifted UP ~2x again since 07-03/04: at the
+                #     old 0.23/0.22 the daily-cal scans read surv 0.970 / fid med 0.9867 / d' 3.91; the
+                #     r510 map put 0.23/0.22 at surv 0.75, deep past the heating cliff). Amp scans r510
+                #     (7x5, 0.11-0.47 x 0.10-0.34) + r511 (low-Amp1 extension 0.05-0.17) -> interior
+                #     plateau optimum Amp1 0.11 / Amp2 0.22. 100-shot single-point confirm (scan
+                #     20260705_115052, 0 pushout, 35 ms): surv 0.9881 +/- 0.0004, per-site fid median
+                #     0.9971, d' 4.88, matching the 07-04 baseline. Amp1 0.23 -> 0.11, Amp2 kept 0.22;
+                #     cooling untouched (X 0.16e6/0.26, h 0.16e6/0.14).
+                # 2026-07-03/04 RE-OPT (399 power drifted UP again since 07-01 -> the 07-01 amps 0.56/0.33
+                #     over-dose/heat now; whole amp optimum dropped ~2.4x, the classic hardware-drift tell).
+                #     Amp scan r1/r2 (0 pushout) -> plateau, Amp2>0.22 turns over -> Amp1 0.23 / Amp2 0.22.
+                #     Cooling: 1s locate + 0-pushout confirm + X-amp push 0.26/0.29/0.32 -> X amp 0.267->0.26
+                #     optimal (0.29/0.32 heat); h locate peak det 0.16/amp 0.14 (broad/flat) -> h 0.14e6/0.24
+                #     -> 0.16e6/0.14 (what the confirm ran). 100-shot 0-pushout confirm (scan
+                #     20260703185438, at 35 ms ByPattern exposure): real survival 0.952 -> 0.988 (~40 SEM),
+                #     per-site fid median 0.990 -> 0.996, d' 3.87 -> 4.90, spatially flat. 2D amp map r6
+                #     (20260704001324) confirmed the plateau. X det 0.158->0.16 (grid step, within noise).
+                # --- prior 2026-07-01 re-baseline AFTER two-beam realignment: Amp1 0.56/Amp2 0.33,
+                #     X(0.158,0.267) h(0.14,0.24); surv 0.9893, fid med 0.9928 / d' 4.17. Superseded by
+                #     the 07-03/04 399 power drift + re-opt above.
+                # --- prior 2026-06-29 DEGRADED interim (399 power drift): Amp1 1/Amp2 0.18, h(0.14,0.14),
+                #     fid 0.986 / surv 0.957; superseded by the realignment + this re-baseline.
+                # --- prior 2026-06-28 RECAL (post beam-1 fix): Amp1 0.24->0.52, Amp2 0.26->0.24; X(0.16,0.24),
+                #     h(0.12,0.18); r10 confirm fid med 0.9934 / surv 0.986 / d' 4.17, flat.
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.22,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        
+        # 2026-07-07: new array with 14.5um spacing for Rydberg
+        "23x23_14p5um": {
+            "Orca": {"ExposureTime": 0.035},
+            "Init": {"VSLMServo": 3.2},
+            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.22,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        
+        # 2026-07-07: new array with 20um spacing for Rydberg
+        "17x17_20um": {
+            "Orca": {"ExposureTime": 0.035},
+            "Init": {"VSLMServo": 0.6},
+            "BlueMOT": {"LoadingTime": 300e-3},
+            "GreenMOT": {"CoolDown": {"HoldTime": 150e-3}},
+            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.22,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        
+        # 2026-07-04: NEW two-layer bifocal array 2x11x11_5um (phase/2x11x11_5um.pt): 11x11 grid
+        # duplicated at TWO axial planes z4 = +-2.7778 rad about the stack center, SAME xy for both
+        # layers (pure bifocal stack -- camera boxes catch both layers; per-layer readout needs the
+        # loading defocus moved to -5 +- 2.7778). Entry = EXACT COPY of 33x33_feedback9's current
+        # params (user 07-04) except Init.VSLMServo 0.39 (242 traps vs 1068 -- proportionally less
+        # total power). Per-pattern thresholds start fresh (seeded flat 202.5).
+        "2x11x11_5um": {
+            "Orca": {"ExposureTime": 0.035},
+            "Init": {"VSLMServo": 0.39},
+            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "Imag399": {
+                "FreqDetuning": -5e6, "Amp1": 0.23, "Amp2": 0.22,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+
+        # 2026-07-02: NEW array tri_3013_camfb (3013-site triangular, camera-feedbacked, no spots near
+        # DC -- nearest 120 knm px). Entry seeded as an EXACT COPY of 3270_tri's (runbook: cooling/
+        # imaging carries over within an array family; VSLMServo copied verbatim, never tuned here).
+        # Loading defocus -5 (user 07-02). Imaging re-optimization for THIS array tracked in
+        # _feedback3013/CAMPAIGN_STATE.md; NOTE 07-01 399 realignment shifted dose ~1.6x, so
+        # the inherited 06-30 amps are a starting point only. Orca.ExposureTime deliberately
+        # NOT overridden (user 07-02: default exposure for this array, unlike 3270_tri's 100 ms).
+        "tri_3013_camfb": {
+            "Init": {"VSLMServo": 3.5},
+            # 2026-07-02 LOADING optimization (campaign _feedback3013, phases 0-8c; verify scan
+            # 20260702_045020): loading 0.42 -> 0.57 mean / 0.61 median. The BIG lever was LAC:
+            # the inherited deep-trap LAC (25 ms, amp 0.16) was boiling ~40% of atoms out of this
+            # array's ~250 uK traps -> (4 ms, 0.06). Also BFieldGradient 30->34 (+0.02, first
+            # scan ever), CoolDown (0.35 MHz, 0.25)->(0.25 MHz, 0.28) (+0.09), bias Y 0.265->0.259
+            # (nulls y-gradient), LoadingTime 0.9->0.4 s (flat 0.2-0.9). Blue capture (-44, 0.6),
+            # PowerBroaden (0.7, 0.8), bias X 0.0385 confirmed at defaults. Pair check clean
+            # (no 2-atom histogram peak; bright-img1 shots survive BETTER). Known cost: survival
+            # 0.93 -> 0.84 from now-kept hot marginal atoms -> cooling/imaging re-opt follows.
+            "BlueMOT": {"LoadingTime": 0.4, "BFieldGradient": 34},
+            "GreenMOT": {
+                "BiasCoilCurrent": {"Y": 0.259},
+                "CoolDown": {"HoldTime": 0.3, "FreqDetuning": 0.25e6, "Amp": 0.28},
+            },
+            "LAC": {"Time": 4e-3, "Amp": 0.06},
+            "Imag399": {
+                # 2026-07-02 (i) amp re-center at default 50 ms, post-399-realignment: W was
+                #     0.20/0.32, X(0.16,0.17)/h(0.20,0.17) (r502-r504: fid med 0.990, d' 4.03,
+                #     load 0.45, surv med 0.936).
+                # 2026-07-02 (ii) RE-OPT after the loading campaign (loading 0.42->0.60 keeps
+                #     hot marginal atoms; survival dipped to 0.84): cooling X (0.19 MHz, 0.23) /
+                #     h (0.18 MHz, 0.17) (r505/r506 0-pushout maps) + amps -> 0.26/0.28 (r507).
+                #     r508 250-shot confirm: loading 0.578/0.604, survival 0.925/0.936, fid med
+                #     0.983, d' 3.71, spatially flat (grad 2.6%), ALL 3013 sites fit.
+                "FreqDetuning": -5e6, "Amp1": 0.26, "Amp2": 0.28,
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.19e6, "Amp": 0.23},
+                    "h": {"FreqDetuning": 0.18e6, "Amp": 0.17},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.14e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.14e6, "Amp": 0.12},
+            },
+        },
+        "3270_tri": {
+            "Orca": {"ExposureTime": 0.100},  # 2026-06-29: 35->50->75->100ms. Each step lifts survival ceiling (0.83->0.92->0.94) + fidelity/d' (limit was dim imaging, not cooling). 75ms W: amps 0.22/0.22, cool X(0.18,0.24)/h(0.18,0.18), surv ~0.94 fid 0.987 d'3.7. Pushing to 100ms (survival still < 99% gate).
+            "Init": {"VSLMServo": 3.5},
+            # 2026-07-01: per-pattern MOT loading raised 0.7 (global) -> 0.9 for this large 3270-site
+            # array only, to load the wide array more fully (user request).
+            "BlueMOT": {"LoadingTime": 0.9},
+            "GreenMOT": {"CoolDown": {"HoldTime": 0.3}},  # 2026-07-01: per-pattern MOT loading raised 0.7 (global) -> 0.9 for this large 3270-site array only, to load the wide array more fully (user request).
             "LAC": {"Time": 25e-3},
             "Imag399": {
-                # 2026-06-24 imaging optimization round (33x33_feedback9, full trap depth, 0 pushout):
-                # (1) Amp1 0.4->0.20, Amp2 0.3->0.12. The committed 0.40/0.30 sat on a 399 HEATING CLIFF
-                #     (real 50 ms survival collapsed to 0.35-0.70 at full fidelity -- atoms imaged but
-                #     blown out of the trap; the 399 dose-per-amp had drifted up since the config was
-                #     set, cf. recent beam-profile/coupling work). Amp scan r101 (5x4) + fine 1-D r102
-                #     located the low-heating plateau; r103 confirm (100 shots): fidelity med 0.9997,
-                #     survival 0.983 (FLAT).
-                # (2) h cooling 0.16e6/0.224 -> 0.14e6/0.24. h-cooling re-check r105 (det x amp) showed a
-                #     plateau at det 0.14-0.18/amp 0.20-0.24; r106 confirm at h(0.14,0.24) lifted survival
-                #     0.983 -> 0.992 (~9 SEM, decisive) at fidelity med 0.9993. X cooling re-checked (r104)
-                #     and kept -- already on its optimum. Residual <0.99 sites = chronic near-DC 476/(591)/592.
-                "FreqDetuning": -5e6, "Amp1": 0.20, "Amp2": 0.12,
+                # 2026-06-29 imaging optimization for 3270_tri (the prior values were copied from
+                # 33x33_feedback9 -- never tuned for this array). Full campaign at 100 ms exposure
+                # (raised 35->50->75->100 ms; each step lifted survival ceiling + d'/fidelity, the
+                # limit being dim imaging not cooling) and at the re-found focus z4 = -1.2 (the array
+                # was DEFOCUSED at -5; a z4 scan peaked at -1, then drifted to -1.2 -- thermal lensing,
+                # separation dMu 7.2->4.9 over the session, so the loading defocus needs periodic re-scan).
+                # Amp1 0.24->0.19, Amp2 0.26->0.14 (r237 amp scan at z4=-1; plateau, survival turns over
+                # ~amp1 0.25+). X cooling 0.158/0.267 -> 0.18/0.21, h 0.14/0.24 -> 0.16/0.17 (0-pushout
+                # confirms at 100 ms). FINAL per-site (r255, z4=-1.2, 100 shots): per-site survival 0.961,
+                # per-site fidelity (analytic Gaussian-overlap) median 0.985 / d' 3.84. BELOW the 99%/99.5%
+                # gate -- separation-limited by (a) thermal-lensing focus drift, (b) a chronic shallow
+                # BOTTOM-LEFT trap region (BL survival 0.921 vs rest 0.964, X/Y MOT-position independent
+                # -> trap-depth/SLM, needs trap-depth feedback). MOT left at default (X 0.0385/Y 0.265).
+                # 2026-06-30 RE-OPTIMIZED on the now depth-BALANCED array (after the trap-depth feedback
+                # campaign flattened CV 11%->1.54%). Focus re-scanned z4 -1.2 -> -1.5 (drifted, thermal
+                # lensing). Amp1 0.19->0.28 (r3/r4 amp scan: fid plateaus + survival turns over >0.28; low
+                # amp = detection-limited). Cooling re-opt (the win): X(0.18,0.21)->(0.16,0.17), h det
+                # 0.16->0.20 amp 0.17 -- drove d' 3.60->4.59. The old shallow-BL d' deficit is GONE (depth
+                # flat); fidelity is now globally separation-limited (cooling, not photons). FINAL per-site
+                # (job 1140, z4=-1.5, 150 shots): fidelity median 0.9965 (72.7% sites >=0.995, GATE MET),
+                # d' 4.59, survival mean 0.967 / median 0.988. Residual survival = scattered hi-d' loss +
+                # mild BL 0.955 (hardware: 556/imaging-beam align or trap depth) + the 100 ms heating budget
+                # (exposure-shorten deferred: it's a GLOBAL live-camera change, shared with rearrange).
+                "FreqDetuning": -5e6, "Amp1": 0.28, "Amp2": 0.14,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.158e6, "Amp": 0.267},
-                    "h": {"FreqDetuning": 0.14e6, "Amp": 0.24},
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.17},
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.17},
                 },
             },
             "Cool556": {
+                # 2026-06-29 RNR (release-recapture) cooling re-opt at 30 us release (focus z4=-1.2):
+                # X r260 det 0.16->0.14 (amp 0.14 kept), h r261 det 0.16->0.14 (amp 0.12 kept) -- both
+                # detunings to 0.14 MHz peaked recapture survival (X 0.476 / h 0.502 @30us, +~0.03 ~8 SEM
+                # = colder atoms). Loading flat ~0.58 (cooling-independent). Amps unchanged.
                 "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        "old/33x33_1068_zernike-4.pt": {
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"Time": 10e-3},
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.2,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # feedback8 (2026-06-22): TRUE depth-flatten from the COMBINED (40-rep, 2 pooled scans) feedback6
-        # map (1061 fit, CV 2.64%) -> bulk flattened m=0.83-1.09 toward <2.5% CV. The 7 optical-worst
-        # (MOT + cooling-during-imaging levers confirmed flat -> not loading/cooling, it's corner optics):
-        # near-DC 476/591/592 boosted x8 (ramp start), extreme corners 969/1002/1003/1035 x2 to load+fit.
-        # Phase phase/33x33_feedback8.pt.
-        "33x33_feedback8": {
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"Time": 20e-3},
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # feedback7 (2026-06-22): loading-AWARE flatten. feedback6 (full flatten) un-loaded 5 extreme
-        # corners (they have a per-site loading penalty: 0.25 load vs interior 0.6 at EQUAL depth =
-        # MOT-overlap/corner-trap-shape). So feedback7 = GENTLE (gain 0.5) flatten of feedback5 -- keeps
-        # corners deep enough to load while tightening the interior -- + the 3 near-DC (476/591/592)
-        # boosted x6 to become detectable. Phase phase/33x33_feedback7.pt.
-        "33x33_feedback7": {
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"Time": 20e-3},
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # feedback6 (2026-06-22): amplitude depth-FLATTEN of feedback5 using the WIDE 556 sweep
-        # (102.5-107.2 MHz) hybrid (refit-threshold OR GMM per spot) depths -- the wide sweep finally
-        # captured the over-deep boosted corners (1065/1068 good fits), so the flatten now INCLUDES
-        # them: deep corners x0.66, shallow edge x1.47 toward uniform depth (was CV 6.8%). Only 3
-        # near-DC (476/591/592) remain unmeasured. Phase phase/33x33_feedback6.pt. Iterating to uniformity.
-        "33x33_feedback6": {
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"Time": 20e-3},
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # feedback5 (2026-06-22): feedback4 + WIDE per-corner search RESULT on the 6 dead corners.
-        # Wide bracket {0.25,0.5,1,2,4} (integrated-intensity + GMM-loading agree) showed they were
-        # under-deep, NOT dead: 26,160 peak at x2 (load 0.67-0.74); 31,32,62,65 want x4 (load 0.41-0.63,
-        # still climbing -- x8 deemed too strong). Corners: {26:2,31:4,32:4,62:4,65:4,160:2}; the other
-        # 28 ex-no-fit at x2; 4 near-DC abandoned. Phase phase/33x33_feedback5.pt.
-        "33x33_feedback5": {
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"Time": 20e-3},
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # cornertest (2026-06-22): reusable overlay for the WIDE per-corner boost/damp search on the 6
-        # genuinely-dead corner spots [26,31,32,62,65,160] (GMM load<0.15). phase/33x33_cornertest.pt is
-        # overwritten per multiplier {0.25,0.5,2,4}; clone overlay (servo 1.9) so depth scaling matches.
-        "33x33_cornertest": {
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"Time": 20e-3},
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # feedback4 (2026-06-22): per-spot trap-depth search RESULT. Of the 34 no-fit spots, the
-        # integrated-intensity bracket {x0.5,x1,x2} picked x2-boost for 32 (real atom-signal gain,
-        # leakage ruled out; ~24 respond strongly) and x1 for 2 near-DC spots (476, 591; no depth
-        # response). Phase phase/33x33_feedback4.pt. ~= feedback2 (differs only on those 2 spots).
-        "33x33_feedback4": {
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"Time": 20e-3},
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # feedback3 (2026-06-22): mirror of feedback2 -- the SAME 34 no-fit spots DIMMED x2 (realized
-        # ~0.74x) instead of boosted, for a per-spot trap-depth bracket {x0.5, x1, x2} around feedback1.
-        # Phase phase/33x33_feedback3.pt. Identical overlay to feedback1/2 (servo 1.9 sets the global
-        # trap-depth scaling -- MUST match across the 3 versions or the depth comparison is confounded).
-        "33x33_feedback3": {
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"Time": 20e-3},
-            "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.1,
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.22},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+                "X": {"FreqDetuning": 0.14e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.14e6, "Amp": 0.12},
             },
         },
     }
+
+    # 2026-07-05: "2x11x11_5um_3d" = the 242-site (per-plane, no-dedup) DETECTION alias of the
+    # bifocal array, used by the layer-isolation rearrangement runs (extras.initial_pattern keys
+    # BOTH the rearrange detector calibration AND the per-bseq config overlay -> alias must exist
+    # here or those runs fall back to base config). Same physical array -> same dict object.
+    c["ByPattern"]["2x11x11_5um_3d"] = c["ByPattern"]["2x11x11_5um"]
 
     # ---- cross-references (mirror expConfig.m's const-to-const assignments) ----
     return expConfig_helper.apply_cross_refs(c)
