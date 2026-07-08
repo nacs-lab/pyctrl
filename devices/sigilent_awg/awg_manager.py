@@ -21,7 +21,9 @@ the live connections + command cache through these classmethods (just like ``rea
 backs the SLM per-shot callbacks). One scan at a time owns the AWGs.
 
 Waveform-shaping fields (different value -> different uploaded waveform):
-``carrier_freq_MHz``, ``pulse_width_us``, ``steepness``, ``amplitude_scale``.
+``shape``, ``carrier_freq_MHz``, ``pulse_width_us``, ``smooth_width_us``, ``steepness``,
+``amplitude_scale`` (``shape``/``smooth_width_us`` select the envelope family -- see
+:mod:`pulse_waveform`; extends MATLAB AWGManager.m, which only had the symmetric Gaussian).
 Hardware-config fields (read once, never change the waveform data):
 ``resource_address``, ``channel``, ``max_amplitude_vpp``, ``num_points``.
 
@@ -32,11 +34,12 @@ import logging
 import time
 
 from .awg_connection import AWGConnection
-from .gaussian_pulse_waveform import gaussian_pulse_waveform
+from .pulse_waveform import pulse_waveform
 
 logger = logging.getLogger(__name__)
 
-WAVEFORM_FIELDS = ("carrier_freq_MHz", "pulse_width_us", "steepness", "amplitude_scale")
+WAVEFORM_FIELDS = ("shape", "carrier_freq_MHz", "pulse_width_us", "smooth_width_us",
+                   "steepness", "amplitude_scale")
 
 
 class AWGManager:
@@ -109,7 +112,7 @@ class AWGManager:
                     p = dict(param_list[i])
                     p["max_amplitude_vpp"] = amp_vpp
                     p["num_points"] = num_points
-                    binary_data, info = gaussian_pulse_waveform(p)
+                    binary_data, info = pulse_waveform(p)
                     name = "wf_%03d" % i
                     conn.store_waveform(
                         conn.build_waveform_cmd(binary_data, amp_vpp, info["freq_hz"], name=name))
@@ -130,7 +133,7 @@ class AWGManager:
                     p = dict(param_list[i])
                     p["max_amplitude_vpp"] = amp_vpp
                     p["num_points"] = num_points
-                    binary_data, info = gaussian_pulse_waveform(p)
+                    binary_data, info = pulse_waveform(p)
                     cmd_map[key] = conn.build_waveform_cmd(binary_data, amp_vpp, info["freq_hz"])
                     logger.info("  wf_%03d: %d pts, freq=%gHz, key: %s",
                                 i + 1, info["num_points"], info["freq_hz"], key)
@@ -214,11 +217,16 @@ class AWGManager:
     # --------------------------------------------------------------------- #
     @staticmethod
     def _build_key(params):
-        """String key from the waveform-shaping fields present (matches AWGManager.m::buildKey)."""
+        """String key from the waveform-shaping fields present (extends AWGManager.m::buildKey
+        with the string ``shape`` field + ``smooth_width_us``)."""
         parts = []
         for field in WAVEFORM_FIELDS:
             if field in params and params[field] is not None:
-                parts.append("%s=%.8g" % (field, float(params[field])))
+                v = params[field]
+                if isinstance(v, str):
+                    parts.append("%s=%s" % (field, v))
+                else:
+                    parts.append("%s=%.8g" % (field, float(v)))
         return "|".join(parts)
 
     @staticmethod

@@ -11,14 +11,18 @@ Pure / hardware-free: NumPy only, no vendor package -- safe to import and unit-t
 Byte layout (matches the MATLAB original, which the Siglent SDG6X requires): samples are
 **big-endian int16** (MATLAB ``typecast(swapbytes(int16(...)), 'uint8')``). Little-endian gives a
 flat envelope + random phase on the SDG6X -- the single most common AWG upload bug.
-"""
-import numpy as np
 
-_AWG_MAX_CODE = 32767  # double(intmax('int16'))
+NOTE (2026-07-03): the shape math was generalized into :mod:`pulse_waveform` (``shape`` param:
+gaussian / rise_gaussian / fall_gaussian / rise_linear / fall_linear + ``smooth_width_us``).
+This module stays as the byte-exact Gaussian back-compat entry point: it FORCES
+``shape="gaussian"`` regardless of any ``shape`` key in ``params``. New code should call
+:func:`pulse_waveform.pulse_waveform` directly (the AWGManager does).
+"""
+from .pulse_waveform import pulse_waveform, _AWG_MAX_CODE  # noqa: F401  (re-export for old importers)
 
 
 def gaussian_pulse_waveform(params):
-    """Return ``(binary_data, info)`` for a Gaussian pulse.
+    """Return ``(binary_data, info)`` for a Gaussian pulse (byte-exact legacy entry).
 
     Args:
         params: a mapping with the waveform-shaping fields --
@@ -34,40 +38,7 @@ def gaussian_pulse_waveform(params):
         info (dict): ``num_points``, ``freq_hz``, ``t_us`` (ndarray), ``waveform`` (ndarray),
             and ``voltage`` (ndarray) when ``max_amplitude_vpp`` is given.
     """
-    num_points = int(params["num_points"])
-    pulse_width_us = float(params["pulse_width_us"])
-    carrier_freq_MHz = float(params["carrier_freq_MHz"])
-    steepness = float(params["steepness"])
-    amplitude_scale = float(params.get("amplitude_scale", 1.0))
-
-    # Normalized time axis [0, 1] (matches the MATLAB GuassianPulseWaveforms convention).
-    t = np.linspace(0.0, 1.0, num_points)
-
-    # Number of carrier oscillations across the pulse window.
-    num_oscillations = carrier_freq_MHz * pulse_width_us
-    carrier = np.sin(2.0 * np.pi * num_oscillations * t)
-
-    # Gaussian envelope: exp(-((t-0.5) * steepness)^2).
-    envelope = np.exp(-((t - 0.5) * steepness) ** 2)
-
-    waveform = carrier * envelope
-    peak = np.max(np.abs(waveform))
-    if peak > 0:
-        waveform = waveform / peak
-    waveform = waveform * amplitude_scale
-
-    # int16 with MATLAB int16() semantics (round-to-nearest + saturate), then BIG-endian bytes.
-    scaled = np.clip(np.round(waveform * _AWG_MAX_CODE), -32768, 32767).astype(np.int16)
-    binary_data = scaled.astype(">i2").tobytes()   # '>i2' == big-endian int16
-
-    freq_hz = 1e6 / pulse_width_us                 # DDS playback: all points in pulse_width_us
-
-    info = {
-        "num_points": num_points,
-        "freq_hz": freq_hz,
-        "t_us": t * pulse_width_us,
-        "waveform": waveform,
-    }
-    if "max_amplitude_vpp" in params and params["max_amplitude_vpp"] is not None:
-        info["voltage"] = waveform * float(params["max_amplitude_vpp"]) / 2.0
-    return binary_data, info
+    p = dict(params)
+    p["shape"] = "gaussian"        # legacy contract: always the symmetric Gaussian
+    p.pop("smooth_width_us", None)  # ignored for gaussian anyway; drop for strict back-compat
+    return pulse_waveform(p)

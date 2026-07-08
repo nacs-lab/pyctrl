@@ -11,8 +11,8 @@ import struct
 import numpy as np
 import pytest
 
-from devices.sigilent_awg import (AWGConnection, AWGManager, WAVEFORM_FIELDS,
-                                   gaussian_pulse_waveform)
+from devices.sigilent_awg import (AWGConnection, AWGManager, SHAPES, WAVEFORM_FIELDS,
+                                   gaussian_pulse_waveform, pulse_waveform)
 
 pytestmark = pytest.mark.no_hardware
 
@@ -22,7 +22,7 @@ _DEFAULTS = {
         "resource_address": "USB0::TEST::AWG556::INSTR",
         "channel": "C1", "max_amplitude_vpp": 11, "num_points": 1000,
         "pulse_width_us": 4, "carrier_freq_MHz": 130.78, "steepness": 3.5,
-        "amplitude_scale": 1.0,
+        "amplitude_scale": 1.0, "shape": "gaussian", "smooth_width_us": 0.0,
     },
 }
 
@@ -381,3 +381,157 @@ def test_arwv_min_fw_gate():
     from devices.sigilent_awg.awg_connection import ARWV_MIN_FW
     assert (6, 1, 1, 38) >= ARWV_MIN_FW            # 38R3 -> ARWV recall
     assert not ((6, 1, 1, 37) >= ARWV_MIN_FW)      # 37R6 -> re-upload fallback
+
+
+# --------------------------------------------------------------------------- #
+# pulse_waveform -- general shapes (gaussian / rise_* / fall_*), smooth window
+# --------------------------------------------------------------------------- #
+def _legacy_gaussian_oracle(params):
+    """The ORIGINAL gaussianPulseWaveform math, inlined verbatim as a byte oracle."""
+    num_points = int(params["num_points"])
+    pulse_width_us = float(params["pulse_width_us"])
+    carrier_freq_MHz = float(params["carrier_freq_MHz"])
+    steepness = float(params["steepness"])
+    amplitude_scale = float(params.get("amplitude_scale", 1.0))
+    t = np.linspace(0.0, 1.0, num_points)
+    carrier = np.sin(2.0 * np.pi * (carrier_freq_MHz * pulse_width_us) * t)
+    envelope = np.exp(-((t - 0.5) * steepness) ** 2)
+    waveform = carrier * envelope
+    peak = np.max(np.abs(waveform))
+    if peak > 0:
+        waveform = waveform / peak
+    waveform = waveform * amplitude_scale
+    scaled = np.clip(np.round(waveform * 32767), -32768, 32767).astype(np.int16)
+    return scaled.astype(">i2").tobytes(), 1e6 / pulse_width_us
+
+
+@pytest.mark.parametrize("pw,steep,freq,amp", [
+    (4, 3.5, 130.78, 1.0),
+    (3.7, 4.0, 200.0, 0.7),          # non-power-of-2 width -> catches 1-ulp x-axis drift
+])
+def test_pulse_waveform_gaussian_matches_legacy_oracle(pw, steep, freq, amp):
+    p = dict(_DEFAULTS["AWG556"], pulse_width_us=pw, steepness=steep,
+             carrier_freq_MHz=freq, amplitude_scale=amp)
+    want_bytes, want_freq = _legacy_gaussian_oracle(p)
+    for entry in (pulse_waveform, gaussian_pulse_waveform):   # both paths byte-exact
+        data, info = entry(p)
+        assert data == want_bytes
+        assert info["freq_hz"] == pytest.approx(want_freq)
+
+
+def test_gaussian_wrapper_forces_gaussian_shape():
+    p = dict(_DEFAULTS["AWG556"], shape="rise_gaussian", smooth_width_us=0.5)
+    data, info = gaussian_pulse_waveform(p)                   # legacy entry ignores shape
+    want, _ = _legacy_gaussian_oracle(p)
+    assert data == want and info["shape"] == "gaussian"
+
+
+def _env(shape, **kw):
+    p = dict(_DEFAULTS["AWG556"], shape=shape, **kw)
+    _, info = pulse_waveform(p)
+    return info
+
+
+def test_rise_gaussian_sharp_peaks_at_end():
+    info = _env("rise_gaussian", steepness=4)
+    e = np.abs(info["waveform"])          # |carrier|*env; envelope maxima ride the carrier
+    assert info["total_width_us"] == pytest.approx(4)
+    assert info["freq_hz"] == pytest.approx(1e6 / 4)
+    # envelope ~0 at the trigger (convention (a): exp(-s^2)) and peaks at the END
+    assert np.max(e[:50]) < 1e-4
+    assert np.max(e[-50:]) > 0.9
+
+
+def test_fall_gaussian_sharp_peaks_at_trigger():
+    info = _env("fall_gaussian", steepness=4)
+    e = np.abs(info["waveform"])
+    assert np.max(e[:50]) > 0.9           # max AT the trigger
+    assert np.max(e[-50:]) < 1e-4
+
+
+@pytest.mark.parametrize("shape", ["rise_gaussian", "rise_linear"])
+def test_rise_smooth_appends_cosine_tail(shape):
+    kw = {"steepness": 4} if shape == "rise_gaussian" else {}
+    info = _env(shape, smooth_width_us=0.5, **kw)
+    t, e = info["t_us"], np.abs(info["waveform"])
+    assert info["total_width_us"] == pytest.approx(4.5)          # pw + smooth
+    assert info["freq_hz"] == pytest.approx(1e6 / 4.5)           # DDS FREQ over the TOTAL width
+    assert t[-1] == pytest.approx(4.5)
+    # cosine tail: ~0 only AT t=4.5 (at 4.4 it is 0.095 by design); check the last sliver
+    assert np.max(e[t > 4.45]) < 0.05
+    assert np.max(e[(t > 3.9) & (t < 4.1)]) > 0.9                # peak still at end of MAIN window
+
+
+def test_fall_gaussian_smooth_prepends_rise():
+    info = _env("fall_gaussian", steepness=4, smooth_width_us=0.5)
+    t, e = info["t_us"], np.abs(info["waveform"])
+    assert info["total_width_us"] == pytest.approx(4.5)
+    assert np.max(e[t < 0.05]) < 0.05                            # starts from ~0 at the trigger
+    assert np.max(e[(t > 0.45) & (t < 0.6)]) > 0.9               # peak ~smooth_width after trigger
+    assert np.max(e[t > 4.4]) < 1e-4
+
+
+def test_envelope_continuity_no_step_when_smooth():
+    from devices.sigilent_awg import pulse_envelope
+    for shape in ("rise_gaussian", "fall_gaussian", "rise_linear", "fall_linear"):
+        _, e = pulse_envelope(shape, 2000, 4.0, 0.5, 4.0)
+        assert np.max(np.abs(np.diff(e))) < 0.01                 # no jump anywhere
+        # ... and WITH smooth the envelope is ~0 at both ends
+        assert e[0] < 0.02 and e[-1] < 0.02
+
+
+def test_linear_shapes_ramp_and_ignore_steepness():
+    p = dict(_DEFAULTS["AWG556"], shape="rise_linear")
+    del p["steepness"]                                           # not required for linear
+    _, info = pulse_waveform(p)
+    t, e = info["t_us"], np.abs(info["waveform"])
+    assert np.max(e[:50]) < 0.06 and np.max(e[-50:]) > 0.9       # 0 -> 1 ramp
+    p["shape"] = "fall_linear"
+    _, info = pulse_waveform(p)
+    e = np.abs(info["waveform"])
+    assert np.max(e[:50]) > 0.9 and np.max(e[-50:]) < 0.06       # 1 -> 0 ramp
+
+
+def test_smooth_width_ignored_for_gaussian():
+    a, ia = pulse_waveform(dict(_DEFAULTS["AWG556"]))
+    b, ib = pulse_waveform(dict(_DEFAULTS["AWG556"], smooth_width_us=1.0))
+    assert a == b and ib["freq_hz"] == ia["freq_hz"] == pytest.approx(1e6 / 4)
+
+
+def test_pulse_waveform_validation():
+    with pytest.raises(ValueError, match="unknown pulse shape"):
+        pulse_waveform(dict(_DEFAULTS["AWG556"], shape="half_gaussian"))
+    with pytest.raises(ValueError, match="smooth_width_us"):
+        pulse_waveform(dict(_DEFAULTS["AWG556"], shape="rise_gaussian", smooth_width_us=-0.1))
+    assert set(SHAPES) == {"gaussian", "rise_gaussian", "fall_gaussian",
+                           "rise_linear", "fall_linear"}
+
+
+# --------------------------------------------------------------------------- #
+# shape params dispatch through the manager (key + dedup)
+# --------------------------------------------------------------------------- #
+def test_build_key_includes_string_shape_and_smooth():
+    p = dict(_DEFAULTS["AWG556"], shape="rise_gaussian", smooth_width_us=0.5)
+    key = AWGManager._build_key(p)
+    assert "shape=rise_gaussian" in key
+    assert "smooth_width_us=0.5" in key
+    assert key != AWGManager._build_key(dict(p, shape="fall_gaussian"))
+    assert key != AWGManager._build_key(dict(p, smooth_width_us=0.0))
+
+
+def test_setup_dedups_by_shape():
+    # 4 seqs: two shapes x two repeats -> exactly 2 unique waveforms uploaded
+    seqs = [{"AWG": {"AWG556": {"shape": s}}} for s in
+            ("rise_gaussian", "fall_gaussian", "rise_gaussian", "fall_gaussian")]
+    consts = {"AWG556": dict(_DEFAULTS["AWG556"], shape="gaussian", smooth_width_us=0.5)}
+    AWGManager.setup("AWG556", FakeScanGroup(seqs), consts=consts,
+                     connection_factory=FakeConn)
+    assert len(AWGManager._state["AWG556"]["cmd_map"]) == 2
+
+    # per-shot switch keyed on shape: rise -> fall resends, same shape skips
+    conn = AWGManager._state["AWG556"]["connection"]
+    n0 = len(conn.sent)
+    AWGManager.recall_for_seq({"AWG556": {"shape": "rise_gaussian"}})    # == first seq -> skip
+    assert len(conn.sent) == n0
+    AWGManager.recall_for_seq({"AWG556": {"shape": "fall_gaussian"}})    # switch -> resend
+    assert len(conn.sent) == n0 + 1
