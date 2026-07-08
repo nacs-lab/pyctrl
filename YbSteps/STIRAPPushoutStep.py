@@ -20,9 +20,11 @@ Reads resolve config with a ``Consts()`` fallback default (``g.X.Y(Consts().Push
 Deviations from the .m (pyctrl-only): the four ``Freq/Amp_Pushout399`` + ``Freq/Amp_Pushout556``
 reads are **computed-but-unused** in the .m (the body adds literal ``0`` to ``Amp556MOTX`` /
 ``Amp556RydbergMOTh``, never these), and pyctrl's config has ``Pushout.Blue.Amp1/Amp2`` (not
-``Blue.Amp``), so those dead reads are dropped -- zero byte effect. Likewise ``Time_Pushout369``
-(its 369-pushout block is commented out in the .m). Bare TTL ``0``/``1`` + the ``5*I/100`` coil
-math mirror ``RydbergPushoutStep`` (concrete config floats -> no explicit-float coercion needed).
+``Blue.Amp``), so those dead reads are dropped -- zero byte effect. ``Time_Pushout369`` is now a
+LIVE read (2026-07-06): it sets the auto-ionization 369 pulse width (``Pushout.Time369``, default
+2e-6 = the old hardcode; the .m's own 369-pushout block stays commented out). Bare TTL ``0``/``1``
++ the ``5*I/100`` coil math mirror ``RydbergPushoutStep`` (concrete config floats -> no
+explicit-float coercion needed).
 """
 
 from consts import Consts
@@ -30,13 +32,14 @@ from ramp_to import ramp_to
 
 
 def STIRAPPushoutStep(s, g):
-    guassian_pulse_width = 4e-6
+    guassian_pulse_width = g.STIRAP.guassian_pulse_width(2e-6)
     time_delay = g.STIRAP.delay(Consts().Pushout.STIRAP.delay)
     time_delay_reverse = g.STIRAP.reverse_delay(Consts().Pushout.STIRAP.reverse_delay)
     STIRAP_gap = g.STIRAP.gap(Consts().Pushout.STIRAP.gap)
 
     Amp_SLM = g.SLMAOMAmp(Consts().SLM.AOM.Amp)
     Amp_Pushout369 = g.Amp369(0)
+    Time_Pushout369 = g.Time369(2e-6)   # auto-ionization 369 pulse width (was hardcoded 2us)
     ifReverse = g.STIRAP.ifReverse(True)
     t_waitSTIRAP = g.STIRAP.waitTime(0)
 
@@ -63,6 +66,7 @@ def STIRAPPushoutStep(s, g):
     # Change trap depth for Rydberg.
     V_RydTrap = g.VRydTrap(0.4)
     s.add_step(1e-3).add('VSLMservo', ramp_to(V_RydTrap))
+    s.wait(1e-3)  # wait for the ramp to finish
 
     # Pre-lock the 308 cavity.
     s.add('AmpAOM616', 0)
@@ -70,7 +74,8 @@ def STIRAPPushoutStep(s, g):
 
     # Turn the tweezer off completely.
     s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
-    s.wait(1e-6)
+    s.wait(0.5e-6)
+
 
     # --- Forward STIRAP pulse (308 gate then 556 gate, overlapped via STIRAP.delay) ---
     s.add('TTL308RydAWG', 1).add('TTLScopeTrig', 1)
@@ -80,20 +85,24 @@ def STIRAPPushoutStep(s, g):
     s.add('TTL308RydAWG', 0)
     s.wait(guassian_pulse_width / 2)
     s.add('TTL556RydAWG', 0)
+    
+    # wait for the STIRAP pulse to finish (the 556 gate is the last to finish, so we can just wait for that)
+    #s.wait(guassian_pulse_width / 2)
+    
 
     # Turn the trap back on.
     s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
     s.wait(t_waitSTIRAP)   # wait until the stirap pulse finishes
 
     # Microwave Rabi (QICK), gated for STIRAP_gap.
-    s.add('TTLQickTrig', 1)
-    s.wait(STIRAP_gap)
-    s.add('TTLQickTrig', 0)
+    #s.add('TTLQickTrig', 1)
+    #s.wait(STIRAP_gap)
+    #s.add('TTLQickTrig', 0)
 
     # --- Reverse STIRAP (556 gate then 308 gate, via STIRAP.reverse_delay) ---
     if ifReverse:
         s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
-        s.wait(1e-6)
+        s.wait(0.5e-6)
         s.add('TTL556RydAWG', 1)
         s.wait(time_delay_reverse)
         s.add('TTL308RydAWG', 1)
@@ -102,8 +111,15 @@ def STIRAPPushoutStep(s, g):
         s.wait(guassian_pulse_width / 2)
         s.add('TTL308RydAWG', 0).add('TTL556RydAWG', 0).add('TTLScopeTrig', 0)
 
+
+
     # Back to the original trap depth: turn the trap back on.
     s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
+    
+    # auto-ionization (369 pulse width from Pushout.Time369; 0 -> zero-width pulse, no 369)
+    s.add('TTL369Switch', 1)
+    s.wait(Time_Pushout369)
+    s.add('TTL369Switch', 0)
 
     s.add('TTLScopeTrig', 0)
     s.add('AmpAbsImag', 0)

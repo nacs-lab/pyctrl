@@ -58,9 +58,9 @@ def PicoMotor308Scan(url=None):
     Set the move here:
     """
     # ---- the move (edit these) ----
-    axis = "v"        # "v" = VPicoMotor308v (vertical), "h" = VPicoMotor308h (horizontal)
+    axis = "h"        # "v" = VPicoMotor308v (vertical), "h" = VPicoMotor308h (horizontal)
     volts = -2         # SAFETY: 0 = no physical move. Set nonzero (e.g. 2) for a real kick; sign = direction.
-    hold_s = 0.5      # seconds to hold the kick before ramping back to 0
+    hold_s = 1      # seconds to hold the kick before ramping back to 0
     # -------------------------------
 
     _bootstrap()

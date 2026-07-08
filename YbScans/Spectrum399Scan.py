@@ -54,7 +54,7 @@ def build():
     g = ScanGroup()
 
     # ---- fixed push-out params (Pushout399Step reads these) ----------------
-    g().Pushout.Blue.Amp1 = 0.25   # 0.2 for AbsImg; 0.015 for MOT-beam probing mj=1
+    g().Pushout.Blue.Amp2 = 0.5   # 0.2 for AbsImg; 0.015 for MOT-beam probing mj=1
     g().Pushout.Time = 10e-3
 
     # ---- swept param: Pushout.Blue.Freq ------------------------------------
@@ -74,8 +74,8 @@ def build():
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    # g.runp().loading_phase = "phase/33x33_uniform.pt"   # server-side WGS phase path
-    # g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    g.runp().loading_phase = "phase/33x33_feedback9.pt"   # match 556 scans + the array on the SLM
+    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
     return g
 
 

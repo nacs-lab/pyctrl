@@ -14,6 +14,6 @@ def GreenMOTSeq(s):
     s.add_step(BlueMOTStep, s.C.BlueMOT)
     s.add_step(GreenMOTStep, s.C.GreenMOT)
     s.add_step(AbsImagStep, s.C.AbsImag)
-    s.wait(0.5)
+    s.wait(0.1)
     s.add_step(InitStep, s.C.Init)
     return s

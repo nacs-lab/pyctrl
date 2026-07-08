@@ -9,7 +9,9 @@ to see Autler-Townes splitting").
 
   * **308 on resonance via the 616 EOM:** 308 nm is frequency-doubled 616 nm, so ``Init.EOM616.Freq``
     sets the 308 frequency. We park it on the measured 30 G resonance -- the revival peak from
-    ``Revival616Scan`` (scan 20260611122308): 282.52 MHz. (``--eom616`` to retune.)
+    ``Revival616Scan``: 236.5 MHz (scan 20260702134131; 235.38 MHz on 06-29 scan 20260629174417,
+    FWHM ~8-10 MHz). Switched 2026-07-02 from the old ~283 MHz peak (282.52 MHz, scan
+    20260611122308). (``--eom616`` to retune.)
   * **308 at maximum AOM amp:** ``Pushout.Ryd308.Amp = 0.4`` (max) -> ``AmpAOM308`` (DDS) -- the
     strong coupling field whose Rabi frequency sets the AT splitting. (``--ryd308-amp`` to retune.)
   * **556 = the probe:** swept over a WIDE window (+/-3 MHz, 0.1 MHz) centred on the 30 G single-photon
@@ -31,7 +33,7 @@ Run it (pyctrl backend must already be live at --url):
     cd pyctrl
     python YbScans/556AutlerTownesScan.py                 # 30 G, inspect run (default reps)
     python YbScans/556AutlerTownesScan.py --reps 120      # site-resolved run (>100 reps)
-    python YbScans/556AutlerTownesScan.py --half 4 --ryd308-amp 0.4 --eom616 282.52e6
+    python YbScans/556AutlerTownesScan.py --half 4 --ryd308-amp 0.4 --eom616 236.5e6
 """
 
 import argparse
@@ -47,7 +49,7 @@ def _bootstrap():
             sys.path.insert(0, p)
 
 
-def build(field_G=30, eom616_freq=282.52e6, ryd308_amp=0.4, green_amp=None,
+def build(field_G=30, eom616_freq=236.5e6, ryd308_amp=0.4, green_amp=None,
           half_mhz=3.0, step_mhz=0.1):
     """ScanGroup for the 30 G 556 Autler-Townes scan (seq = ``RydbergPushoutSurvivalSeq``).
 
@@ -66,14 +68,14 @@ def build(field_G=30, eom616_freq=282.52e6, ryd308_amp=0.4, green_amp=None,
     # (one 30 G point can't refit it). RydbergSpectrum556Scan still carries the 06-10 constants.
     RES0_MHZ = 107.8037
     ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
-    center_mhz = 143.3#RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G     # 30 G -> 143.1827 MHz
+    center_mhz = 143.4#RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G     # 30 G -> 143.1827 MHz
 
     g = ScanGroup()
 
     # ---- high-field push-out params (RydbergPushoutStep reads these) -------
     # 556 probe push amp: field-scaled (0.2 @ 0 G -> 0.5 @ 30 G) unless overridden. A weaker probe
     # resolves the AT doublet better; raise/lower with --amp if the two dips smear or don't push.
-    AMP_AT_0G, AMP_AT_30G = 0.2, 0.2
+    AMP_AT_0G, AMP_AT_30G = 0.2, 0.15
     if green_amp is None:
         green_amp = AMP_AT_0G + (AMP_AT_30G - AMP_AT_0G) * field_G / 30.0
     g().Pushout.Green.Amp = green_amp
@@ -102,7 +104,7 @@ def build(field_G=30, eom616_freq=282.52e6, ryd308_amp=0.4, green_amp=None,
     return g
 
 
-def AutlerTownes556Scan(url=None, reps=4, field_G=30, eom616_freq=282.23e6,
+def AutlerTownes556Scan(url=None, reps=4, field_G=30, eom616_freq=233.78e6,
                         ryd308_amp=0.4, green_amp=None, half_mhz=3.0, step_mhz=0.1):
     """Build + submit the 556 Autler-Townes scan. Returns the queued descriptor id."""
     _bootstrap()
@@ -127,16 +129,17 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit the 30 G 556 Autler-Townes scan.")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=100,
+    ap.add_argument("--reps", type=int, default=5,
                     help="passes over the sweep (0 = forever); default 4 for the inspect run; "
                          "use >100 for the site-resolved splitting run")
     ap.add_argument("--field", type=float, default=30,
                     help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 30)")
-    ap.add_argument("--eom616", type=float, default=235.3e6,
-                    help="616-EOM freq (Hz) = 308 resonance (default 282.52e6, the measured 30 G revival)")
+    ap.add_argument("--eom616", type=float, default=234.62e6,
+                    help="616-EOM freq (Hz) = 308 resonance (default 236.5e6, the measured 30 G "
+                         "revival peak, scan 20260702134131; was 282.52e6 pre-2026-07-02)")
     ap.add_argument("--ryd308-amp", type=float, default=0.4,
                     help="308 coupling AOM amp, max 0.4 (default 0.4)")
-    ap.add_argument("--amp", type=float, default=None,
+    ap.add_argument("--amp", type=float, default=0.15,
                     help="override the 556 probe push amp (else field-scaled 0.5 @ 30 G)")
     ap.add_argument("--half", type=float, default=2.5,
                     help="556 window half-width in MHz (default 3.0; widen if the doublet is clipped)")

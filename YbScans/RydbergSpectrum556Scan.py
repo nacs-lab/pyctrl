@@ -41,12 +41,12 @@ Run it (pyctrl backend must already be live at --url):
 import argparse
 import os
 import sys
+import numpy as np
 
 
 def _bootstrap():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
+    for p in (root, os.path.join(root, "lib"), os.path.join(root, "YbExptCtrl")):
         if p not in sys.path:
             sys.path.insert(0, p)
 
@@ -67,24 +67,32 @@ def build(field_G=0):
     _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
+    from seq_config import SeqConfig
+    from consts import Consts
 
-    # 0-field push-out center (MHz) + its Zeeman shift per Gauss, BOTH fit from the 2026-06-10
-    # finer push-out spectra (Lorentzian centers at 0/5/10/20/30 G:
-    # 107.803/113.714/119.605/131.355/143.185 MHz, linear R^2=1.0000).
-    # RES0 is the fitted 0-field intercept -- this strong-push Rydberg line sits ~55 kHz ABOVE the
-    # expConfig mj=0 calibration (107.7503, the prior RES0_MHZ); slope was 1.18 (retired
-    # Spectrum556Scan.m windows). center_mhz = RES0 + slope*field now reproduces the fit line.
-    RES0_MHZ = 107.77
+    # Consts() reads SeqConfig.get().consts; a freshly-launched client process has the empty default
+    # config. Load the real expConfig if it is not already active (the backend / byte oracle load it
+    # before build(); a direct ``python YbScans/RydbergSpectrum556Scan.py`` does not).
+    if not SeqConfig.get().consts:
+        SeqConfig.load_real()
+
+    # 0-field push-out center (MHz) = the daily mj=0 calibration (expConfig Resonance556mj0Freq);
+    # Zeeman shift per Gauss fit from the 2026-06-10 finer push-out spectra (Lorentzian centers at
+    # 0/5/10/20/30 G: 107.803/113.714/119.605/131.355/143.185 MHz, linear R^2=1.0000, slope 1.178).
+    # NOTE: the strong-push Rydberg line historically fit ~55 kHz ABOVE the mj=0 calibration (the old
+    # hard-coded RES0_MHZ=107.77 vs 107.7503); reading expConfig now tracks the daily fit instead --
+    # if the dip lands consistently off-center, add that offset back here.
+    RES0_MHZ = float(Consts().Resonance556mj0Freq) / 1e6
     ZEEMAN_SLOPE_MHZ_PER_G = 1.178
 
     # Window half-width + step (MHz): coarse + wide at field (locate), fine + narrow at 0 G (known).
     # Widened 0.5 -> 1.5 MHz half-width 2026-06-12: the +/-0.5 MHz window showed NO dip at 30 G
     # (scan 20260612102118, flat ~0.92-0.96), so the line drifted >0.5 MHz out of the old window;
     # the wider window + stronger push (run with --amp 0.6) re-locates it. Narrow back once found.
-    COARSE_HALF_MHZ, COARSE_STEP_MHZ = 1.5, 0.05
-    FINE_HALF_MHZ, FINE_STEP_MHZ = 0.50, 0.03
+    COARSE_HALF_MHZ, COARSE_STEP_MHZ = 0.75, 0.05
+    FINE_HALF_MHZ, FINE_STEP_MHZ = 0.50, 0.02
 
-    center_mhz = RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G
+    center_mhz = 143.4 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G
     half_mhz, step_mhz = (FINE_HALF_MHZ, FINE_STEP_MHZ) if field_G == 0 \
         else (COARSE_HALF_MHZ, COARSE_STEP_MHZ)
 
@@ -94,13 +102,14 @@ def build(field_G=0):
     # Push-out amp scales LINEARLY with field: weaker push at low field, stronger at high
     # field -- 0.2 @ 0 G -> 0.4 @ 30 G, i.e. amp = 0.2 + (0.4 - 0.2) * field_G / 30.
     # (Pure linear: extrapolates for field > 30 G; the `amp=` arg still overrides this.)
-    AMP_AT_0G, AMP_AT_30G = 0.2, 0.5
+    AMP_AT_0G, AMP_AT_30G = 0.1, 0.15
     g().Pushout.Green.Amp = AMP_AT_0G + (AMP_AT_30G - AMP_AT_0G) * field_G / 30.0
     g().Pushout.Time = 1e-3
     g().Pushout.BiasCoilCurrent.Ryd = field_G      # Gauss -> Ryd coil current (30 -> 30 G)
 
     # ---- swept param: Pushout.Green.Freq, centred on the field-shifted resonance ----
     freqs = [v  * 1e6 for v in matlab_colon(center_mhz - half_mhz, step_mhz, center_mhz + half_mhz)]
+    #freqs = 143.2e6
     g().Pushout.Green.Freq.scan(1, freqs)
 
     # ---- turn on the 308 UV light on resonance to see Autler-Townes splitting ---- 
@@ -119,12 +128,12 @@ def build(field_G=0):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    # g.runp().loading_phase = "phase/33x33_uniform.pt"   # server-side WGS phase path
-    # g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    g.runp().loading_phase = "phase/33x33_feedback9.pt"   # server-side WGS phase path
+    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
     return g
 
 
-def RydbergSpectrum556Scan(url=None, reps=3, field_G=0, amp=None):
+def RydbergSpectrum556Scan(url=None, reps=None, field_G=None, amp=None):
     """Build + submit the high-field 556 spectrum scan. Returns the queued descriptor id.
 
     ``amp`` (if given) overrides the field-default ``Pushout.Green.Amp`` -- for live iteration on
@@ -154,7 +163,7 @@ if __name__ == "__main__":
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
     ap.add_argument("--reps", type=int, default=3,
                     help="passes over the sweep (0 = forever); default 3 for a short A/B run")
-    ap.add_argument("--field", type=float, default=0,
+    ap.add_argument("--field", type=float, default=30,
                     help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 0)")
     ap.add_argument("--amp", type=float, default=None,
                     help="override Pushout.Green.Amp (else field-default 0.15@20G / 0.22 else)")

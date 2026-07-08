@@ -18,7 +18,7 @@ optimisation campaign needs, each on the SAME byte-verified seq:
   * ``amp2d``     -- 2-D ``Pushout.Blue.Amp1`` x ``Amp2`` at a LONG pushout (imaging-optimization
     Stage A1/A3): the proxy survival map over the two 399 imaging-beam amplitudes, cooling pinned at
     the loading PATTERN's ``Imag399.Cool556``. Park near the ~90% survival cliff. See
-    ``references/imaging-optimization.md``; the campaign driver is ``tmp/imaging_round.py``.
+    ``references/imaging-optimization.md``; the campaign driver is ``tools/imaging_round.py``.
 
 Notes: fixed freq/amp are read from ``Consts()``; swept detunings/amps use
 ``scan_export.matlab_colon`` (MATLAB-exact colon), and the X/h frequency is
@@ -255,7 +255,7 @@ def main():
         a2 = matlab_colon(*args.amp2)
         g = build_amp2d(a1, a2, time_s=args.time, pattern=args.pattern)
         # NOTE: standalone amp2d relies on the backend's current loading pattern; the careful
-        # campaign run goes through tmp/imaging_round.py, which also writes loading_phase + the
+        # campaign run goes through tools/imaging_round.py, which also writes loading_phase + the
         # detection pattern and analyzes the survival/loading map.
         _submit("ImagingPushoutSurvivalSeq", g, args.url, "CoolingScan_amp2d", args.reps)
     else:

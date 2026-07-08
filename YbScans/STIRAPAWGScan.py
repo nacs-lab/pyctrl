@@ -64,17 +64,17 @@ def build():
     # parked on the 20um-array 2D dip center (scans 20260707_180931 + _183401, 17x17_20um):
     # 616=234.46 / 556=143.33, dip survival ~0.06-0.09 (~90-93% transfer, deepest of the spacing
     # series 10/14.5/20um -> Rydberg blockade). was 142.62 (14.5um scan 20260707_170113)
-    g().AWG.AWG556.carrier_freq_MHz = 143.33 #.scan(2, np.linspace(141.4, 144.4, 11))
-    g().AWG.AWG556.pulse_width_us = 4    # old params: steepness 4, pw 4us
-    g().AWG.AWG556.steepness = 4 #1.2*2
+    g().AWG.AWG556.carrier_freq_MHz = 143.4 #.scan(2, np.linspace(142, 144.4, 11)) # = 143.33  #
+    g().AWG.AWG556.pulse_width_us = 5  # old params: steepness 4, pw 4us
+    g().AWG.AWG556.steepness = 4
     g().AWG.AWG556.max_amplitude_vpp = 11 #11
     g().AWG.AWG556.amplitude_scale = 1
 
     g().AWG.AWG308.shape = "gaussian"
     #g().AWG.AWG308.smooth_width_us = 0.1
     g().AWG.AWG308.carrier_freq_MHz = 200
-    g().AWG.AWG308.pulse_width_us = 4    # old params: steepness 4, pw 4us
-    g().AWG.AWG308.steepness = 4 #1.5*2
+    g().AWG.AWG308.pulse_width_us = 5  # old params: steepness 4, pw 4us
+    g().AWG.AWG308.steepness = 4 
     g().AWG.AWG308.max_amplitude_vpp = 5.5 #6.5 #.scan(1, np.linspace(6, 7, 6)) #
     g().AWG.AWG308.amplitude_scale = 1
 
@@ -91,14 +91,14 @@ def build():
     # ---- STIRAP push-out params (STIRAPPushoutStep reads these) ----
     # parked on the 20um-array 2D dip center (scans 20260707_180931 + _183401, 17x17_20um):
     # 616=234.46 / 556=143.33. was 233.88 (14.5um 20260707_170113); 233.97 (10um _132639)
-    g().Init.EOM616.Freq = 234.46e6 #.scan(1, np.linspace(233.5e6, 235.5e6, 11))
-    g().Pushout.VRydTrap = 0.5
+    g().Init.EOM616.Freq = 234.5e6 #.scan(1, np.linspace(233.5e6, 235.5e6, 11))  #= 234.45e6  #
+    g().Pushout.VRydTrap = 0.03
     # TTL gate width = pulse width (else the gaussian is clipped/repeated); fixed at 4us
-    g().Pushout.STIRAP.guassian_pulse_width = 4e-6
+    g().Pushout.STIRAP.guassian_pulse_width = 5e-6
     # scan the 308->556 overlap delay at fixed pw=4us, ZOOM 0.01-2us, 10 pts
-    g().Pushout.STIRAP.delay = 0.9e-6
-    g().Pushout.STIRAP.ifReverse = True
-    g().Pushout.STIRAP.reverse_delay.scan(1, np.linspace(0.01e-6, 2e-6, 10)) #= 0.7e-6
+    g().Pushout.STIRAP.delay = 1.3e-6
+    g().Pushout.STIRAP.ifReverse = False
+    g().Pushout.STIRAP.reverse_delay = 1.5e-6  #= 0.7e-6
     g().Pushout.STIRAP.waitTime = 0e-6
     g().Pushout.Amp369 = 1
     g().Pushout.Time369 = 1e-6

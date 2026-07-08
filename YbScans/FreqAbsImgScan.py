@@ -69,8 +69,9 @@ def build():
 
     # ---- fixed params (differ from expConfig defaults) --------------------
     g().AbsImag.TOF = 5e-3                          # default 0; image after 5 ms TOF
-    g().BlueMOT.LoadingTime = 5                     # default 0.6 s; longer load for the diagnostic
-    #g().GreenMOT.CoolDown.FreqDetuning = 0.25e6     # default 0.35e6
+    g().BlueMOT.LoadingTime = 1                     # default 0.6 s; longer load for the diagnostic
+    g().GreenMOT.CoolDown.FreqDetuning = 0.25e6     # default 0.35e6
+    g().GreenMOT.CoolDown.HoldTime = 10e-3 
 
     # ---- swept param: AbsImag.Freq ---------------------------------------
     # (300:2:330)*1e6 -- 16 pts @ 2 MHz, brackets the 399 absorption resonance
@@ -81,9 +82,20 @@ def build():
     # ---- run params (runp); no byte effect, drive the live run -----------
     rp = g.runp()
     rp.NumPerGroup = 3000
-    rp.NumImages = 1
+    # NumImages=0: pyctrl does NOT arm/wait on the Orca. This seq images on the ThorCam
+    # (TTLThorCamTrig, FPGA1/TTL13) which has its OWN viewer -- the Orca (TTLOrcaTrig,
+    # FPGA1/TTL54) is never pulsed here, so arming it just burned a 10 s short-read
+    # timeout per shot (~4 s -> ~10 s+) before dropping the shot. ponytail: drives the
+    # ThorCam trigger only; flip back to 1 if you ever route this through the Orca.
+    rp.NumImages = 0
     rp.isGrid2 = 0
-    rp.isInit = 1
+    # isHC=1: pyctrl publishes NO frames here (NumImages=0; the ThorCam has its own viewer),
+    # so "no images via ZMQ" is the truthful analysis mode. The run still registers in the
+    # queue/history and the Sequence-Plotter dump still runs (gated on the dashboard "save
+    # sequence dumps" toggle, not on frames). isInit's only extra effect would be an EMPTY
+    # HDF5 -- nothing to save without frames -- so it buys nothing. Live shot-# tile won't
+    # tick (the counter rides the frame channel); accepted for now.
+    rp.isInit = 0
     rp.isHC = 1
     rp.Scramble = 0
     return g

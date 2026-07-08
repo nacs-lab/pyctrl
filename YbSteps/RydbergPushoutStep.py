@@ -63,7 +63,11 @@ def RydbergPushoutStep(s, g):
     
     s.wait(50e-3)
 
-    s.add_step(1e-3).add('VSLMservo', ramp_to(0.03))  # 0.5 for STIRAP
+    V_RydTrap = g.VRydTrap(0.03)                       # pushout trap depth; default 0.03 (0.5 for STIRAP)
+    s.add_step(1e-3).add('VSLMservo', ramp_to(V_RydTrap))
+
+    # prevent trap depth flucations during pushout
+    s.wait(1e-3)
 
     s.add('TTLScopeTrig', 1)
 

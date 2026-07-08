@@ -72,7 +72,7 @@ def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
     # 556 push-out resonance (MHz): mirrors RydbergSpectrum556Scan's calibration (2026-06-10 fit).
     # RES0_MHZ = 107.8049
     # ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
-    res556_mhz = 143.30 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz (model)
+    res556_mhz = 143.40 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz (model)
     if green_freq_mhz is not None:
         res556_mhz = float(green_freq_mhz)   # explicit override: the located dip after drift
 
@@ -146,8 +146,8 @@ if __name__ == "__main__":
                     help="passes over the sweep (0 = forever); default 3 for a short A/B run")
     ap.add_argument("--field", dest="field_G", type=float, default=None,
                     help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 30)")
-    ap.add_argument("--556-amp", dest="green_amp", type=float, default=None,
-                    help="556 Rydberg push-out amp (default 0.12, the 30 G value)")
+    ap.add_argument("--556-amp", dest="green_amp", type=float, default=0.15,
+                    help="556 Rydberg push-out amp (default 0.15, the 30 G value)")
     ap.add_argument("--308-amp", dest="ryd308_amp", type=float, default=None,
                     help="308 pulse amp, max 0.4 (default 0.4)")
     ap.add_argument("--green-freq-mhz", dest="green_freq_mhz", type=float, default=None,

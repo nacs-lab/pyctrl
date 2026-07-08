@@ -52,7 +52,7 @@ def _bootstrap():
 
 # Default release-time sweep colon (the .m's ReleaseTimeScan block): (0:1:50)*1e-6 -> 51 pts.
 DEF_TSTEP = 1e-6      # release-time step (s)
-DEF_TMAX = 50e-6      # release-time upper bound (s)
+DEF_TMAX = 100e-6      # release-time upper bound (s)
 
 
 def build(tstep=DEF_TSTEP, tmax=DEF_TMAX):
@@ -70,9 +70,7 @@ def build(tstep=DEF_TSTEP, tmax=DEF_TMAX):
     g = ScanGroup()
 
     # ---- fixed params (the steps read these) ------------------------------
-    g().Imag399.ExposureTime = 100e-3          # -> Imag399Step t_Imag399 (s.wait)
-    g().SLM.VServo = 5                          # -> SLMStep V_SLMServo (s.add 'VSLMservo')
-    g().Cool556.Time = 5e-3                     # -> Cool556hXStep t_Cool556 (s.wait)
+    #g().Cool556.Time = 5e-3                     # -> Cool556hXStep t_Cool556 (s.wait)
     g().ReleaseRecapture.Hold = 0              # set but UNREAD by ReleaseRecaptureStep (no byte effect)
 
     # ---- swept param: ReleaseRecapture.Time = (0:1:tmax/tstep)*tstep ------
@@ -94,8 +92,8 @@ def build(tstep=DEF_TSTEP, tmax=DEF_TMAX):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    # g.runp().loading_phase = "phase/33x33_uniform.pt"   # server-side WGS phase path
-    # g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    g.runp().loading_phase = "phase/33x33_feedback9.pt"   # server-side WGS phase path
+    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
     return g
 
 

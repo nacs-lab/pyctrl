@@ -20,6 +20,7 @@ def Pushout399Step(s, g):
     Freq_Pushout399 = g.Blue.Freq(Consts().Pushout.Blue.Freq)
     Amp_Pushout399_1 = g.Blue.Amp1(0)
     Amp_Pushout399_2 = g.Blue.Amp2(0)
+    Amp_Pushout399_MOT = g.Blue.AmpMOT(0)
     Freq_Pushout556 = g.Green.Freq(Consts().Pushout.Green.Freq)
     Amp_Pushout556 = g.Green.Amp(0)
     Amp_SLM = g.SLMAOMAmp(Consts().SLM.AOM.Amp)
@@ -49,7 +50,8 @@ def Pushout399Step(s, g):
 
     s.add('FreqAbsImag', Freq_Pushout399).add('AmpAbsImag', Amp_Pushout399_1)
     s.add('Freq399Imag2', Freq_Pushout399).add('Amp399Imag2', Amp_Pushout399_2)
-
+    s.add('FreqBlueMOT', Freq_Pushout399).add('AmpBlueMOT', Amp_Pushout399_MOT)
+    
     # We previously use the MOT beams to do pushout
     s.add('Freq556MOTX', Freq_Pushout556).add('Amp556MOTX', Amp_Pushout556)
     s.add('Freq556RydbergMOTh', Freq_Pushout556).add('Amp556RydbergMOTh', Amp_Pushout556)
