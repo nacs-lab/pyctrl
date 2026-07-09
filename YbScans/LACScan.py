@@ -60,7 +60,7 @@ def LACScan(url=None, reps=None):
     # Phase-8 overrides differ slightly from expConfig and now fall back to it:
     # BlueMOT.LoadingTime 0.23 -> 0.30 s and GreenMOT.CoolDown.HoldTime 0.12 ->
     # 0.20 s (a touch more saturated/longer); the rest are identical to expConfig.
-    g().Init.VSLMservo = 10
+    g().Init.VSLMservo = 1.9
     # ===== PHASE 0: BlueMOT.LoadingTime curve (3270_tri loading opt) =====
     # Find the loading cliff + a sub-saturation work-point (~25-40% fill) on the
     # 3270_tri hologram (3270 sites, ~300 uK traps -- shallower than the 33x33
@@ -98,9 +98,20 @@ def LACScan(url=None, reps=None):
     # sweep faked a gain; the 30-shot confirm did not reproduce it). X at peak.
     
     
-    # g().Imag399.Amp1 = 0 #.scan(1, np.linspace(0.1, 1.0, 10))
-    # g().Imag399.Amp2 = 0.5 #.scan(1, np.linspace(0.0, 1, 10))
-    g().GreenMOT.BiasCoilCurrent.X = 0.0387
+    # ===== IMAGING OPT: 2-D 399 PID-setpoint scan (Img1PIDSet x Img2PIDSet) =====
+    # Physical change: 399 imaging-beam power is now servoed by a PID lock during
+    # BlueMOT; Img1/Img2PIDSet are the two beams' power SETPOINTS (V), fed to
+    # VImg1/VImg2PIDSet (Dev1/21,24). Amp1/Amp2 (the DDS drive) stay at 1 -- the
+    # PID controls the actual optical power, so these setpoints are now the
+    # imaging-amplitude lever. Sweep both 0.1..1.5 (expConfig default 0.5 each).
+    # Goal: find a region where the img1 empty-vs-atom Gaussian SEPARATION ~ 6.
+    # 0 pushout (Pushout.Time below) -> real 50 ms two-image survival + separation.
+    g().Imag399.Amp1 = 1
+    g().Imag399.Amp2 = 1
+    g().Pushout.Time = 0.001   # ~0 pushout: real 50 ms survival + true separation
+    g().BlueMOT.Img1PIDSet.scan(1, np.linspace(0.1, 1.5, 10))
+    g().BlueMOT.Img2PIDSet.scan(2, np.linspace(0.1, 1.5, 10))
+    #g().GreenMOT.BiasCoilCurrent.X = 0.0387
     # g().GreenMOT.BiasCoilCurrent.Y.scan(1, [0.265, 0.278])
     # g().BlueMOT.LoadingTime = 0.5
     # g().BlueMOT.FreqDetuning = -44e6
@@ -121,8 +132,9 @@ def LACScan(url=None, reps=None):
 
     # ---- run params (runp) ------------------------------------------------
     rp = g.runp()
-    rp.NumPerGroup = 200          # image-batch cadence; rep (below) sets shots/point
-    rp.NumImages = 1
+    rp.NumPerGroup = 1000         # = default reps(10) x n_points(100) so the dashboard
+                                  # shots-total matches the real cap (rep sets shots/point)
+    rp.NumImages = 2              # survival: img1 (separation) + img2 (survival)
     rp.isInit = 0
     rp.Scramble = 1   # randomize point order so run-start warmup doesn't bias low-time points
     rp.isHC = 0
@@ -140,13 +152,14 @@ def LACScan(url=None, reps=None):
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
 
-    desc = ("33x33_feedback9 loading REFERENCE DIAGNOSTIC -- single fixed point at "
-            "expConfig defaults (BlueMOT.LoadingTime 0.30 s, well saturated). Sanity "
-            "check on the known-good 1068-site array (loaded ~58%, CV 8% earlier "
-            "today) to confirm the camera/MOT/imaging chain is healthy and isolate "
-            "whether 33x33_feedback9's near-zero loading is array-size / SLM-pattern specific "
-            "vs a system-wide problem. feedback9's own registered grid/thresholds.")
-    did = ybStartScan("TweezerLoadingSeq", g, url=url, label="LACScan_fb9_refdiag",
+    desc = ("33x33_feedback9 (VSLMservo 1.9) imaging optimization -- 2-D 399 PID-setpoint "
+            "scan Img1PIDSet x Img2PIDSet, both 0.1..1.5 (10x10), at 0 pushout "
+            "(Pushout.Time 0.001) = real 50 ms two-image survival + img1 separation. "
+            "Physical change: 399 imaging power is now PID-servoed during BlueMOT to "
+            "these setpoints (V); Imag399.Amp1/Amp2 held at 1. Locating the setpoint "
+            "region giving img1 empty-vs-atom Gaussian separation ~ 6 (imaging fidelity) "
+            "while keeping real survival high. Locate pass, low reps; zoom next.")
+    did = ybStartScan("ImagingPushoutSurvivalSeq", g, url=url, label="ImgOpt_PIDset_fb9",
                       description=desc, **opts)
     # print("submitted LACScan sweep (%d pts %.3f..%.3f A) -> descriptor id %s (url=%s)"
     #       % (len(xvals), xvals[0], xvals[-1], did, url or "default"))
@@ -157,9 +170,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit LACScan to the pyctrl backend.")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=15,
-                    help="passes = shots/point (0 = forever); default 15 -- more shots/point "
-                         "than a survival scan because per-site CV/gradient (uniformity) needs "
-                         "the statistics. Lower (~8) if you only care about the rate trend.")
+    ap.add_argument("--reps", type=int, default=10,
+                    help="passes = shots/point (0 = forever); default 10 -- locate pass over "
+                         "the 10x10 PID-setpoint grid (=1000 shots). Enough to read the "
+                         "separation/survival landscape; zoom + raise reps on the winner.")
     args = ap.parse_args()
     LACScan(url=args.url, reps=args.reps)

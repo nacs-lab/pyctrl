@@ -22,7 +22,9 @@ def BlueMOTStep(s, g):
     I_BiasCoilX = g.BiasCoilCurrent.X(Consts().BlueMOT.BiasCoilCurrent.X)
     I_BiasCoilY = g.BiasCoilCurrent.Y(Consts().BlueMOT.BiasCoilCurrent.Y)
     I_BiasCoilZ = g.BiasCoilCurrent.Z(Consts().BlueMOT.BiasCoilCurrent.Z)
-
+    Img1Amp = g.Img1PIDSet(Consts().BlueMOT.Img1PIDSet)
+    Img2Amp = g.Img2PIDSet(Consts().BlueMOT.Img2PIDSet)
+    
     # Convert current to control voltage
     V_MOTCoil = 5 * I_MOTCoil / 200
     V_RydCoil = 5 * I_RydCoil / 100
@@ -36,7 +38,24 @@ def BlueMOTStep(s, g):
     s.add('VBiasCoilX', V_BiasCoilX)
     s.add('VBiasCoilY', V_BiasCoilY)
     s.add('VBiasCoilZ', V_BiasCoilZ)
-
+    
+    # Set the 399 imaging parameters for the 399 Img1/Img2 PID lock
+    Freq_Resonance399 = Consts().Resonance399Freq
+    Freq_Imag399Detuning = Consts().Imag399.FreqDetuning
+    Freq_Imag399 = Freq_Resonance399 + Freq_Imag399Detuning
+    
+    # Turn Imaging beam on for 399 Img1/Img2 PID lock
+    (s.add('FreqAbsImag', Freq_Imag399)
+        .add('Freq399Imag2', Freq_Imag399)
+        .add('AmpAbsImag', 1) 
+        .add('Amp399Imag2', 1)
+        .add('TTL399AbsImagShutter', 1) # Getting ready for 399 Img1 PID
+        .add('TTL399Imag2Shutter', 1) # Getting ready for 399 Img2 PID
+        .add('TTL399IMG1PIDMode', 1) # Starting lock for 399 Img1 PID
+        .add('TTL399IMG2PIDMode', 1) # Starting lock for 399 Img2 PID
+        .add('VImg1PIDSet', Img1Amp) # Setting 399 Img1 PID
+        .add('VImg2PIDSet', Img2Amp)) # Setting 399 Img2 PID
+        
     # turn on blue MOT beams
     Freq_BlueMOTDetuning = g.FreqDetuning(Consts().BlueMOT.FreqDetuning)
     Freq_Resonance399Freq = g.Resonance399Freq(Consts().Resonance399Freq)
@@ -47,3 +66,14 @@ def BlueMOTStep(s, g):
     # Proceed the CurTime to after LoadingTime
     t_BlueMOTLoading = g.LoadingTime(Consts().BlueMOT.LoadingTime)
     s.wait(t_BlueMOTLoading)
+    
+    s.add('TTL399IMG1PIDMode', 0) # Turning off lock for 399 Img1 PID
+    s.add('TTL399IMG2PIDMode', 0) # Turning off lock for 399 Img2 PID
+    
+    
+    
+    (s.add('AmpAbsImag', 0) # Shutting down 399 Img1 PID
+    .add('Amp399Imag2', 0) # Shutting down 399 Img2 PID
+    .add('TTL399AbsImagShutter', 0) # Shutting down 399 Img1 PID
+    .add('TTL399Imag2Shutter', 0)) # Shutting down 399 Img2 PID
+     

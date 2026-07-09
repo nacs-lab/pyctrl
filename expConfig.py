@@ -55,6 +55,7 @@ def _channel_alias():
 
     # ---- TTL channels (FPGA1) ----
     a["TTL556RydAWG"] = "FPGA1/TTL1"
+    a["TTL399IMG1PIDMode"] = "FPGA1/TTL2"  # 1 for lock, 0 for hold
     a["TTLScopeTrig"] = "FPGA1/TTL3"
     a["TTL556RydbergShutter"] = "FPGA1/TTL4"
     a["TTL556MOTaShutter"] = "FPGA1/TTL5"
@@ -70,6 +71,7 @@ def _channel_alias():
     a["TTL369Switch"] = "FPGA1/TTL16"
     a["TTL556RydAWGSwitch"] = "FPGA1/TTL17"
     a["TTL399Imag2Shutter"] = "FPGA1/TTL18"
+    a["TTL399IMG2PIDMode"] = "FPGA1/TTL19"  # 1 for lock, 0 for hold
     a["TTL308RydAWGSwitch"] = "FPGA1/TTL55"
     a["TTLOrcaTrig"] = "FPGA1/TTL54"
     a["TTLSampleAndHold"] = "FPGA1/TTL15"
@@ -124,10 +126,10 @@ def _channel_alias():
     a["VElectrode6"] = "Dev1/17"
     a["VElectrode7"] = "Dev1/18"
     a["VElectrode8"] = "Dev1/19"
-    a["VImage1PIDMode"] = "Dev1/20"
-    a["VImage1PIDSet"] = "Dev1/21"
+    a["VImg1PIDSet"] = "Dev1/21"
     a["VPicoMotor369h"] = "Dev1/22"
     a["VPicoMotor369v"] = "Dev1/23"
+    a["VImg2PIDSet"] = "Dev1/24"
     return a
 
 
@@ -160,7 +162,9 @@ def _consts():
         "BiasCoilCurrent": {"Ryd": 3, "X": 0.1, "Y": 0, "Z": 0},
         "FreqDetuning": -44e6,                 # fast-loading opt 2026-06-05; was -40e6
         "Amp": 0.6,
-        "LoadingTime": 700e-3,                 # fast-loading opt 2026-06-05 (loading saturates ~0.21); was 500e-3
+        "LoadingTime": 500e-3,                 # fast-loading opt 2026-06-05 (loading saturates ~0.21); was 500e-3
+        "Img1PIDSet": 0.5,  
+        "Img2PIDSet": 0.5
     }
 
     # GreenMOT
@@ -227,7 +231,7 @@ def _consts():
 
     # Imag399
     c["Imag399"] = {
-        "FreqDetuning": -5e6, "Amp1": 0.18, "Amp2": 0.18,
+        "FreqDetuning": -5e6, "Amp1": 1, "Amp2": 1, # Now we use the VIMG1/2Set to control the imaging power
         "ExposureTime": None,                  # cross-ref -> Orca.ExposureTime (set below)
         "Cool556": {
             "FreqDetuning": 0.18e6, "Amp": 0.2,
@@ -420,8 +424,9 @@ def _consts():
         # left natural -- they are under-illuminated by the corner optics and need realignment to load at
         # uniform depth (boosting fits them but breaks uniformity). Phase phase/33x33_feedback9.pt.
         "33x33_feedback9": {
-            "Orca": {"ExposureTime": 0.035},
+            "Orca": {"ExposureTime": 0.035},  # 2026-07-08 kept 35 ms; after a bench beam-2 (399) power cut the imaging went separation-limited at the OLD amps (d' ~3), but higher Amp1+Amp2 recover separation without lengthening exposure (trap depth confirmed full ~413 uK via mj=1 dip scan 20260708210345). (Briefly ran 50 ms r526/r527 to diagnose; reverted -- 50 ms is GLOBAL via runner sync_camera_exposure.)
             "Init": {"VSLMServo": 1.9},
+            
             "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
             "Imag399": {
                 # 2026-07-01 re-baseline AFTER the two-beam 399 realignment (which RESTORED the 06-29
@@ -458,7 +463,6 @@ def _consts():
                 #     fid 0.986 / surv 0.957; superseded by the realignment + this re-baseline.
                 # --- prior 2026-06-28 RECAL (post beam-1 fix): Amp1 0.24->0.52, Amp2 0.26->0.24; X(0.16,0.24),
                 #     h(0.12,0.18); r10 confirm fid med 0.9934 / surv 0.986 / d' 4.17, flat.
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.22,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
@@ -670,6 +674,8 @@ def _default_vals(consts):
     d["TTLScopeTrig"] = 0
     d["TTLQickTrig"] = 0
     d["TTLSampleAndHold"] = 1
+    d["TTL399IMG1PIDMode"] = 0
+    d["TTL399IMG2PIDMode"] = 0
     # DDS
     d["Freq556MOTX"] = 118e6
     d["Amp556MOTX"] = 0
@@ -702,6 +708,8 @@ def _default_vals(consts):
     d["VElectrode6"] = 0
     d["VElectrode7"] = 0
     d["VElectrode8"] = 0
+    d["VImg1PIDSet"] = consts["BlueMOT"]["Img1PIDSet"]
+    d["VImg2PIDSet"] = consts["BlueMOT"]["Img2PIDSet"]
     # EOM616 (FreqEOM616Old is a MemoryMap runtime override in MATLAB; default here)
     d["FreqEOM616"] = 200e6
     d["AmpEOM616"] = 0.7
