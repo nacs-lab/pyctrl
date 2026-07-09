@@ -14,6 +14,7 @@ import seq_manager
 from exp_seq import ExpSeq
 from linear_ramp import linear_ramp
 from ramp_to import ramp_to
+from ramp_to_linear import ramp_to_linear
 from ramp_to_sqrt import ramp_to_sqrt
 from seq_val import seqval_isequal, sqrt
 from sqrt_ramp import sqrt_ramp
@@ -51,7 +52,15 @@ def test_linear_ramp_const_fold():
 
 
 def test_ramp_to():
+    # default ramp_to is now the quintic smootherstep
     val, t, length, old = _ramp_val(ramp_to(5))
+    u = t / length
+    s = u * u * u * (u * (u * 6.0 - 15.0) + 10.0)
+    assert seqval_isequal(val, old + (5 - old) * s)
+
+
+def test_ramp_to_linear():
+    val, t, length, old = _ramp_val(ramp_to_linear(5))
     assert seqval_isequal(val, (old * (length - t) + 5 * t) / length)
 
 
