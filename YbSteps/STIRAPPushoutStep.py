@@ -32,7 +32,7 @@ from ramp_to import ramp_to
 
 
 def STIRAPPushoutStep(s, g):
-    guassian_pulse_width = g.STIRAP.guassian_pulse_width(2e-6)
+    gaussian_pulse_width = g.STIRAP.guassian_pulse_width(2e-6)
     time_delay = g.STIRAP.delay(Consts().Pushout.STIRAP.delay)
     time_delay_reverse = g.STIRAP.reverse_delay(Consts().Pushout.STIRAP.reverse_delay)
     STIRAP_gap = g.STIRAP.gap(Consts().Pushout.STIRAP.gap)
@@ -78,16 +78,23 @@ def STIRAPPushoutStep(s, g):
 
 
     # --- Forward STIRAP pulse (308 gate then 556 gate, overlapped via STIRAP.delay) ---
-    s.add('TTL308RydAWG', 1).add('TTLScopeTrig', 1)
-    s.wait(time_delay)
-    s.add('TTL556RydAWG', 1)
-    s.wait(guassian_pulse_width / 2)
-    s.add('TTL308RydAWG', 0)
-    s.wait(guassian_pulse_width / 2)
-    s.add('TTL556RydAWG', 0)
+    if time_delay > 0:
+        s.add('TTL308RydAWG', 1).add('TTLScopeTrig', 1)
+        s.wait(time_delay)
+        s.add('TTL556RydAWG', 1)
+        s.wait(0.1e-6)
+        s.add('TTL308RydAWG', 0)
+        s.add('TTL556RydAWG', 0)
+    else:
+        s.add('TTL556RydAWG', 1).add('TTLScopeTrig', 1)
+        s.wait(-time_delay)
+        s.add('TTL308RydAWG', 1)
+        s.wait(0.1e-6)
+        s.add('TTL308RydAWG', 0)
+        s.add('TTL556RydAWG', 0)
     
     # wait for the STIRAP pulse to finish (the 556 gate is the last to finish, so we can just wait for that)
-    #s.wait(guassian_pulse_width / 2)
+    s.wait(gaussian_pulse_width)
     
 
     # Turn the trap back on.

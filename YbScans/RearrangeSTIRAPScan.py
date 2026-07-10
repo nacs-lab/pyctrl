@@ -123,17 +123,17 @@ def build():
     # ---- Siglent AWG config (out-of-band; AWGManager reads g().AWG.<name>.*) ------------
     # Copied from STIRAPAWGScan (parked on the 20um-array 2D dip center, scans
     # 20260707_180931 + _183401): FIXED -> one waveform per AWG, pre-stored once.
-    g().AWG.AWG556.shape = "gaussian"
-    g().AWG.AWG556.carrier_freq_MHz = 143.4
-    g().AWG.AWG556.pulse_width_us = 5
-    g().AWG.AWG556.steepness = 4
+    g().AWG.AWG556.shape = "rise_gaussian"
+    g().AWG.AWG556.carrier_freq_MHz = 143.1 #.scan(2, np.linspace(142.7, 143.6, 10)) # = 143.4
+    g().AWG.AWG556.pulse_width_us = 5 #.scan(2, np.linspace(1, 8, 10)) #= 5
+    g().AWG.AWG556.steepness = 1.5
     g().AWG.AWG556.max_amplitude_vpp = 11
     g().AWG.AWG556.amplitude_scale = 1
 
-    g().AWG.AWG308.shape = "gaussian"
+    g().AWG.AWG308.shape = "fall_gaussian"
     g().AWG.AWG308.carrier_freq_MHz = 200
-    g().AWG.AWG308.pulse_width_us = 5
-    g().AWG.AWG308.steepness = 4
+    g().AWG.AWG308.pulse_width_us = 5 #.scan(2, np.linspace(1, 8, 10)) #= 5
+    g().AWG.AWG308.steepness = 1.5
     g().AWG.AWG308.max_amplitude_vpp = 5.5
     g().AWG.AWG308.amplitude_scale = 1
 
@@ -146,13 +146,13 @@ def build():
     g().Pushout.Ramsey.Phase = 0
 
     # ---- STIRAP push-out params (STIRAPPushoutStep reads these; from STIRAPAWGScan) -----
-    g().Init.EOM616.Freq = 234.5e6
+    g().Init.EOM616.Freq = 234.0e6 #.scan(1, np.linspace(233.5e6, 234.7e6, 10))
     g().Pushout.VRydTrap = 0.03
     g().Pushout.STIRAP.guassian_pulse_width = 5e-6
-    g().Pushout.STIRAP.delay = 1.3e-6
+    g().Pushout.STIRAP.delay.scan(1, np.linspace(-1e-6, 1e-6, 10))
     g().Pushout.STIRAP.ifReverse = False
     g().Pushout.STIRAP.reverse_delay = 1.5e-6
-    g().Pushout.STIRAP.waitTime = 0e-6
+    g().Pushout.STIRAP.waitTime = 1e-6
     g().Pushout.Amp369 = 1
     g().Pushout.Time369 = 1e-6
     g().Pushout.BiasCoilCurrent.Ryd = 30
@@ -178,13 +178,13 @@ def build():
     rp.warmup_kwargs.derive_threshold = 0.35
 
     # ---- rearrange_kwargs (g(); per-shot setup, sweepable) ------------------------------
-    g().rearrange_kwargs.nsteps = 60
+    g().rearrange_kwargs.nsteps = 50
     g().rearrange_kwargs.step_period_ms = 0.696
     g().rearrange_kwargs.protocol = "rearrange2"
     g().rearrange_kwargs.extras.overdrive = False
     g().rearrange_kwargs.extras.dynamic = False
     g().rearrange_kwargs.extras.max_step_size = 0.75
-    g().rearrange_kwargs.extras.pattern = "every-other"
+    g().rearrange_kwargs.extras.pattern = "double_spacing"
     g().rearrange_kwargs.extras.ifEnhanced = False
     g().rearrange_kwargs.extras.precompute = False
     g().rearrange_kwargs.extras.precompute_host = False
