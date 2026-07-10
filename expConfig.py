@@ -163,8 +163,8 @@ def _consts():
         "FreqDetuning": -44e6,                 # fast-loading opt 2026-06-05; was -40e6
         "Amp": 0.6,
         "LoadingTime": 500e-3,                 # fast-loading opt 2026-06-05 (loading saturates ~0.21); was 500e-3
-        "Img1PIDSet": 0.5,  
-        "Img2PIDSet": 0.5
+        "Img1PIDSet": 0.57,  
+        "Img2PIDSet": 0.41
     }
 
     # GreenMOT
