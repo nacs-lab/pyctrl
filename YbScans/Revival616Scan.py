@@ -111,7 +111,7 @@ def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    g.runp().loading_phase = "phase/33x33_feedback9.pt"   # server-side WGS phase path
+    g.runp().loading_phase = "phase/33x33_feedback11.pt"   # server-side WGS phase path
     g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
     return g
 

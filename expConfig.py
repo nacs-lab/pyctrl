@@ -475,7 +475,132 @@ def _consts():
                 "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
             },
         },
-        
+
+        # 2026-07-10: feedback9b re-optimization family. The optical path was MOVED, which drifted the
+        # atom-plane trap-depth CV of 33x33_feedback9 back UP to 7.05% (edge-hot radial bowl + fresh
+        # speckle; f0 re-measured 107.8947 MHz). Re-flattening by amplitude scaling (speckle-preserving),
+        # warm-started from the deployed fb9 each round. Entry = EXACT COPY of 33x33_feedback9 (same
+        # VSLMServo / LAC / imaging+cooling -- depth-only campaign, cooling/imaging already optimized).
+        # Phase phase/33x33_feedback9b_r1.pt. Per-round r<N> reuses this same overlay.
+        "33x33_feedback9b_r1": {
+            "Orca": {"ExposureTime": 0.035},
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "Imag399": {
+                # EXACT structural copy of 33x33_feedback9: top-level Amp1/Amp2 inherit base (=1, power
+                # is set via VIMG1/2Set); only the 556 cooling-during-imaging is overlaid.
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # 2026-07-10: 33x33_feedback11 = PRODUCTION successor to feedback10 (one more amp-scale round r4,
+        # measured with a DENSE mj=1 sweep 104.8-105.7/0.05). Measured CV 1.54% (1065/1068 sites -- dense
+        # sweep recovered the marginal edge sites feedback10's coarse sweep dropped); split-half TRUE CV
+        # ~2.2% (residual is REAL corner under-illumination [optical, needs a beam realign] + speckle floor
+        # -- amp-scale actuator exhausted, Dphi flat 0.007 rad, transfer +0.27). IS the r4 keeper phase
+        # (identical .pt, sha df7dde588a54). Overlay = EXACT COPY of 33x33_feedback9. See CAMPAIGN_STATE_fb9b.md.
+        "33x33_feedback11": {
+            "Orca": {"ExposureTime": 0.035},
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "Imag399": {
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # 2026-07-10: 33x33_feedback10 = PRODUCTION successor to 33x33_feedback9 after the optical-path
+        # move. It IS the 33x33_feedback9b_r3 keeper phase (identical .pt, sha e5995eaab4a7), renamed for
+        # production. Amplitude-scaling depth re-flatten restored CV 7.05% (post-move) -> 2.22% (split-half
+        # true ~1.5%) in 3 rounds. Overlay = EXACT COPY of 33x33_feedback9 (depth-only campaign; cooling/
+        # imaging unchanged, already optimized). Phase phase/33x33_feedback10.pt. See CAMPAIGN_STATE_fb9b.md.
+        "33x33_feedback10": {
+            "Orca": {"ExposureTime": 0.035},
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "Imag399": {
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # 33x33_feedback9b round 4 (warm from r3, push for <2%). Same overlay (exact copy of 33x33_feedback9).
+        "33x33_feedback9b_r4": {
+            "Orca": {"ExposureTime": 0.035},
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "Imag399": {
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # 33x33_feedback9b round 3 (warm from r2). Same overlay (exact copy of 33x33_feedback9).
+        "33x33_feedback9b_r3": {
+            "Orca": {"ExposureTime": 0.035},
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "Imag399": {
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+        # 33x33_feedback9b round 2 (warm from r1). Same overlay (exact copy of 33x33_feedback9).
+        "33x33_feedback9b_r2": {
+            "Orca": {"ExposureTime": 0.035},
+            "Init": {"VSLMServo": 1.9},
+            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "Imag399": {
+                "Cool556": {
+                    "FreqDetuning": 0.18e6, "Amp": 0.2,
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
+                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                },
+            },
+            "Cool556": {
+                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
+                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
+            },
+        },
+
         # 2026-07-07: new array with 14.5um spacing for Rydberg
         "23x23_14p5um": {
             "Orca": {"ExposureTime": 0.035},

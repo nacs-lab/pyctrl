@@ -74,7 +74,7 @@ def build(field_G=30, green_amp=0.12, ryd308_amp=0.4, green_freq_mhz=143.35,
     rp.isInit = 0
     rp.isHC = 0
     rp.isGrid2 = 0
-    rp.loading_phase = "phase/33x33_feedback9.pt"
+    rp.loading_phase = "phase/33x33_feedback11.pt"
     rp.loading_defocus = -5
     return g, eom_freqs, vx_vals
 

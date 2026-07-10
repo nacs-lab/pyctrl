@@ -67,10 +67,10 @@ _AXIAL = (10, 1, 60, AMP_AXIAL)
 _T_SHORTEST = 1e-3           # shortest modulation time (s), at a range's highest frequency
 
 # SLM loading pattern under test (server-side path) + ANSI z4 loading defocus (rad).
-LOADING_PHASE = "phase/33x33_feedback9.pt"
+LOADING_PHASE = "phase/33x33_feedback11.pt"
 LOADING_DEFOCUS = -5
 # Bare array name derived from LOADING_PHASE (single source of truth for the label +
-# description, e.g. "phase/33x33_feedback9.pt" -> "33x33_feedback9"). Editing LOADING_PHASE
+# description, e.g. "phase/33x33_feedback11.pt" -> "33x33_feedback11"). Editing LOADING_PHASE
 # above retargets the scan AND its label/description together -- no second hardcoded name.
 PATTERN_NAME = os.path.splitext(os.path.basename(LOADING_PHASE.replace("\\", "/")))[0]
 

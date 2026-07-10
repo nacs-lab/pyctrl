@@ -52,9 +52,9 @@ import argparse
 import os
 import sys
 
-# ---- 33x33_feedback9 config (current uniform production 33x33 array) ----
-PATTERN = "33x33_feedback9"
-PHASE_PATH = "phase/33x33_feedback9.pt"
+# ---- 33x33_feedback11 config (current uniform production 33x33 array; fb9 depth-reflattened 2026-07-10) ----
+PATTERN = "33x33_feedback11"
+PHASE_PATH = "phase/33x33_feedback11.pt"
 BAKED_ZERNIKE = [0, 0, 0, 0, 0]                 # flattened-uniform array, no baked Zernike
 MODEL_FILENAME = "slmnet/checkpoints/experiment_sinc_ampmap_v3/best_model.pth"   # 33x33 model
 

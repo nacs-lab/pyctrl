@@ -45,8 +45,8 @@ import numpy as np
 VERIFY_IMAGE = True
 
 # LOADING (dense load) / TARGET (science array) SLM patterns.
-INIT_PATTERN = "33x33_feedback9"
-TARGET_PATTERN = "33x33_feedback9"
+INIT_PATTERN = "33x33_feedback11"
+TARGET_PATTERN = "33x33_feedback11"
 
 MODEL_FILENAME = "SLMnet/checkpoints/sinc_3x3_experiment/models/direct_flat/direct_flat_best.pth"
 # ------------------------------------------------------------------------------------ #
@@ -63,6 +63,7 @@ def _pattern_cfg(name):
         "3270_z4eq4":    ("phase/3270_z4eq4.pt",    [0, 0, 0, 0, -4]),
         # NAME-IMPLIED (confirm the baked Zernike before trusting)
         "33x33_feedback9": ("phase/33x33_feedback9.pt", [0, 0, 0, 0, 0]),
+        "33x33_feedback11": ("phase/33x33_feedback11.pt", [0, 0, 0, 0, 0]),  # 2026-07-10 fb9 depth-reflattened (post optics move); production successor
         "17x17_20um":      ("phase/17x17_20um.pt",      [0, 0, 0, 0, 0]),
     }
     if name not in table:

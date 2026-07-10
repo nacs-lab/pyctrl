@@ -48,9 +48,9 @@ import numpy as np
 # by _pattern_cfg below (port of ybLoadingPatternCfg.m). MIDDLE is only used when N_ROUNDS >= 2. For
 # a plain rearrangement leave them equal; set them apart to rearrange FROM one pattern THROUGH a
 # middle INTO another. The rearrangement MODEL (warmup_kwargs.model_filename) must match the family.
-INIT_PATTERN = "33x33_feedback9"
-MIDDLE_PATTERN = "33x33_feedback9"
-TARGET_PATTERN = "33x33_feedback9"
+INIT_PATTERN = "33x33_feedback11"
+MIDDLE_PATTERN = "33x33_feedback11"
+TARGET_PATTERN = "33x33_feedback11"
 
 # Rounds of rearrangement. 1 -> single-round (RearrangeCommSeq, 2 images). 2 -> two-round
 # (RearrangeCommSeq2, 3 images: LOADING/MIDDLE/FINAL). This is the single source of truth; NumImages
@@ -73,6 +73,7 @@ def _pattern_cfg(name):
         "3270_z4eq4":    ("phase/3270_z4eq4.pt",    [0, 0, 0, 0, -4]),
         # NAME-IMPLIED (confirm the baked Zernike before trusting)
         "33x33_feedback9": ("phase/33x33_feedback9.pt", [0, 0, 0, 0, 0]),
+        "33x33_feedback11": ("phase/33x33_feedback11.pt", [0, 0, 0, 0, 0]),  # 2026-07-10 fb9 depth-reflattened (post optics move); production successor
         "11x11withzernike-4":   ("phase/11x11withzernike-4.pt",   [0, 0, 0, 0, -4]),
         "10x10_z4eq8":          ("phase/10x10_z4eq8.pt",          [0, 0, 0, 0, -8]),
         "15x15_z4eq8":          ("phase/15x15_z4eq8.pt",          [0, 0, 0, 0, -8]),

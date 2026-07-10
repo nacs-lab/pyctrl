@@ -124,7 +124,7 @@ def _runp(g):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    g.runp().loading_phase = "phase/33x33_feedback9.pt"   # server-side WGS phase path
+    g.runp().loading_phase = "phase/33x33_feedback11.pt"   # server-side WGS phase path
     g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
 
 
@@ -170,7 +170,7 @@ def build_2d(beam, blue_amp, freq_det, amps, fixed_freq=None, fixed_amp=None, ti
     return g
 
 
-def build_amp2d(amp1, amp2, time_s=0.2, pattern="33x33_feedback9"):
+def build_amp2d(amp1, amp2, time_s=0.2, pattern="33x33_feedback11"):
     """Stage-A1 proxy amp map: 2-D ``Pushout.Blue.Amp1`` (dim 1) x ``Amp2`` (dim 2) at a LONG pushout.
 
     The middle ``PushouthXStep`` replays the imaging illumination for ``time_s`` -- long so the
@@ -228,7 +228,7 @@ def main():
                     help="amp2d: Pushout.Blue.Amp1 colon (beam 1 -> AmpAbsImag)")
     ap.add_argument("--amp2", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=(0.05, 0.05, 0.5),
                     help="amp2d: Pushout.Blue.Amp2 colon (beam 2 -> Amp399Imag2)")
-    ap.add_argument("--pattern", default="33x33_feedback9",
+    ap.add_argument("--pattern", default="33x33_feedback11",
                     help="amp2d: ByPattern key to seed cooling/freq from (default warm4)")
     # blue_amp sweep range (colon lo:step:hi)
     ap.add_argument("--amp-lo", type=float, default=0.1)

@@ -45,7 +45,7 @@ import os
 import sys
 
 # ---- scan settings (override on the command line) -------------------------
-LOADING_PHASE = "phase/33x33_feedback9.pt"   # SLM loading hologram (+ its ByPattern config)
+LOADING_PHASE = "phase/33x33_feedback11.pt"   # SLM loading hologram (+ its ByPattern config)
 LOADING_DEFOCUS = -5                          # ANSI z4 loading defocus (rad)
 PUSHOUT_TIME = 10e-3                          # push-out (399 strobe) hold (s) -- calibrated 2026-06-22
 BEAM = 1                                      # which 399 beam: 1 (AmpAbsImag) or 2 (Amp399Imag2)

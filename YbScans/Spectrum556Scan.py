@@ -125,7 +125,7 @@ def build(mj=0):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    g.runp().loading_phase = "phase/33x33_feedback9.pt"   # match other scans + the array on the SLM
+    g.runp().loading_phase = "phase/33x33_feedback11.pt"  # 2026-07-10: fb9 depth re-flattened after optics move (fb9 -> feedback10, CV 7.05->2.22%); match other scans + the array on the SLM
     g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
     return g
 

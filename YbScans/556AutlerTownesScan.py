@@ -99,7 +99,7 @@ def build(field_G=30, eom616_freq=236.5e6, ryd308_amp=0.4, green_amp=None,
     rp.isHC = 0
     rp.isGrid2 = 0
     # --- optional per-scan SLM loading-pattern override (see RydbergSpectrum556Scan). ---
-    g.runp().loading_phase = "phase/33x33_feedback9.pt"
+    g.runp().loading_phase = "phase/33x33_feedback11.pt"
     g.runp().loading_defocus = -5
     return g
 
