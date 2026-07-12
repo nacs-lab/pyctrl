@@ -435,3 +435,32 @@ def to_store_array(frame):
     s1, s2, s3 = a.shape
     flat = a.reshape(-1, order="F").astype(np.float64)
     return np.concatenate(([float(s1), float(s2), float(s3)], flat))
+
+
+def to_store_frame_u16(frame):
+    """Encode one frame for the uint16 image wire: ``((s1, s2, s3), <pixels C-order uint16>)``.
+
+    Sibling of :func:`to_store_array` (same 2-D/3-D validation; a 2-D ``(H, W)`` frame becomes
+    ``s1=H, s2=W, s3=1``) but WITHOUT the float64 upcast or the Fortran flatten: the pixel bytes
+    are the natural C-order ``tobytes()`` of the C-contiguous ``(s1, s2, s3)`` array. Returns the
+    shape tuple + raw uint16 bytes (2-byte little-endian elements on this platform).
+
+    Camera frames are uint16. A non-uint16 frame (a float fake, int32, ...) is safe-cast to
+    uint16 ONLY when the cast is lossless (integral values in ``[0, 65535]``); when it is NOT,
+    returns ``None`` so the caller falls back to float64 staging (:func:`to_store_array`).
+    A non-2-D/3-D frame raises ``ValueError`` (as ``to_store_array`` does) so the shot is dropped.
+    """
+    import numpy as np
+    a = np.asarray(frame)
+    if a.ndim == 2:
+        a = a[:, :, np.newaxis]
+    if a.ndim != 3:
+        raise ValueError("frame must be 2-D or 3-D, got ndim=%d" % a.ndim)
+    s1, s2, s3 = a.shape
+    if a.dtype != np.uint16:
+        a16 = a.astype(np.uint16)
+        if not np.array_equal(a16, a):      # fractional / negative / >65535 -> lossy
+            return None
+        a = a16
+    a = np.ascontiguousarray(a)             # C-order; tobytes() is the wire pixel block
+    return (int(s1), int(s2), int(s3)), a.tobytes()

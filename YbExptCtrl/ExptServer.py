@@ -9,6 +9,28 @@ shape-prefix / 0-separated flat-double layout ``_process_imgs`` parses -- or the
 mis-reads it. The IMPLEMENTATION is free to diverge: this is NO LONGER kept as a verbatim copy
 of the MATLAB ``ExptServer.py`` (only the wire format is load-bearing).
 
+Image wire formats -- TWO verbs drain the SAME staged shots (all little-endian):
+
+  ``get_imgs`` (OLD, float64 -- unchanged, byte-for-byte)::
+
+    [nseqs: f8]  then per shot:  [scan_id: f8][seq_id: f8]
+      per image: [s1: f8][s2: f8][s3: f8] <s1*s2*s3 pixels: f8, COLUMN-MAJOR (Fortran)>
+      [0.0: f8]  (shot separator; s1 is never 0, so 0.0 disambiguates next-image vs end)
+
+  ``get_imgs_uint16`` (NEW)::
+
+    [nseqs: f8]  then per shot:  [scan_id: f8][seq_id: f8]
+      per image: [s1: f8][s2: f8][s3: f8] <s1*s2*s3 pixels: u2, C-order (natural frame bytes)>
+      [0.0: f8]  (shot separator, exactly as above)
+
+The two differ ONLY in the pixel block (u2 C-order vs f8 Fortran-order); the f8 framing is
+identical. Because a u2 pixel block is a multiple of 2 (not 8) bytes, the f8 fields that follow
+a pixel block in the uint16 stream may be UNALIGNED -- parse/build with explicit byte offsets
+(struct / ``np.frombuffer(..., count, offset)``), never assume 8-byte alignment. Staged frames
+keep their native uint16 dtype (no upcast at stage time); the OLD verb reconstructs the float64
+Fortran stream lazily at drain time (legacy consumers) and the NEW verb emits the raw uint16
+bytes with zero float conversion (see ``_StagedFrame``).
+
 This hub OWNS image persistence. ``store_imgs`` / ``seq_finish`` / ``seq_cancel`` are the
 low-level wire-format sink (stage encoded frames into ``temp_imgs``, then publish/drop the shot).
 On top of them, ``publish_shot`` / ``stage_frame`` / ``finish_shot`` / ``cancel_shot`` +
@@ -30,6 +52,7 @@ import errno
 import json
 import os
 import queue
+import struct
 import tempfile
 import threading
 import time
@@ -37,6 +60,66 @@ import zmq
 from collections import deque
 from enum import Enum
 import array
+
+
+class _StagedFrame:
+    """One staged camera image, lazily serializable to EITHER image wire format.
+
+    Staged either as raw uint16 (the fast pyctrl capture path -- native dtype preserved, C-order,
+    no upcast at stage time) or as a legacy float64 ``[s1, s2, s3, pixels col-major]`` array (the
+    ``store_imgs`` public API / MATLAB path). ``tobytes()`` ALWAYS yields the OLD float64
+    Fortran-order stream, so ``get_imgs`` stays byte-identical without any special-casing;
+    ``u16_bytes()`` yields the NEW ``[s1,s2,s3]`` f8 prefix + C-order uint16 pixel block. See the
+    module docstring for the two wire formats.
+    """
+    __slots__ = ('_shape', '_u16', '_f64')
+
+    @classmethod
+    def from_u16(cls, shape, raw_c_bytes):
+        """shape = (s1, s2, s3); raw_c_bytes = C-order uint16 pixel bytes (no shape prefix)."""
+        self = cls.__new__(cls)
+        self._shape = shape
+        self._u16 = raw_c_bytes
+        self._f64 = None
+        return self
+
+    @classmethod
+    def from_float64(cls, arr):
+        """arr = array('d') of [s1, s2, s3, pixels col-major] -- the legacy store_imgs form."""
+        self = cls.__new__(cls)
+        self._shape = None
+        self._u16 = None
+        self._f64 = arr
+        return self
+
+    def tobytes(self):
+        """OLD wire pixel record: float64, Fortran-order pixels, 3-element f8 shape prefix.
+
+        For a uint16-staged frame this reconstructs EXACTLY what ``to_store_array`` would emit
+        (F-flatten + upcast), so ``get_imgs`` is byte-for-byte the pre-change stream."""
+        if self._f64 is not None:
+            return self._f64.tobytes()
+        import numpy as np
+        s1, s2, s3 = self._shape
+        pix = np.frombuffer(self._u16, dtype=np.uint16).reshape(s1, s2, s3)
+        flat = pix.reshape(-1, order='F').astype(np.float64)
+        return np.concatenate(([float(s1), float(s2), float(s3)], flat)).tobytes()
+
+    def u16_bytes(self):
+        """NEW wire pixel record: [s1,s2,s3] f8 prefix + C-order uint16 pixels."""
+        import numpy as np
+        if self._u16 is not None:
+            s1, s2, s3 = self._shape
+            return struct.pack('<3d', float(s1), float(s2), float(s3)) + self._u16
+        # Legacy float64-staged frame: clip+round to uint16. Camera data is integral, so the
+        # round is exact for real frames; the clip only guards a non-camera float source that
+        # carries fractional / out-of-range values (best-effort -- float64 staging is legacy).
+        vals = np.frombuffer(self._f64, dtype=np.float64)
+        s1, s2, s3 = int(vals[0]), int(vals[1]), int(vals[2])
+        pix = vals[3:].reshape(s1, s2, s3, order='F')
+        u16 = np.clip(np.rint(pix), 0, 65535).astype(np.uint16)
+        return (struct.pack('<3d', float(s1), float(s2), float(s3))
+                + np.ascontiguousarray(u16).tobytes())
 
 def _state_dir():
     """Stable per-user dir for runtime state (the runner-queue persistence file).
@@ -337,6 +420,9 @@ class ExptServer(object):
             self.safe_send_string(addr, rep)
         elif msg_str == "get_imgs":
             rep = self.get_imgs()
+            self.safe_send(addr, rep)
+        elif msg_str == "get_imgs_uint16":
+            rep = self.get_imgs_uint16()
             self.safe_send(addr, rep)
         elif msg_str == "get_seq_num":
             rep = self.get_seq_num()
@@ -689,6 +775,38 @@ class ExptServer(object):
                 break
         return res
 
+    def get_imgs_uint16(self):
+        # returns bytes to be sent across the network (the NEW uint16 wire -- see the module
+        # docstring). Same framing as get_imgs -- [nseqs:f8], then per shot the scan_id/seq_id
+        # f8 header + images + a 0.0 f8 separator -- but each staged image emits its C-order
+        # uint16 record (no float upcast) via _StagedFrame.u16_bytes(). The scan_id/seq_id
+        # header items are array('d') and f8 in BOTH wires, so they pass through .tobytes().
+        zero = struct.pack('<d', 0.0)
+        res = bytearray()
+        # Atomic read-nseqs / swap-deques / reset-counter, EXACTLY as get_imgs (a seq_finish
+        # landing between the read and the swap would otherwise leave imgs with more sequences
+        # than nseqs, underflowing later drains -- see get_imgs's comment).
+        with self.__data_lock:
+            with self.__expt_lock:
+                nseqs = self.nseq_imgs
+                self.expt_imgs, self.imgs = self.imgs, self.expt_imgs
+                self.nseq_imgs = 0
+        res.extend(struct.pack('<d', float(nseqs)))
+        n_transfer = 0
+        while n_transfer < nseqs:
+            next_img = self.pop_img()
+            while next_img is not None and next_img != b'':
+                if isinstance(next_img, _StagedFrame):
+                    res.extend(next_img.u16_bytes())
+                else:
+                    res.extend(next_img.tobytes())      # scan_id/seq_id header (f8, both wires)
+                next_img = self.pop_img()
+            res.extend(zero)
+            n_transfer += 1
+            if next_img is None:
+                break
+        return res
+
     # this one is only for msg handler
     def start_seq_serv(self) -> str:
         with self.__data_lock:
@@ -797,14 +915,18 @@ class ExptServer(object):
         return False
 
     def store_imgs(self, data, scan_id=-1, seq_id=-1):
-        # MATLAB passes `data` as a lazy matlab.double wrapper around its own
-        # memory. Force an eager copy into Python-owned bytes here — once the
-        # MATLAB sequence completes, the underlying buffer can go stale and
-        # later .tobytes() in get_imgs returns garbage or raises silently.
-        # Fast path: a numpy float64 frame (the pyctrl capture) copies via its raw bytes
-        # (buffer protocol) -- ~28x faster than array.array's element-by-element constructor
-        # over a numpy array (575 ms -> 20 ms on a full ORCA frame). matlab.double / lists /
-        # array.array fall back to the element-wise constructor (correctness preserved).
+        # PUBLIC / legacy FLOAT64 staging: `data` is a flat [s1, s2, s3, pixels col-major]
+        # iterable of doubles (to_store_array output, a list, or the matlab.double the MATLAB
+        # path pushes). MATLAB passes a lazy wrapper around its own memory, so force an eager
+        # copy into Python-owned bytes here — once the MATLAB sequence completes, the underlying
+        # buffer can go stale and a later drain returns garbage or raises silently.
+        # Fast path: a numpy float64 frame copies via its raw bytes (buffer protocol) -- ~28x
+        # faster than array.array's element-by-element constructor over a numpy array (575 ms ->
+        # 20 ms on a full ORCA frame). matlab.double / lists / array.array fall back to the
+        # element-wise constructor (correctness preserved).
+        # The pyctrl capture path no longer routes here -- it stages raw uint16 via
+        # __stage_frame_u16 (no upcast). This legacy float64 staging is drained as-is by get_imgs
+        # (byte-identical) and clip/round-to-uint16 by get_imgs_uint16 (see _StagedFrame).
         tb = getattr(data, "tobytes", None)
         if tb is not None and getattr(getattr(data, "dtype", None), "char", "") == "d":
             data = array.array('d', tb())
@@ -813,7 +935,17 @@ class ExptServer(object):
         if not self.temp_imgs:
             self.temp_imgs.append(array.array('d', [scan_id]))
             self.temp_imgs.append(array.array('d', [seq_id]))
-        self.temp_imgs.append(data)
+        self.temp_imgs.append(_StagedFrame.from_float64(data))
+
+    def __stage_frame_u16(self, shape, raw, scan_id, seq_id):
+        # Fast pyctrl capture staging: a pre-encoded uint16 image (shape + C-order bytes), no
+        # float upcast and no Fortran flatten. Mirrors store_imgs's per-shot header bookkeeping
+        # (scan_id/seq_id f8, staged once when temp_imgs is empty). The frame is a _StagedFrame
+        # both wires drain from (OLD verb reconstructs float64 lazily; NEW verb emits raw u16).
+        if not self.temp_imgs:
+            self.temp_imgs.append(array.array('d', [scan_id]))
+            self.temp_imgs.append(array.array('d', [seq_id]))
+        self.temp_imgs.append(_StagedFrame.from_u16(shape, raw))
 
     def seq_finish(self):
         with self.__data_lock:
@@ -843,7 +975,7 @@ class ExptServer(object):
         """Encode + stage ONE raw frame into the current shot (no finish). The incremental path
         the rearrangement seq uses to stage frame-by-frame across its handoffs."""
         self.__submit_img(
-            lambda: self.store_imgs(self.__encode_frame(frame), scan_id, seq_id), async_)
+            lambda: self.__stage_encoded(frame, scan_id, seq_id), async_)
 
     def finish_shot(self, *, async_=True):
         """Publish the staged shot (``seq_finish``), ordered after any pending stage_frame."""
@@ -887,12 +1019,27 @@ class ExptServer(object):
     def __publish_frames(self, frames, scan_id, seq_id):
         """Stage every raw frame then finish the shot (the publish_shot work unit)."""
         for f in frames:
-            self.store_imgs(self.__encode_frame(f), scan_id, seq_id)
+            self.__stage_encoded(f, scan_id, seq_id)
         self.seq_finish()
+
+    def __stage_encoded(self, frame, scan_id, seq_id):
+        """Encode + stage one raw camera frame, PREFERRING the uint16 fast path (native dtype,
+        C-order, no upcast at stage time). Falls back to legacy float64 F-order staging
+        (store_imgs / to_store_array) only when the frame is not losslessly representable as
+        uint16 -- correctness first. A non-2D/3D frame raises (via the encoder), so
+        __run_img_work cancels the shot, exactly like the old to_store_array path."""
+        from devices.orca import to_store_frame_u16
+        enc = to_store_frame_u16(frame)         # None => not losslessly uint16 -> keep float64
+        if enc is None:
+            self.store_imgs(self.__encode_frame(frame), scan_id, seq_id)
+        else:
+            shape, raw = enc
+            self.__stage_frame_u16(shape, raw, scan_id, seq_id)
 
     @staticmethod
     def __encode_frame(frame):
-        """Raw camera frame -> the column-major ``[s1,s2,s3, pixels]`` store_imgs wire array."""
+        """Raw camera frame -> the column-major ``[s1,s2,s3, pixels]`` float64 store_imgs wire
+        array (the LEGACY/fallback encoder; the fast path is to_store_frame_u16)."""
         from devices.orca import to_store_array
         return to_store_array(frame)
 

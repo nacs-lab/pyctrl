@@ -20,9 +20,9 @@ __all__ = ["Device", "register", "create", "available"]
 try:
     from . import orca
     from .orca import (DEFAULT_ROI, OrcaCamera, open_orca_from_config,
-                       orca_config_defaults, to_store_array)
+                       orca_config_defaults, to_store_array, to_store_frame_u16)
     __all__ += ["orca", "DEFAULT_ROI", "OrcaCamera", "open_orca_from_config",
-                "orca_config_defaults", "to_store_array"]
+                "orca_config_defaults", "to_store_array", "to_store_frame_u16"]
 except Exception as e:                       # one bad family must not break the rest
     _log.warning("devices: 'orca' family unavailable: %s", e)
 

@@ -9,10 +9,11 @@ from .orca_camera import (
     open_orca_from_config,
     orca_config_defaults,
     to_store_array,
+    to_store_frame_u16,
 )
 
 __all__ = ["DEFAULT_ROI", "OrcaCamera", "open_orca_from_config",
-           "orca_config_defaults", "to_store_array"]
+           "orca_config_defaults", "to_store_array", "to_store_frame_u16"]
 
 # Registry: create("orca", **kw) constructs + opens an OrcaCamera handle (NEEDS-HARDWARE
 # unless a fake backend is injected via cam=...). Registering here keeps the driver clean.
