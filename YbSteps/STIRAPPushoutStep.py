@@ -43,6 +43,15 @@ def STIRAPPushoutStep(s, g):
     ifReverse = g.STIRAP.ifReverse(True)
     t_waitSTIRAP = g.STIRAP.waitTime(0)
 
+    # Electrode ionization
+    Vx = g.Vx(0)
+    Vy = g.Vy(0)
+    Vz = g.Vz(0)
+    Vx_init = Consts().Init.Electrodes.Vx
+    Vy_init = Consts().Init.Electrodes.Vy
+    Vz_init = Consts().Init.Electrodes.Vz
+    
+    
     # Ramp the tweezer down and wait; set a B-field along Z.
     I_RydCoil = g.BiasCoilCurrent.Ryd(5)
     V_RydCoil = 5 * I_RydCoil / 100
@@ -125,9 +134,30 @@ def STIRAPPushoutStep(s, g):
     
     # auto-ionization (369 pulse width from Pushout.Time369; 0 -> zero-width pulse, no 369)
     s.add('TTL369Switch', 1)
-    s.wait(Time_Pushout369)
-    s.add('TTL369Switch', 0)
+    (s.add_step(Time_Pushout369)
+        .add('VElectrode1', +Vx + Vy - Vz)
+        .add('VElectrode2', 0 + Vy - Vz)
+        .add('VElectrode3', 0 + Vy + Vz)
+        .add('VElectrode4', -Vx + Vy + Vz)
+        .add('VElectrode5', 0 - Vy - Vz)
+        .add('VElectrode6', -Vx - Vy - Vz)
+        .add('VElectrode7', +Vx - Vy + Vz)
+        .add('VElectrode8', 0 - Vy + Vz))
 
+    #s.wait(Time_Pushout369)
+    s.add('TTL369Switch', 0)
+    
+    # Restore the electrode value to zero fileld
+    (s.add_step(4e-6)
+        .add('VElectrode1', +Vx_init + Vy_init - Vz_init)
+        .add('VElectrode2', 0 + Vy_init - Vz_init)
+        .add('VElectrode3', 0 + Vy_init + Vz_init)
+        .add('VElectrode4', -Vx_init + Vy_init + Vz_init)
+        .add('VElectrode5', 0 - Vy_init - Vz_init)
+        .add('VElectrode6', -Vx_init - Vy_init - Vz_init)
+        .add('VElectrode7', +Vx_init - Vy_init + Vz_init)
+        .add('VElectrode8', 0 - Vy_init + Vz_init))
+    
     s.add('TTLScopeTrig', 0)
     s.add('AmpAbsImag', 0)
     s.add('AmpBlueMOT', 0)
