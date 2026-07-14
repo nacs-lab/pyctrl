@@ -103,14 +103,24 @@ def LACScan(url=None, reps=None):
     # BlueMOT; Img1/Img2PIDSet are the two beams' power SETPOINTS (V), fed to
     # VImg1/VImg2PIDSet (Dev1/21,24). Amp1/Amp2 (the DDS drive) stay at 1 -- the
     # PID controls the actual optical power, so these setpoints are now the
-    # imaging-amplitude lever. Sweep both 0.1..1.5 (expConfig default 0.5 each).
-    # Goal: find a region where the img1 empty-vs-atom Gaussian SEPARATION ~ 6.
+    # imaging-amplitude lever. expConfig defaults Img1=0.57, Img2=0.41.
+    # SEPARATION IS TOO LARGE at the current setpoints -> too much 399 light ->
+    # heating -> survival loss. So sweep LOWER: bracket below+around current at
+    # a finer step. Goal: find setpoints where img1 empty-vs-atom Gaussian
+    # SEPARATION ~ 6 (enough for fidelity, not more) while survival stays high.
     # 0 pushout (Pushout.Time below) -> real 50 ms two-image survival + separation.
+    # ===== BEAM-2-OFF, HIGH Img1PIDSet: push beam 1 setpoint past the scanned range =====
+    # Job 2209 (2-D) + 2210 (beam-2-off) both showed beam-1 separation FLAT (d' ~3.2)
+    # over Img1PIDSet 0.2..1.2. Extend beam 1 UPWARD (0.9..2.0) to see whether d'
+    # finally rises with more power, or the PID lock RAILS (laser power ceiling ->
+    # actual power plateaus even as the setpoint climbs). Beam 2 stays OFF
+    # (Imag399.Amp2 = 0) so this is clean beam-1-alone. Setpoint feeds VImg1PIDSet
+    # (Dev1/21, AO) directly, +-10 V hardware limit; 2.0 is well within it.
     g().Imag399.Amp1 = 1
-    g().Imag399.Amp2 = 1
-    g().Pushout.Time = 0.001   # ~0 pushout: real 50 ms survival + true separation
-    g().BlueMOT.Img1PIDSet.scan(1, np.linspace(0.1, 1.5, 10))
-    g().BlueMOT.Img2PIDSet.scan(2, np.linspace(0.1, 1.5, 10))
+    g().Imag399.Amp2 = 0        # BEAM 2 OFF (image step)
+    g().Pushout.Time = 0.001    # ~0 pushout: real 50 ms survival + true separation
+    g().BlueMOT.Img1PIDSet.scan(1, np.linspace(0.9, 2.0, 12))
+    g().BlueMOT.Img2PIDSet = 0.2   # beam 2 setpoint irrelevant (beam off); park low
     #g().GreenMOT.BiasCoilCurrent.X = 0.0387
     # g().GreenMOT.BiasCoilCurrent.Y.scan(1, [0.265, 0.278])
     # g().BlueMOT.LoadingTime = 0.5
@@ -132,7 +142,7 @@ def LACScan(url=None, reps=None):
 
     # ---- run params (runp) ------------------------------------------------
     rp = g.runp()
-    rp.NumPerGroup = 1000         # = default reps(10) x n_points(100) so the dashboard
+    rp.NumPerGroup = 240          # = default reps(20) x n_points(12) so the dashboard
                                   # shots-total matches the real cap (rep sets shots/point)
     rp.NumImages = 2              # survival: img1 (separation) + img2 (survival)
     rp.isInit = 0
@@ -152,14 +162,13 @@ def LACScan(url=None, reps=None):
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
 
-    desc = ("33x33_feedback9 (VSLMservo 1.9) imaging optimization -- 2-D 399 PID-setpoint "
-            "scan Img1PIDSet x Img2PIDSet, both 0.1..1.5 (10x10), at 0 pushout "
-            "(Pushout.Time 0.001) = real 50 ms two-image survival + img1 separation. "
-            "Physical change: 399 imaging power is now PID-servoed during BlueMOT to "
-            "these setpoints (V); Imag399.Amp1/Amp2 held at 1. Locating the setpoint "
-            "region giving img1 empty-vs-atom Gaussian separation ~ 6 (imaging fidelity) "
-            "while keeping real survival high. Locate pass, low reps; zoom next.")
-    did = ybStartScan("ImagingPushoutSurvivalSeq", g, url=url, label="ImgOpt_PIDset_fb9",
+    desc = ("33x33_feedback11 (VSLMservo 1.9) imaging BEAM-2-OFF, HIGH Img1PIDSet -- "
+            "Imag399.Amp2=0 (beam 2 dark), scan beam 1 setpoint Img1PIDSet 0.9..2.0 "
+            "(12 pts, 20 reps=240 shots), 0 pushout. Extends the beam-2-off diagnostic "
+            "(job 2210) upward past the 0.2..1.2 already scanned: does beam-1 separation "
+            "(d') finally rise with more power, or does the PID lock RAIL (laser power "
+            "ceiling -> actual power plateaus)? Amp1=1, Img2PIDSet parked 0.2 (beam off).")
+    did = ybStartScan("ImagingPushoutSurvivalSeq", g, url=url, label="ImgTest_beam2off_hi_fb11",
                       description=desc, **opts)
     # print("submitted LACScan sweep (%d pts %.3f..%.3f A) -> descriptor id %s (url=%s)"
     #       % (len(xvals), xvals[0], xvals[-1], did, url or "default"))
@@ -170,9 +179,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit LACScan to the pyctrl backend.")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=10,
-                    help="passes = shots/point (0 = forever); default 10 -- locate pass over "
-                         "the 10x10 PID-setpoint grid (=1000 shots). Enough to read the "
-                         "separation/survival landscape; zoom + raise reps on the winner.")
+    ap.add_argument("--reps", type=int, default=20,
+                    help="passes = shots/point (0 = forever); default 20 -- beam-2-off "
+                         "diagnostic over the 11-pt Img1PIDSet sweep (=220 shots).")
     args = ap.parse_args()
     LACScan(url=args.url, reps=args.reps)

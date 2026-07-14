@@ -441,26 +441,49 @@ def _env(shape, **kw):
 
 
 def test_rise_gaussian_sharp_peaks_at_end():
-    info = _env("rise_gaussian", steepness=4)
-    e = np.abs(info["waveform"])          # |carrier|*env; envelope maxima ride the carrier
-    assert info["total_width_us"] == pytest.approx(4)
-    assert info["freq_hz"] == pytest.approx(1e6 / 4)
-    # envelope ~0 at the trigger (convention (a): exp(-s^2)) and peaks at the END
-    assert np.max(e[:50]) < 1e-4
-    assert np.max(e[-50:]) > 0.9
+    # unified def (2026-07-13): single half-Gaussian lobe, pw=1/e half-width, total=3*pw
+    # (peak at 3*pw = the double's forward-556 peak position).
+    from devices.sigilent_awg import pulse_envelope
+    info = _env("rise_gaussian", steepness=4)   # steepness now IGNORED
+    assert info["total_width_us"] == pytest.approx(12)   # 3*pw (pw=4)
+    assert info["freq_hz"] == pytest.approx(1e6 / 12)
+    _, e = pulse_envelope("rise_gaussian", 10000, 4.0, 0.0, 0.0)   # pure envelope (no carrier)
+    assert e[0] < 2e-4 and e[-1] > 0.999    # ~0 (exp(-9)) at the trigger, peak at the END
 
 
 def test_fall_gaussian_sharp_peaks_at_trigger():
-    info = _env("fall_gaussian", steepness=4)
-    e = np.abs(info["waveform"])
-    assert np.max(e[:50]) > 0.9           # max AT the trigger
-    assert np.max(e[-50:]) < 1e-4
+    from devices.sigilent_awg import pulse_envelope
+    info = _env("fall_gaussian", steepness=4)   # steepness IGNORED; mirror of rise
+    assert info["total_width_us"] == pytest.approx(12)
+    _, e = pulse_envelope("fall_gaussian", 10000, 4.0, 0.0, 0.0)
+    assert e[0] > 0.999 and e[-1] < 2e-4    # peak AT the trigger, ~0 at the END
 
 
-@pytest.mark.parametrize("shape", ["rise_gaussian", "rise_linear"])
-def test_rise_smooth_appends_cosine_tail(shape):
-    kw = {"steepness": 4} if shape == "rise_gaussian" else {}
-    info = _env(shape, smooth_width_us=0.5, **kw)
+def test_half_gaussian_pw_is_1e_halfwidth_ignores_steepness_and_smooth():
+    from devices.sigilent_awg import pulse_envelope
+    pw = 4.0
+    t, e = pulse_envelope("rise_gaussian", 30001, pw, 0.0, 0.0)   # total=3*pw=12, peak at 12
+    assert t[-1] == pytest.approx(3 * pw)
+    i = int(np.argmin(np.abs(t - (3 * pw - pw))))                 # peak - pw -> env = 1/e
+    assert e[i] == pytest.approx(np.exp(-1), abs=1e-3)
+    _, e2 = pulse_envelope("rise_gaussian", 30001, pw, 0.7, 99.0)  # smooth+steepness ignored
+    assert np.allclose(e, e2)
+    _, ef = pulse_envelope("fall_gaussian", 30001, pw, 0.0, 0.0)   # fall = mirror of rise
+    assert np.allclose(ef, e[::-1])
+
+
+def test_half_gaussian_continuity_and_ends():
+    from devices.sigilent_awg import pulse_envelope
+    _, er = pulse_envelope("rise_gaussian", 3000, 4.0, 0.0, 0.0)
+    _, ef = pulse_envelope("fall_gaussian", 3000, 4.0, 0.0, 0.0)
+    for e in (er, ef):
+        assert np.max(np.abs(np.diff(e))) < 0.01                 # smooth Gaussian, no jump
+    assert er[0] < 0.02 and er[-1] > 0.98                        # rise: ~0 -> peak at end
+    assert ef[0] > 0.98 and ef[-1] < 0.02                        # fall: peak at start -> ~0
+
+
+def test_rise_linear_smooth_appends_cosine_tail():
+    info = _env("rise_linear", smooth_width_us=0.5)
     t, e = info["t_us"], np.abs(info["waveform"])
     assert info["total_width_us"] == pytest.approx(4.5)          # pw + smooth
     assert info["freq_hz"] == pytest.approx(1e6 / 4.5)           # DDS FREQ over the TOTAL width
@@ -470,21 +493,21 @@ def test_rise_smooth_appends_cosine_tail(shape):
     assert np.max(e[(t > 3.9) & (t < 4.1)]) > 0.9                # peak still at end of MAIN window
 
 
-def test_fall_gaussian_smooth_prepends_rise():
-    info = _env("fall_gaussian", steepness=4, smooth_width_us=0.5)
+def test_fall_linear_smooth_prepends_rise():
+    info = _env("fall_linear", smooth_width_us=0.5)
     t, e = info["t_us"], np.abs(info["waveform"])
     assert info["total_width_us"] == pytest.approx(4.5)
     assert np.max(e[t < 0.05]) < 0.05                            # starts from ~0 at the trigger
     assert np.max(e[(t > 0.45) & (t < 0.6)]) > 0.9               # peak ~smooth_width after trigger
-    assert np.max(e[t > 4.4]) < 1e-4
+    assert np.max(e[t > 4.4]) < 0.05                             # linear ramp -> ~0 at the end
 
 
-def test_envelope_continuity_no_step_when_smooth():
+def test_linear_envelope_continuity_no_step_when_smooth():
     from devices.sigilent_awg import pulse_envelope
-    for shape in ("rise_gaussian", "fall_gaussian", "rise_linear", "fall_linear"):
-        _, e = pulse_envelope(shape, 2000, 4.0, 0.5, 4.0)
+    for shape in ("rise_linear", "fall_linear"):
+        _, e = pulse_envelope(shape, 2000, 4.0, 0.5, 0.0)
         assert np.max(np.abs(np.diff(e))) < 0.01                 # no jump anywhere
-        # ... and WITH smooth the envelope is ~0 at both ends
+        # ... and WITH smooth the linear ramp is ~0 at both ends
         assert e[0] < 0.02 and e[-1] < 0.02
 
 
@@ -510,7 +533,7 @@ def test_pulse_waveform_validation():
     with pytest.raises(ValueError, match="unknown pulse shape"):
         pulse_waveform(dict(_DEFAULTS["AWG556"], shape="half_gaussian"))
     with pytest.raises(ValueError, match="smooth_width_us"):
-        pulse_waveform(dict(_DEFAULTS["AWG556"], shape="rise_gaussian", smooth_width_us=-0.1))
+        pulse_waveform(dict(_DEFAULTS["AWG556"], shape="rise_linear", smooth_width_us=-0.1))
     assert set(SHAPES) == {"gaussian", "rise_gaussian", "fall_gaussian",
                            "rise_linear", "fall_linear",
                            "double_half_gaussian_inner", "double_half_gaussian_outer"}

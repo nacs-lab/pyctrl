@@ -43,8 +43,8 @@ PYCTRL = os.path.join(REPO, "pyctrl")
 STATE_DIR = os.path.join(PYCTRL, "tmp")
 # Default array overlay + loading hologram. Override per-run with --pattern / --loading-phase
 # (always pass them explicitly for a campaign). Update these when the live array changes.
-PATTERN = "33x33_feedback9"
-LOADING_PHASE = "phase/33x33_feedback9.pt"
+PATTERN = "33x33_feedback11"
+LOADING_PHASE = "phase/33x33_feedback11.pt"
 os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
 
 
@@ -190,8 +190,12 @@ def build(args):
         beam = args.beam
         dets = _colon(*args.cdet); dets_hz = [float(d) * 1e6 for d in dets]
         cam = [float(a) for a in _colon(*args.famp)]
-        g().Imag399.Amp1 = float(args.blue_amp)
-        g().Imag399.Amp2 = float(args.blue_amp2)
+        # NEW 399-imaging scheme: DDS Amp1/Amp2 held at 1; the actual imaging power is set
+        # by the BlueMOT PID setpoints Img1PIDSet/Img2PIDSet (V). --img1/--img2 carry W here.
+        g().Imag399.Amp1 = 1
+        g().Imag399.Amp2 = 1
+        g().BlueMOT.Img1PIDSet = float(args.img1)
+        g().BlueMOT.Img2PIDSet = float(args.img2)
         g().Imag399.FreqDetuning = float(args.det) * 1e6
         g().Pushout.Time = float(args.hold)            # 0 pushout (real 50 ms survival)
         if beam == "X":
@@ -210,9 +214,9 @@ def build(args):
             g().Imag399.Cool556.h.FreqDetuning.scan(1, dets_hz)
             g().Imag399.Cool556.h.Amp.scan(2, cam)
             fixed = "X(%.2fMHz,%.2f)" % (xcd / 1e6, xca)
-        axis_desc = "COOL %s: det(MHz)=%s x amp=%s  amps %.2f/%.2f det %.2f fixed %s hold %.4fs" % (
+        axis_desc = "COOL %s: det(MHz)=%s x amp=%s  PIDset %.2f/%.2f det %.2f fixed %s hold %.4fs" % (
             beam, [round(d, 3) for d in dets], [round(a, 3) for a in cam],
-            args.blue_amp, args.blue_amp2, args.det, fixed, args.hold)
+            args.img1, args.img2, args.det, fixed, args.hold)
     else:  # pushout: img1/img2 detection FIXED (good), sweep the PUSHOUT imaging dose (amp1 x amp2).
         # Decouples survival from detection: prob11 differences across the pushout grid are REAL atom
         # loss (the detection floor is constant). Per-image survival = (prob11/floor)^(t_img/hold).
@@ -507,6 +511,10 @@ if __name__ == "__main__":
                          "(2x-finer default 2026-06-24: step 0.5 MHz)")
     ap.add_argument("--blue-amp", type=float, default=0.30, help="detuning mode: fixed Imag399.Amp1")
     ap.add_argument("--blue-amp2", type=float, default=0.20, help="detuning mode: fixed Imag399.Amp2")
+    ap.add_argument("--img1", type=float, default=1.0,
+                    help="cool mode: BlueMOT.Img1PIDSet (399 beam-1 imaging-power setpoint, V) = W")
+    ap.add_argument("--img2", type=float, default=0.35,
+                    help="cool mode: BlueMOT.Img2PIDSet (399 beam-2 imaging-power setpoint, V) = W")
     ap.add_argument("--amp1", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=(0.16, 0.015, 0.30),
                     help="amps mode: Imag399.Amp1 colon "
                          "(2x-finer default 2026-06-24: step 0.015, span recentred on the 0.16-0.30 "

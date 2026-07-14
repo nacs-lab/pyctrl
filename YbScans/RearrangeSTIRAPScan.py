@@ -122,24 +122,21 @@ def build():
     g().rearrange_kwargs.extras.n_rounds = 1        # one rearrangement round (runner ctx)
 
     # ---- Siglent AWG config (out-of-band; AWGManager reads g().AWG.<name>.*) ------------
-    _PW_556 = 1.55   # lobe 1/e half-width (us)
-    _PW_308 = 1.55   # lobe 1/e half-width (us)
     _GAP = 2.0   # stirap_gap: fwd->rev hold (us), SHARED by both beams
-    _RD  = 2.16  # reverse-lobe delay on the 308 (us)
 
-    g().AWG.AWG556.shape = "double_half_gaussian_inner"   # anchor; gap = inner-peak separation
-    g().AWG.AWG556.carrier_freq_MHz = 143.0
-    g().AWG.AWG556.pulse_width_us = _PW_556
+    g().AWG.AWG556.shape = "rise_gaussian" #"double_half_gaussian_inner"   # anchor; gap = inner-peak separation
+    g().AWG.AWG556.carrier_freq_MHz = 143.4 #.scan(1, np.linspace(142.8, 143.7, 10))   # STIRAP fwd carrier (MHz); opt: 142.8-143.7 coarse -> 143.1-143.7 zoom. RESONANCE LINE w/ EOM616 (degenerate; lock the PAIR 143.4/234.6)
+    g().AWG.AWG556.pulse_width_us = 1.437   # lobe 1/e half-width (us); 2026-07-14 STIRAP opt (was 1.467). opt: 0.8-2.0 coarse -> 1.2-1.73 zoom (x delay)
     g().AWG.AWG556.stirap_gap = _GAP     #.scan(2, np.linspace(1.0, 5.0, 9))  # gap sweep
-    g().AWG.AWG556.max_amplitude_vpp = 11
-    g().AWG.AWG556.amplitude_scale = 1
+    g().AWG.AWG556.max_amplitude_vpp = 15   # 2026-07-14 raised 11->15 (more STIRAP power)
+    g().AWG.AWG556.amplitude_scale = 1   # opt: scan 0.4-1.0 @ vpp15 -> monotonic to ceiling, best=1.0 (still power-limited)
 
-    g().AWG.AWG308.shape = "double_half_gaussian_outer"   # slides by f/r; +=lead/lag (normal)
+    g().AWG.AWG308.shape = "fall_gaussian" #"double_half_gaussian_outer"   # slides by f/r; +=lead/lag (normal)
     g().AWG.AWG308.carrier_freq_MHz = 200
-    g().AWG.AWG308.pulse_width_us = _PW_308
+    g().AWG.AWG308.pulse_width_us = 1.463 #.scan(1, np.linspace(1, 2.5, 10))  # 2026-07-14 STIRAP opt (was 1.5). opt: 1.0-2.5 coarse -> 1.17-1.83 zoom (x delay)
     g().AWG.AWG308.stirap_gap = _GAP
-    g().AWG.AWG308.f_delay.scan(1, np.linspace(0.5, 3.5, 7))   # STIRAP fwd delay sweep (us)
-    g().AWG.AWG308.r_delay = _RD
+    g().AWG.AWG308.f_delay = 2.167 #.scan(2, np.linspace(0.5, 3, 10))   # STIRAP fwd delay (us); opt: 0.5-3.5 coarse -> 1.0-2.67 zoom. Re-swept w/ each pw scan, NOT locked; valley ~1.9-2.1
+    g().AWG.AWG308.r_delay = 2.16
     g().AWG.AWG308.max_amplitude_vpp = 5.5
     g().AWG.AWG308.amplitude_scale = 1
 
@@ -153,20 +150,13 @@ def build():
     g().Pushout.Ramsey.Phase = 0
 
     # ---- STIRAP push-out params (STIRAPPushoutStep reads these; from STIRAPAWGScan) -----
-    g().Init.EOM616.Freq = 234.3e6 #.scan(2, np.linspace(233.5e6, 234.7e6, 10)) # = 234.1316e6 #.scan(1, np.linspace(233.5e6, 234.7e6, 20))
+    g().Init.EOM616.Freq = 234.6e6 #.scan(2, np.linspace(233.8e6, 235e6, 10))  # opt: 233.8-235 coarse -> 234.2-235.0e6 zoom. RESONANCE LINE w/ 556 carrier (degenerate; lock PAIR 143.4/234.6)
     g().Pushout.VRydTrap = 0.2
-    g().Pushout.STIRAP.guassian_pulse_width = 5e-6
-    g().Pushout.STIRAP.delay = 1.73e-6 #.scan(1, np.linspace(1.5e-6, 2.5e-6, 10))
-    g().Pushout.STIRAP.ifReverse = False
-    g().Pushout.STIRAP.reverse_delay = 2e-6 #.scan(1, np.linspace(1e-6, 5e-6, 20))
-    g().Pushout.STIRAP.waitTime = 0e-6
     # g().Pushout.Amp369 = 1
     g().Pushout.Time369 = 3e-6 #.scan(1, np.linspace(1e-6, 6e-6, 10))
+    g().Pushout.TimeDelay.scan(1, np.linspace(0, 5e-6, 20))   # DC-ionization delay (s); opt scan 0-4us x20 -> FLAT/insensitive (slight rise >3.7us from Ryd decay), default ~2.2e-6
     g().Pushout.BiasCoilCurrent.Ryd = 30
     g().Pushout.Vy = 5 #.scan(1, np.linspace(0, 8, 10))
-    # ---- swept axis (science): STIRAP.gap; fixed by default, sweep like STIRAPAWGScan ---
-    # gaps = [v * 1e-9 for v in matlab_colon(100, 100, 10000)]
-    g().Pushout.STIRAP.gap = 1e-6  # .scan(1, gaps)
 
     # ---- warmup_kwargs (runp; forwarded ONCE at dequeue with reset_params) --------------
     rp = g.runp()

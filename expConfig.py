@@ -144,7 +144,7 @@ def _consts():
     c["Orca"] = {"ROI": [1000, 100, 2100, 2100], "ExposureTime": 0.050004}
 
     # 556nm resonance (calibrate daily by spectroscopy; 3P1 mj=0 near-magic)
-    c["Resonance556mj0Freq"] = 107.9054e6  # fit 2026-07-13 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.939, FWHM 67.9 kHz, 231 shots, scan 20260713120750, 33x33_feedback11); +19.3 kHz vs prior (pattern change feedback9->feedback11). was 107.8861e6 (07-05, 33x33_feedback9); 107.8762e6 (07-03); 107.8560e6 (07-02); 107.8448e6 (06-30); 107.8499e6 (06-29); 107.8478e6 (06-28, NEW LUT); 107.8389e6 (06-26); 107.8199e6 (06-23, 33x33_feedback9); 107.7753e6 (06-12, 47x47_uniform); 107.7673e6 (06-11); 107.7677e6 (06-10); 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
+    c["Resonance556mj0Freq"] = 107.9284e6  # fit 2026-07-14 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.949, FWHM 61.7 kHz, 203 shots, scan 20260714105631, 33x33_feedback11); +23.0 kHz vs prior. was 107.9054e6 (07-13, 33x33_feedback11); 107.8861e6 (07-05, 33x33_feedback9); 107.8762e6 (07-03); 107.8560e6 (07-02); 107.8448e6 (06-30); 107.8499e6 (06-29); 107.8478e6 (06-28, NEW LUT); 107.8389e6 (06-26); 107.8199e6 (06-23, 33x33_feedback9); 107.7753e6 (06-12, 47x47_uniform); 107.7673e6 (06-11); 107.7677e6 (06-10); 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
     c["Resonance399Freq"] = 310e6              # not magic; changes with trap depth
 
     # Init: 2D MOT & Zeeman, electric fields, SLM servo
@@ -511,11 +511,18 @@ def _consts():
             "Orca": {"ExposureTime": 0.035},
             "Init": {"VSLMServo": 1.9},
             "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            # 2026-07-14 imaging optimization (399 now PID-servoed via Img1/Img2PIDSet;
+            # DDS Imag399.Amp1/Amp2 held at 1). Beam-isolation tests showed both 399
+            # beams image (beam 2 cleaner, peak d' 4.24; beam 1 saturates ~3.5-4); the
+            # d'~3.2 cap was COOLING-limited, not 399-power. Retuned Imag399.Cool556
+            # (0-pushout X-then-h) -> fidelity 0.987->0.9995, d' 3.2->5.2, survival ~0.99,
+            # spatially flat (confirm data_20260714_175111, 100 shots). Notion 07/14.
+            "BlueMOT": {"Img1PIDSet": 1.0, "Img2PIDSet": 0.35},
             "Imag399": {
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                    "X": {"FreqDetuning": 0.14e6, "Amp": 0.28},  # was 0.16e6/0.26
+                    "h": {"FreqDetuning": 0.14e6, "Amp": 0.20},  # was 0.16e6/0.14
                 },
             },
             "Cool556": {
@@ -770,6 +777,15 @@ def _consts():
     # BOTH the rearrange detector calibration AND the per-bseq config overlay -> alias must exist
     # here or those runs fall back to base config). Same physical array -> same dict object.
     c["ByPattern"]["2x11x11_5um_3d"] = c["ByPattern"]["2x11x11_5um"]
+
+    # 2026-07-14: "2x11x11_5um_back2um" = the NEW bifocal array (phase/2x11x11_5um_back2um.pt) whose
+    # two 11x11 layers focus at z4 = -5 +- 2.7778 (same axial offset as 2x11x11_5um) but are OFFSET
+    # in xy by ~4.6 knm px (front/back layers laterally separated, NOT xy-coincident). Because the
+    # layers are xy-separated they are BOTH read from ONE image at the stack-midplane loading defocus
+    # -5 via a 242-site NO-DEDUP detection grid (dedup would merge the 4.6-px pairs). Imaging params =
+    # EXACT COPY of the current 2x11x11_5um (user 07-14: reuse what the aligned-xy array had). Same
+    # physical imaging -> same config dict object.
+    c["ByPattern"]["2x11x11_5um_back2um"] = c["ByPattern"]["2x11x11_5um"]
 
     # ---- cross-references (mirror expConfig.m's const-to-const assignments) ----
     return expConfig_helper.apply_cross_refs(c)

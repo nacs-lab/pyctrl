@@ -5,14 +5,18 @@ Generalizes :mod:`gaussian_pulse_waveform` (the port of
 selected by the ``shape`` param (design agreed 2026-07-03; see ``pyctrl/tmp/pulse_10_examples.png``):
 
   * ``gaussian``       -- exp(-((x-0.5)*steepness)^2), peak mid-window (the original; default).
-  * ``rise_gaussian``  -- exp(-((x-1)*steepness)^2), Gaussian flank rising to its peak at the END
-                          of the main window (convention (a): same formula, center moved -> the
-                          envelope starts at exp(-steepness^2), a true-zero start for steepness>=3).
-  * ``fall_gaussian``  -- exp(-(x*steepness)^2), peak at the START (at the trigger when sharp).
-  * ``rise_linear``    -- x       (ramp 0 -> 1; ``steepness`` ignored).
-  * ``fall_linear``    -- 1 - x   (ramp 1 -> 0; ``steepness`` ignored).
+  * ``rise_gaussian``  -- ``exp(-((t-peak)/pw)^2)`` rising to its peak at the END; single half-
+                          Gaussian lobe, SAME formula + position as the double's forward 556 lobe:
+                          ``pulse_width_us`` is the 1/e half-width, total = 3*pw (peak at 3*pw =
+                          pad+pw), ``steepness``/``smooth_width_us`` IGNORED. ``f_delay`` (us) shifts
+                          the peak INTO the window (rise: 3*pw - f_delay; fall: 0 + f_delay), so the
+                          HalfPulse pair tunes its overlap just like the two-lobe shapes. (Unified
+                          2026-07-13 so the same AWG556/AWG308 params drive rise/fall and the double.)
+  * ``fall_gaussian``  -- mirror of ``rise_gaussian``: peak at the START (t=0), falling 1 -> 0.
+  * ``rise_linear``    -- x       (ramp 0 -> 1; ``steepness`` ignored; keeps the smooth window).
+  * ``fall_linear``    -- 1 - x   (ramp 1 -> 0; ``steepness`` ignored; keeps the smooth window).
 
-where ``x = t/pulse_width_us`` is normalized MAIN-window time.
+where ``x = t/pulse_width_us`` is normalized MAIN-window time (linear shapes only).
 
 **Two-lobe STIRAP shapes** (``double_half_gaussian_inner`` / ``double_half_gaussian_outer``, design
 agreed 2026-07-13; gallery ``pyctrl/tmp/claudeoutput.png``): a single AWG waveform holding TWO
@@ -61,11 +65,12 @@ import numpy as np
 
 _AWG_MAX_CODE = 32767  # double(intmax('int16'))
 
-#: shape name -> needs ``steepness``?  (the two-lobe STIRAP shapes ignore steepness/smooth)
+#: shape name -> needs ``steepness``?  (only the symmetric ``gaussian`` does now; rise_/fall_
+#: gaussian + the two-lobe STIRAP shapes use pw=1/e half-width and ignore steepness/smooth)
 SHAPES = {
     "gaussian": True,
-    "rise_gaussian": True,
-    "fall_gaussian": True,
+    "rise_gaussian": False,
+    "fall_gaussian": False,
     "rise_linear": False,
     "fall_linear": False,
     "double_half_gaussian_inner": False,
@@ -108,6 +113,34 @@ def _double_half_gaussian_envelope(shape, num_points, pw, stirap_gap, f_delay, r
     return t_us, np.maximum(gA, gB)
 
 
+def _single_half_gaussian_envelope(shape, num_points, pw, f_delay=0.0):
+    """One half-Gaussian lobe -- the SAME lobe formula as one double_half_gaussian lobe (a single
+    ``exp(-((t-peak)/pw)^2)``, pw = 1/e half-width). total = 3*pw so the (undelayed) peak sits at
+    pad+pw = 3*pw, IDENTICAL to the double's forward 556 lobe (pad=2*pw). Half-masked so the pulse
+    stays a proper rise/fall as the peak moves.
+
+    ``f_delay`` (us) shifts the peak INTO the window (both edges are pinned, so only inward moves
+    are clip-free -- use f_delay >= 0):
+      * ``rise_gaussian`` -- peak at 3*pw - f_delay  (base at the END; +f_delay -> EARLIER)
+      * ``fall_gaussian`` -- peak at 0 + f_delay      (base at the START; +f_delay -> LATER)
+    In a HalfPulse pair (556=rise anchor f=0, 308=fall with f_delay) a positive f_delay slides the
+    308 later, toward the 556. ``r_delay`` has no effect (single lobe = no reverse). Only ``pw`` +
+    ``f_delay`` -- no steepness / smooth (unified with the two-lobe shapes; t_wait for the 556 rise
+    = 3*pw - f_delay, i.e. 3*pw when the 556 is the anchor).
+    """
+    if pw <= 0:
+        raise ValueError("pulse_width_us must be > 0 (got %g)" % pw)
+    total = 3.0 * pw
+    t_us = np.linspace(0.0, 1.0, int(num_points)) * total
+    if shape == "rise_gaussian":
+        peak = 3.0 * pw - f_delay                            # base END; +f_delay -> earlier
+        e = np.where(t_us <= peak, np.exp(-((t_us - peak) / pw) ** 2), 0.0)   # rise up to peak
+    else:  # fall_gaussian
+        peak = f_delay                                       # base START; +f_delay -> later
+        e = np.where(t_us >= peak, np.exp(-((t_us - peak) / pw) ** 2), 0.0)   # fall after peak
+    return t_us, e
+
+
 def pulse_envelope(shape, num_points, pulse_width_us, smooth_width_us, steepness,
                    *, stirap_gap=0.0, f_delay=0.0, r_delay=0.0):
     """Envelope for ``shape`` on ``num_points`` samples. Returns ``(t_us, envelope)``.
@@ -122,6 +155,8 @@ def pulse_envelope(shape, num_points, pulse_width_us, smooth_width_us, steepness
     if shape in DOUBLE_HALF_GAUSSIAN_SHAPES:
         return _double_half_gaussian_envelope(shape, num_points, pulse_width_us,
                                               stirap_gap, f_delay, r_delay)
+    if shape in ("rise_gaussian", "fall_gaussian"):
+        return _single_half_gaussian_envelope(shape, num_points, pulse_width_us, f_delay)
     if smooth_width_us < 0:
         raise ValueError("smooth_width_us must be >= 0 (got %g)" % smooth_width_us)
     if shape == "gaussian":
@@ -136,22 +171,20 @@ def pulse_envelope(shape, num_points, pulse_width_us, smooth_width_us, steepness
         # x = t_norm directly (not t_us/pw): byte-exact vs the original gaussianPulseWaveform
         # (avoids the 1-ulp (t*pw)/pw round-trip for non-power-of-2 pulse widths).
         e = np.exp(-((t_norm - 0.5) * steepness) ** 2)
-    elif shape in ("rise_gaussian", "rise_linear"):
-        # main window first, smooth 1->0 cosine tail appended after the peak
+    elif shape == "rise_linear":
+        # linear ramp 0->1 over the main window, smooth 1->0 cosine tail appended after the peak
         m = t_us <= pulse_width_us
-        x = t_us[m] / pulse_width_us
-        e[m] = np.exp(-((x - 1.0) * steepness) ** 2) if shape == "rise_gaussian" else x
+        e[m] = t_us[m] / pulse_width_us
         if smooth_width_us > 0:
             xs = (t_us[~m] - pulse_width_us) / smooth_width_us
             e[~m] = 0.5 * (1.0 + np.cos(np.pi * xs))
-    else:  # fall_gaussian / fall_linear
-        # smooth 0->1 cosine pre-rise prepended, then the main window
+    else:  # fall_linear
+        # smooth 0->1 cosine pre-rise prepended, then the linear ramp 1->0 over the main window
         m = t_us < smooth_width_us
         if smooth_width_us > 0:
             xs = t_us[m] / smooth_width_us
             e[m] = 0.5 * (1.0 - np.cos(np.pi * xs))
-        x = (t_us[~m] - smooth_width_us) / pulse_width_us
-        e[~m] = np.exp(-(x * steepness) ** 2) if shape == "fall_gaussian" else 1.0 - x
+        e[~m] = 1.0 - (t_us[~m] - smooth_width_us) / pulse_width_us
     return t_us, e
 
 

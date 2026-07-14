@@ -32,17 +32,13 @@ from ramp_to import ramp_to
 
 
 def STIRAPPushoutStep(s, g):
-    gaussian_pulse_width = g.STIRAP.guassian_pulse_width(2e-6)
-    time_delay = g.STIRAP.delay(Consts().Pushout.STIRAP.delay)
-    time_delay_reverse = g.STIRAP.reverse_delay(Consts().Pushout.STIRAP.reverse_delay)
-    STIRAP_gap = g.STIRAP.gap(Consts().Pushout.STIRAP.gap)
 
     Amp_SLM = g.SLMAOMAmp(Consts().SLM.AOM.Amp)
     Amp_Pushout369 = g.Amp369(0)
-    Time_Pushout369 = g.Time369(2e-6)   # auto-ionization 369 pulse width (was hardcoded 2us)
-    ifReverse = g.STIRAP.ifReverse(True)
-    t_waitSTIRAP = g.STIRAP.waitTime(0)
-
+    Time_Pushout369 = g.Time369(0)   # auto-ionization 369 pulse width (was hardcoded 2us)
+    PulseWidth556 = s.C.AWG.AWG556.pulse_width_us(1.55)  # lobe 1/e half-width (us)
+    PulseName556 = s.C.AWG.AWG556.shape("rise_gaussian")
+    Time_Delay = g.TimeDelay(2.2e-6)
     # Electrode ionization
     Vx = g.Vx(0)
     Vy = g.Vy(0)
@@ -50,7 +46,6 @@ def STIRAPPushoutStep(s, g):
     Vx_init = Consts().Init.Electrodes.Vx
     Vy_init = Consts().Init.Electrodes.Vy
     Vz_init = Consts().Init.Electrodes.Vz
-    
     
     # Ramp the tweezer down and wait; set a B-field along Z.
     I_RydCoil = g.BiasCoilCurrent.Ryd(5)
@@ -86,46 +81,25 @@ def STIRAPPushoutStep(s, g):
     #s.wait(0.5e-6)
 
 
-    # --- Forward STIRAP pulse (308 gate then 556 gate, overlapped via STIRAP.delay) ---
-    if time_delay > 0:
-        s.add('TTL308RydAWG', 1)
-        s.wait(time_delay)
-        s.add('TTL556RydAWG', 1)
-        s.wait(0.1e-6)
-        s.add('TTL308RydAWG', 0).add('TTL556RydAWG', 0)
+    # --- AWG STIRAP pulse (308 gate then 556 gate, overlapped via STIRAP.delay) ---
+    s.add('TTL308RydAWG', 1).add('TTL556RydAWG', 1)
+    s.wait(0.1e-6)
+    s.add('TTL308RydAWG', 0).add('TTL556RydAWG', 0)
+    
+    if PulseName556 == "double_half_gaussian_inner":
+        s.wait(PulseWidth556 * 6 * 1e-6 + Time_Delay)   # wait for the 556 pulse to finish
     else:
-        s.add('TTL556RydAWG', 1)
-        s.wait(-time_delay)
-        s.add('TTL308RydAWG', 1)
-        s.wait(0.1e-6)
-        s.add('TTL308RydAWG', 0).add('TTL556RydAWG', 0)
+        s.wait(PulseWidth556 * 3 * 1e-6 + Time_Delay)   # wait for the 556 pulse to finish
     
-    # wait for the STIRAP pulse to finish (the 556 gate is the last to finish, so we can just wait for that)
-    s.wait(gaussian_pulse_width)
-    
-
+    # --- forward STIRAP complete ---
     # Turn the trap back on.
-    #s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
-    #s.wait(t_waitSTIRAP)   # wait until the stirap pulse finishes
+    # s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
 
     # Microwave Rabi (QICK), gated for STIRAP_gap.
     #s.add('TTLQickTrig', 1)
     #s.wait(STIRAP_gap)
     #s.add('TTLQickTrig', 0)
 
-    # --- Reverse STIRAP (556 gate then 308 gate, via STIRAP.reverse_delay) ---
-    if ifReverse:
-        #s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
-        s.wait(0.5e-6)
-        s.add('TTL556RydAWG', 1)
-        s.wait(time_delay_reverse)
-        s.add('TTL308RydAWG', 1)
-        s.wait(0.1e-6)
-        (s.add('TTL556RydAWG', 0)
-          .add('TTL308RydAWG', 0)
-          .add('TTLScopeTrig', 0))
-        s.wait(gaussian_pulse_width) # Wait for the iSTIRAP pulse to finish 
-        
     # Back to the original trap depth: turn the trap back on.
     #s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
     
@@ -144,7 +118,7 @@ def STIRAPPushoutStep(s, g):
         .add('VElectrode7', +Vx - Vy + Vz)
         .add('VElectrode8', 0 - Vy + Vz))
 
-    #s.wait(Time_Pushout369)
+    # s.wait(Time_Pushout369)
     # s.add('TTL369Switch', 0)
     
     # Restore the electrode value to zero fileld
@@ -159,7 +133,7 @@ def STIRAPPushoutStep(s, g):
         .add('VElectrode7', +Vx_init - Vy_init + Vz_init)
         .add('VElectrode8', 0 - Vy_init + Vz_init))
     
-    s.add('TTLScopeTrig', 0)
+
     s.add('AmpAbsImag', 0)
     s.add('AmpBlueMOT', 0)
 
