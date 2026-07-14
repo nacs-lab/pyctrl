@@ -62,8 +62,8 @@ def STIRAPPushoutStep(s, g):
     s.add('TTL308RydAWGSwitch', 1)
 
     # Get 369 ready.
-    s.add('Amp369', Amp_Pushout369)
-    s.add('TTL369Shutter', 1)
+    # s.add('Amp369', Amp_Pushout369)
+    # s.add('TTL369Shutter', 1)
 
     # Turn on the 556 rydberg shutter, close the 556 MOTa shutter.
     s.add('TTL556RydbergShutter', 1)
@@ -75,40 +75,38 @@ def STIRAPPushoutStep(s, g):
     # Change trap depth for Rydberg.
     V_RydTrap = g.VRydTrap(0.4)
     s.add_step(1e-3).add('VSLMservo', ramp_to(V_RydTrap))
-    s.wait(1e-3)  # wait for the ramp to finish
+    s.wait(3e-3)  # wait for the ramp to finish
 
     # Pre-lock the 308 cavity.
     s.add('AmpAOM616', 0)
     s.wait(1e-6)
 
     # Turn the tweezer off completely.
-    s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
-    s.wait(0.5e-6)
+    #s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
+    #s.wait(0.5e-6)
 
 
     # --- Forward STIRAP pulse (308 gate then 556 gate, overlapped via STIRAP.delay) ---
     if time_delay > 0:
-        s.add('TTL308RydAWG', 1).add('TTLScopeTrig', 1)
+        s.add('TTL308RydAWG', 1)
         s.wait(time_delay)
         s.add('TTL556RydAWG', 1)
         s.wait(0.1e-6)
-        s.add('TTL308RydAWG', 0)
-        s.add('TTL556RydAWG', 0)
+        s.add('TTL308RydAWG', 0).add('TTL556RydAWG', 0)
     else:
-        s.add('TTL556RydAWG', 1).add('TTLScopeTrig', 1)
+        s.add('TTL556RydAWG', 1)
         s.wait(-time_delay)
         s.add('TTL308RydAWG', 1)
         s.wait(0.1e-6)
-        s.add('TTL308RydAWG', 0)
-        s.add('TTL556RydAWG', 0)
+        s.add('TTL308RydAWG', 0).add('TTL556RydAWG', 0)
     
     # wait for the STIRAP pulse to finish (the 556 gate is the last to finish, so we can just wait for that)
     s.wait(gaussian_pulse_width)
     
 
     # Turn the trap back on.
-    s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
-    s.wait(t_waitSTIRAP)   # wait until the stirap pulse finishes
+    #s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
+    #s.wait(t_waitSTIRAP)   # wait until the stirap pulse finishes
 
     # Microwave Rabi (QICK), gated for STIRAP_gap.
     #s.add('TTLQickTrig', 1)
@@ -117,24 +115,26 @@ def STIRAPPushoutStep(s, g):
 
     # --- Reverse STIRAP (556 gate then 308 gate, via STIRAP.reverse_delay) ---
     if ifReverse:
-        s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
+        #s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
         s.wait(0.5e-6)
         s.add('TTL556RydAWG', 1)
         s.wait(time_delay_reverse)
         s.add('TTL308RydAWG', 1)
-        s.wait(guassian_pulse_width / 2)
-        s.add('TTL556RydAWG', 0)
-        s.wait(guassian_pulse_width / 2)
-        s.add('TTL308RydAWG', 0).add('TTL556RydAWG', 0).add('TTLScopeTrig', 0)
-
-
-
+        s.wait(0.1e-6)
+        (s.add('TTL556RydAWG', 0)
+          .add('TTL308RydAWG', 0)
+          .add('TTLScopeTrig', 0))
+        s.wait(gaussian_pulse_width) # Wait for the iSTIRAP pulse to finish 
+        
     # Back to the original trap depth: turn the trap back on.
-    s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
+    #s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
     
     # auto-ionization (369 pulse width from Pushout.Time369; 0 -> zero-width pulse, no 369)
-    s.add('TTL369Switch', 1)
+    # s.add('TTL369Switch', 1)
+    
+    # Electrode ionization: apply the Rydberg bias field for ionization. Trigger is the pulse
     (s.add_step(Time_Pushout369)
+        .add('TTLScopeTrig', 1)
         .add('VElectrode1', +Vx + Vy - Vz)
         .add('VElectrode2', 0 + Vy - Vz)
         .add('VElectrode3', 0 + Vy + Vz)
@@ -145,10 +145,11 @@ def STIRAPPushoutStep(s, g):
         .add('VElectrode8', 0 - Vy + Vz))
 
     #s.wait(Time_Pushout369)
-    s.add('TTL369Switch', 0)
+    # s.add('TTL369Switch', 0)
     
     # Restore the electrode value to zero fileld
     (s.add_step(4e-6)
+        .add('TTLScopeTrig', 0)
         .add('VElectrode1', +Vx_init + Vy_init - Vz_init)
         .add('VElectrode2', 0 + Vy_init - Vz_init)
         .add('VElectrode3', 0 + Vy_init + Vz_init)
@@ -166,9 +167,9 @@ def STIRAPPushoutStep(s, g):
     s.add('Amp556RydbergMOTh', 0)
 
     s.add('AmpAOM308', 0)
-    s.add('AmpAOM616', 0.11)
-    s.add('TTL369Shutter', 0)
-    s.add('Amp369', 0)
+    s.add('AmpAOM616', 0.12)
+    # s.add('TTL369Shutter', 0)
+    # s.add('Amp369', 0)
 
     # Ramp the tweezer up and wait.
     s.add_step(1e-3).add('VSLMservo', ramp_to(Consts().Init.VSLMServo))

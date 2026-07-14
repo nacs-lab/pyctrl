@@ -38,7 +38,7 @@ def InitStep(s, g):
         .add('Freq2DMOT', Freq_2DMOT).add('Amp2DMOT', Amp_2DMOT)
         .add('FreqZeeman', Freq_Zeeman).add('AmpZeeman', Amp_Zeeman)
         .add('FreqAOM308', 200e6).add('AmpAOM308', 0)
-        .add('FreqAOM616', 120e6).add('AmpAOM616', 0.11)
+        .add('FreqAOM616', 120e6).add('AmpAOM616', 0.12)
         .add('FreqAODv', 100e6)
         .add('Amp556MOTX', 0)
         .add('Amp556RydbergMOTh', 0)

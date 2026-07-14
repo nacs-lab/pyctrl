@@ -14,6 +14,31 @@ selected by the ``shape`` param (design agreed 2026-07-03; see ``pyctrl/tmp/puls
 
 where ``x = t/pulse_width_us`` is normalized MAIN-window time.
 
+**Two-lobe STIRAP shapes** (``double_half_gaussian_inner`` / ``double_half_gaussian_outer``, design
+agreed 2026-07-13; gallery ``pyctrl/tmp/claudeoutput.png``): a single AWG waveform holding TWO
+half-Gaussian lobes -- lobe A = the forward-STIRAP pulse, lobe B = the reverse (iSTIRAP) pulse --
+separated by a pure-zero ``stirap_gap`` of dead time. Each lobe is ``exp(-((t-peak)/pw)^2)`` so
+``pulse_width_us`` (pw) is the lobe **1/e half-width** (``steepness``/``smooth_width_us`` are
+IGNORED for these shapes). The two lobes are combined by ``MAX`` (an overlap caps at 1 -> a clean
+merge into one continuous pulse, never >1). The playback window is zero-padded ``pad = 2*pw`` on
+each side, so ``total = 6*pw + stirap_gap`` (a pure function of pw+gap -> the 556 and 308 waveforms
+share the same total width and DDS FREQ automatically, so gate-triggered playback stays aligned).
+
+  * ``double_half_gaussian_inner`` -- lobe peaks face the GAP (rise up to A's peak at the gap's
+    left edge, fall away from B's peak at the gap's right edge). This is the ANCHOR shape: its two
+    inner peaks sit exactly ``stirap_gap`` apart, so ``stirap_gap`` IS defined by the inner-pulse
+    edges. ``f_delay`` / ``r_delay`` are IGNORED here (the anchor never moves -> the gap is fixed).
+  * ``double_half_gaussian_outer`` -- lobe peaks sit at the core ENDS (fall away from A's peak,
+    rise up to B's peak). Its lobes slide by ``f_delay`` (forward, lobe A) and ``r_delay`` (reverse,
+    lobe B): peak A = ``pad - f_delay``, peak B = ``pad + 2*pw + gap + r_delay``. **Sign:** POSITIVE
+    delay = more lead (fwd) / lag (rev) = a normal, well-separated STIRAP; NEGATIVE = toward the gap
+    (the two outer lobes collapse into one continuous pulse). Clamped at the collapse floor
+    ``f_delay + r_delay >= -(2*pw + gap)`` (the meet point; past it the lobes would cross).
+
+Physics use: 556 = ``double_half_gaussian_inner`` (anchor), 308 = ``double_half_gaussian_outer``.
+The inner/outer pairing bakes in the STIRAP counterintuitive order (308 leads fwd, 556 leads rev);
+``f_delay``/``r_delay`` on the 308 tune each lobe's overlap. See ``YbScans/STIRAPAWGScan.py``.
+
 **Smooth window** (``smooth_width_us``, default 0 = sharp): rise/fall shapes end (rise) or start
 (fall) at full amplitude -- a hard step on the AWG output. A nonzero ``smooth_width_us`` appends
 (rise_*) or prepends (fall_*) an EXTRA half-cosine ramp window so the envelope is continuous:
@@ -36,24 +61,67 @@ import numpy as np
 
 _AWG_MAX_CODE = 32767  # double(intmax('int16'))
 
-#: shape name -> needs ``steepness``?
+#: shape name -> needs ``steepness``?  (the two-lobe STIRAP shapes ignore steepness/smooth)
 SHAPES = {
     "gaussian": True,
     "rise_gaussian": True,
     "fall_gaussian": True,
     "rise_linear": False,
     "fall_linear": False,
+    "double_half_gaussian_inner": False,
+    "double_half_gaussian_outer": False,
 }
 
+#: the two-lobe STIRAP shapes (built by :func:`_double_half_gaussian_envelope`, not the single-
+#: envelope path). They read ``stirap_gap`` / ``f_delay`` / ``r_delay`` instead of steepness/smooth.
+DOUBLE_HALF_GAUSSIAN_SHAPES = ("double_half_gaussian_inner", "double_half_gaussian_outer")
 
-def pulse_envelope(shape, num_points, pulse_width_us, smooth_width_us, steepness):
+
+def _double_half_gaussian_envelope(shape, num_points, pw, stirap_gap, f_delay, r_delay):
+    """Two-lobe STIRAP envelope. Returns ``(t_us, envelope)``; ``t_us`` runs [0, total].
+
+    lobe = ``exp(-((t-peak)/pw)^2)`` (pw = 1/e half-width). pad = 2*pw each side ->
+    total = 6*pw + gap. inner peaks face the gap (anchor, f/r IGNORED); outer peaks at the core
+    ends and slide by f_delay/r_delay (+ = outward/more lead-lag = normal STIRAP; - = toward gap).
+    Combined by MAX. Collapse floor: f_delay + r_delay >= -(2*pw + gap) (clamped).
+    """
+    if pw <= 0:
+        raise ValueError("pulse_width_us must be > 0 (got %g)" % pw)
+    if stirap_gap < 0:
+        raise ValueError("stirap_gap must be >= 0 (got %g)" % stirap_gap)
+    pad = 2.0 * pw
+    total = 2.0 * pad + 2.0 * pw + stirap_gap                # = 6*pw + gap
+    floor = -(2.0 * pw + stirap_gap)                          # collapse meet point
+    if f_delay + r_delay < floor:                            # clamp past the meet (would cross)
+        s = floor / (f_delay + r_delay)
+        f_delay, r_delay = f_delay * s, r_delay * s
+    t_us = np.linspace(0.0, 1.0, int(num_points)) * total
+    if shape == "double_half_gaussian_inner":
+        pA, pB = pad + pw, pad + pw + stirap_gap             # peaks face the gap (fixed anchor)
+        gA = np.where(t_us <= pA, np.exp(-((t_us - pA) / pw) ** 2), 0.0)   # rise up to A
+        gB = np.where(t_us >= pB, np.exp(-((t_us - pB) / pw) ** 2), 0.0)   # fall after B
+    else:  # double_half_gaussian_outer
+        pA = pad - f_delay                                   # peak at core-left, +f -> outward
+        pB = pad + 2.0 * pw + stirap_gap + r_delay           # peak at core-right, +r -> outward
+        gA = np.where(t_us >= pA, np.exp(-((t_us - pA) / pw) ** 2), 0.0)   # fall after A
+        gB = np.where(t_us <= pB, np.exp(-((t_us - pB) / pw) ** 2), 0.0)   # rise up to B
+    return t_us, np.maximum(gA, gB)
+
+
+def pulse_envelope(shape, num_points, pulse_width_us, smooth_width_us, steepness,
+                   *, stirap_gap=0.0, f_delay=0.0, r_delay=0.0):
     """Envelope for ``shape`` on ``num_points`` samples. Returns ``(t_us, envelope)``.
 
     ``t_us`` runs [0, total] where total = pulse_width_us (+ smooth_width_us for rise_*/fall_*);
-    t=0 is the AWG trigger. Pure helper -- also used by plotting/diagnostic scripts.
+    t=0 is the AWG trigger. For the two-lobe STIRAP shapes total = 6*pulse_width_us + stirap_gap
+    and ``smooth_width_us``/``steepness`` are ignored (see :func:`_double_half_gaussian_envelope`).
+    Pure helper -- also used by plotting/diagnostic scripts.
     """
     if shape not in SHAPES:
         raise ValueError("unknown pulse shape %r (valid: %s)" % (shape, ", ".join(sorted(SHAPES))))
+    if shape in DOUBLE_HALF_GAUSSIAN_SHAPES:
+        return _double_half_gaussian_envelope(shape, num_points, pulse_width_us,
+                                              stirap_gap, f_delay, r_delay)
     if smooth_width_us < 0:
         raise ValueError("smooth_width_us must be >= 0 (got %g)" % smooth_width_us)
     if shape == "gaussian":
@@ -97,9 +165,14 @@ def pulse_waveform(params):
             ``pulse_width_us`` (float, MAIN-window duration in microseconds),
             ``smooth_width_us`` (float >= 0, EXTRA cosine window; default 0 = sharp),
             ``carrier_freq_MHz`` (float, carrier frequency in MHz),
-            ``steepness`` (float, Gaussian-envelope factor; ignored by *_linear),
+            ``steepness`` (float, Gaussian-envelope factor; ignored by *_linear + the two-lobe
+                shapes),
             ``amplitude_scale`` (float 0-1, default 1.0),
             ``max_amplitude_vpp`` (float, optional -- only for the voltage trace in ``info``).
+            For ``double_half_gaussian_*`` also: ``stirap_gap`` (float >= 0, us of zero dead time
+                between the two lobes; = the inner-peak separation), ``f_delay`` / ``r_delay``
+                (float, us; slide the OUTER shape's fwd/rev lobe -- + = more lead/lag, ignored by
+                the inner anchor). ``pulse_width_us`` is then the lobe 1/e half-width.
 
     Returns:
         binary_data (bytes): big-endian int16 samples, ready to append to a WVDT command.
@@ -116,8 +189,12 @@ def pulse_waveform(params):
     if shape not in SHAPES:
         raise ValueError("unknown pulse shape %r (valid: %s)" % (shape, ", ".join(sorted(SHAPES))))
     steepness = float(params["steepness"]) if SHAPES[shape] else 0.0
+    stirap_gap = float(params.get("stirap_gap", 0.0))
+    f_delay = float(params.get("f_delay", 0.0))
+    r_delay = float(params.get("r_delay", 0.0))
 
-    t_us, envelope = pulse_envelope(shape, num_points, pulse_width_us, smooth_width_us, steepness)
+    t_us, envelope = pulse_envelope(shape, num_points, pulse_width_us, smooth_width_us, steepness,
+                                    stirap_gap=stirap_gap, f_delay=f_delay, r_delay=r_delay)
     total = t_us[-1]
 
     # Carrier: exactly carrier_freq_MHz over the TOTAL width. Phrased as oscillations x normalized

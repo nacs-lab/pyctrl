@@ -22,8 +22,10 @@ backs the SLM per-shot callbacks). One scan at a time owns the AWGs.
 
 Waveform-shaping fields (different value -> different uploaded waveform):
 ``shape``, ``carrier_freq_MHz``, ``pulse_width_us``, ``smooth_width_us``, ``steepness``,
-``amplitude_scale`` (``shape``/``smooth_width_us`` select the envelope family -- see
-:mod:`pulse_waveform`; extends MATLAB AWGManager.m, which only had the symmetric Gaussian).
+``amplitude_scale``, plus ``stirap_gap`` / ``f_delay`` / ``r_delay`` for the two-lobe STIRAP shapes
+(``shape``/``smooth_width_us`` select the envelope family -- see :mod:`pulse_waveform`; extends
+MATLAB AWGManager.m, which only had the symmetric Gaussian). Because these fields are in the key,
+each scanned (gap, f_delay, r_delay) is pre-stored + recalled as its own named waveform.
 Hardware-config fields (read once, never change the waveform data):
 ``resource_address``, ``channel``, ``max_amplitude_vpp``, ``num_points``.
 
@@ -39,7 +41,8 @@ from .pulse_waveform import pulse_waveform
 logger = logging.getLogger(__name__)
 
 WAVEFORM_FIELDS = ("shape", "carrier_freq_MHz", "pulse_width_us", "smooth_width_us",
-                   "steepness", "amplitude_scale")
+                   "steepness", "amplitude_scale",
+                   "stirap_gap", "f_delay", "r_delay")   # two-lobe STIRAP shapes
 
 
 class AWGManager:

@@ -288,13 +288,21 @@ def test_runp_awgs_and_awg_dot_name_convention():
 # key construction
 # --------------------------------------------------------------------------- #
 def test_build_key_uses_only_waveform_fields():
-    key = AWGManager._build_key(_DEFAULTS["AWG556"])
+    p = _DEFAULTS["AWG556"]
+    key = AWGManager._build_key(p)
+    # every waveform field PRESENT in params enters the key (optional STIRAP fields absent here)
     for f in WAVEFORM_FIELDS:
-        assert f in key
+        if f in p:
+            assert f in key
     # hardware-config fields must NOT enter the key
     assert "resource_address" not in key
     assert "max_amplitude_vpp" not in key
     assert "channel" not in key
+    # the optional two-lobe STIRAP fields DO enter the key when present (distinct waveform each)
+    dbl = dict(p, shape="double_half_gaussian_outer", stirap_gap=2.0, f_delay=1.0, r_delay=1.5)
+    kd = AWGManager._build_key(dbl)
+    assert "stirap_gap=2" in kd and "f_delay=1" in kd and "r_delay=1.5" in kd
+    assert kd != AWGManager._build_key(dict(dbl, f_delay=2.0))    # f_delay changes the key
 
 
 # --------------------------------------------------------------------------- #
@@ -504,7 +512,8 @@ def test_pulse_waveform_validation():
     with pytest.raises(ValueError, match="smooth_width_us"):
         pulse_waveform(dict(_DEFAULTS["AWG556"], shape="rise_gaussian", smooth_width_us=-0.1))
     assert set(SHAPES) == {"gaussian", "rise_gaussian", "fall_gaussian",
-                           "rise_linear", "fall_linear"}
+                           "rise_linear", "fall_linear",
+                           "double_half_gaussian_inner", "double_half_gaussian_outer"}
 
 
 # --------------------------------------------------------------------------- #

@@ -122,21 +122,27 @@ def build():
     g().rearrange_kwargs.extras.n_rounds = 1        # one rearrangement round (runner ctx)
 
     # ---- Siglent AWG config (out-of-band; AWGManager reads g().AWG.<name>.*) ------------
-    # Copied from STIRAPAWGScan (parked on the 20um-array 2D dip center, scans
-    # 20260707_180931 + _183401): FIXED -> one waveform per AWG, pre-stored once.
-    g().AWG.AWG556.shape = "gaussian"
-    g().AWG.AWG556.carrier_freq_MHz = 143.1737 #.scan(1, np.linspace(142.7, 143.6, 20)) # 
-    g().AWG.AWG556.pulse_width_us = 5 #.scan(2, np.linspace(1, 8, 10)) #= 5
-    g().AWG.AWG556.steepness = 2.9
-    g().AWG.AWG556.max_amplitude_vpp = 15
-    g().AWG.AWG556.amplitude_scale = 1 #.scan(1, np.linspace(0.5, 1, 10)) #= 1
+    _PW_556 = 1.55   # lobe 1/e half-width (us)
+    _PW_308 = 1.55   # lobe 1/e half-width (us)
+    _GAP = 2.0   # stirap_gap: fwd->rev hold (us), SHARED by both beams
+    _RD  = 2.16  # reverse-lobe delay on the 308 (us)
 
-    g().AWG.AWG308.shape = "gaussian"
+    g().AWG.AWG556.shape = "double_half_gaussian_inner"   # anchor; gap = inner-peak separation
+    g().AWG.AWG556.carrier_freq_MHz = 143.0
+    g().AWG.AWG556.pulse_width_us = _PW_556
+    g().AWG.AWG556.stirap_gap = _GAP     #.scan(2, np.linspace(1.0, 5.0, 9))  # gap sweep
+    g().AWG.AWG556.max_amplitude_vpp = 11
+    g().AWG.AWG556.amplitude_scale = 1
+
+    g().AWG.AWG308.shape = "double_half_gaussian_outer"   # slides by f/r; +=lead/lag (normal)
     g().AWG.AWG308.carrier_freq_MHz = 200
-    g().AWG.AWG308.pulse_width_us = 5 #.scan(2, np.linspace(1, 8, 10)) #= 5
-    g().AWG.AWG308.steepness = 3.78 #.scan(1, np.linspace(2, 6, 10)) #= 4
+    g().AWG.AWG308.pulse_width_us = _PW_308
+    g().AWG.AWG308.stirap_gap = _GAP
+    g().AWG.AWG308.f_delay.scan(1, np.linspace(0.5, 3.5, 7))   # STIRAP fwd delay sweep (us)
+    g().AWG.AWG308.r_delay = _RD
     g().AWG.AWG308.max_amplitude_vpp = 5.5
     g().AWG.AWG308.amplitude_scale = 1
+
 
     g.runp().AWGs = ["AWG556", "AWG308"]
 
@@ -147,17 +153,17 @@ def build():
     g().Pushout.Ramsey.Phase = 0
 
     # ---- STIRAP push-out params (STIRAPPushoutStep reads these; from STIRAPAWGScan) -----
-    g().Init.EOM616.Freq = 234.1316e6 #.scan(1, np.linspace(233.5e6, 234.7e6, 20))
-    g().Pushout.VRydTrap = 0.03
+    g().Init.EOM616.Freq = 234.3e6 #.scan(2, np.linspace(233.5e6, 234.7e6, 10)) # = 234.1316e6 #.scan(1, np.linspace(233.5e6, 234.7e6, 20))
+    g().Pushout.VRydTrap = 0.2
     g().Pushout.STIRAP.guassian_pulse_width = 5e-6
     g().Pushout.STIRAP.delay = 1.73e-6 #.scan(1, np.linspace(1.5e-6, 2.5e-6, 10))
     g().Pushout.STIRAP.ifReverse = False
-    g().Pushout.STIRAP.reverse_delay = 1.5e-6
-    g().Pushout.STIRAP.waitTime = 1e-6
-    g().Pushout.Amp369 = 1
-    g().Pushout.Time369 = 2e-6 #.scan(1, np.linspace(1e-6, 4e-6, 10))
+    g().Pushout.STIRAP.reverse_delay = 2e-6 #.scan(1, np.linspace(1e-6, 5e-6, 20))
+    g().Pushout.STIRAP.waitTime = 0e-6
+    # g().Pushout.Amp369 = 1
+    g().Pushout.Time369 = 3e-6 #.scan(1, np.linspace(1e-6, 6e-6, 10))
     g().Pushout.BiasCoilCurrent.Ryd = 30
-    g().Pushout.Vy = 5 #.scan(1, np.linspace(0, 5, 10))
+    g().Pushout.Vy = 5 #.scan(1, np.linspace(0, 8, 10))
     # ---- swept axis (science): STIRAP.gap; fixed by default, sweep like STIRAPAWGScan ---
     # gaps = [v * 1e-9 for v in matlab_colon(100, 100, 10000)]
     g().Pushout.STIRAP.gap = 1e-6  # .scan(1, gaps)
