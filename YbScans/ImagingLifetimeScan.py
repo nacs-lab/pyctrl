@@ -42,7 +42,11 @@ Run it (pyctrl backend must already be live at --url):
 
 import argparse
 import os
-import sys
+
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
+
+from ImagingPushoutSurvivalSeq import ImagingPushoutSurvivalSeq
 
 
 # --- SLM loading pattern for THIS scan (the single override point) -------------------------
@@ -55,14 +59,6 @@ LOADING_PHASE = "phase/33x33_feedback11.pt"
 LOADING_DEFOCUS = -5            # ANSI z4 loading defocus (rad); applied only when LOADING_PHASE is set
 
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    # root itself carries expConfig.py (build() loads the real config via Consts()).
-    for p in (root, os.path.join(root, "lib"), os.path.join(root, "YbExptCtrl")):
-        if p not in sys.path:
-            sys.path.insert(0, p)
-
-
 def build():
     """The ImagingLifetimeScan ScanGroup (single group, 1-D Pushout.Time sweep).
 
@@ -71,7 +67,6 @@ def build():
     has no per-pattern overlay) so the hold tracks the imaged array. ``runp`` drives the live run
     (NumImages=2) but never the per-seq bytes.
     """
-    _bootstrap()
     from scan_group import ScanGroup
     from seq_config import SeqConfig
     from dyn_props import DynProps
@@ -142,7 +137,6 @@ def build():
 
 def ImagingLifetimeScan(url=None, reps=3):
     """Build + submit the imaging-lifetime scan. Returns the queued descriptor id."""
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     g = build()
@@ -150,7 +144,7 @@ def ImagingLifetimeScan(url=None, reps=3):
     if reps is not None:
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
-    did = ybStartScan("ImagingPushoutSurvivalSeq", g, url=url, label="ImagingLifetimeScan", **opts)
+    did = ybStartScan(ImagingPushoutSurvivalSeq, g, url=url, label="ImagingLifetimeScan", **opts)
     print("submitted ImagingLifetimeScan -> descriptor id %s (url=%s, reps=%s, 6 time pts 5ms..8s, imaging ON)"
           % (did, url or "default", reps))
     return did

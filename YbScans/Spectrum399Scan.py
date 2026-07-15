@@ -28,16 +28,11 @@ Run it (pyctrl backend must already be live at --url):
 """
 
 import argparse
-import os
-import sys
 
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+from PushoutSurvival399Seq import PushoutSurvival399Seq
 
 
 def build():
@@ -47,7 +42,6 @@ def build():
     params only (the dbstack scanname/scanfilename metadata is dropped -- it never enters the
     serialized bytes). ``runp`` drives the live run (NumImages=2) but never the per-seq bytes.
     """
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
 
@@ -81,7 +75,6 @@ def build():
 
 def Spectrum399Scan(url=None, reps=3):
     """Build + submit the 399 spectrum scan. Returns the queued descriptor id."""
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     g = build()
@@ -89,7 +82,7 @@ def Spectrum399Scan(url=None, reps=3):
     if reps is not None:
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
-    did = ybStartScan("PushoutSurvival399Seq", g, url=url, label="Spectrum399Scan", **opts)
+    did = ybStartScan(PushoutSurvival399Seq, g, url=url, label="Spectrum399Scan", **opts)
     print("submitted Spectrum399Scan -> descriptor id %s (url=%s, reps=%s, 47 freq pts)"
           % (did, url or "default", reps))
     return did

@@ -40,16 +40,11 @@ Run it (pyctrl backend must already be live at --url):
 """
 
 import argparse
-import os
-import sys
 
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+from RydbergPushoutSurvivalSeq import RydbergPushoutSurvivalSeq
 
 
 def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
@@ -65,7 +60,6 @@ def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
     model window (e.g. 2026-06-12: measured 142.281 MHz vs model 143.184 MHz). This keeps the
     revival's 556 actually on the line WITHOUT retuning the calibration constants on one day's drift.
     """
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
 
@@ -119,7 +113,6 @@ def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
 def Revival616Scan(url=None, reps=3, field_G=30, green_amp=0.2, ryd308_amp=0.4,
                    green_freq_mhz=None):
     """Build + submit the 30 G 616-revival scan. Returns the queued descriptor id."""
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     g = build(field_G=field_G, green_amp=green_amp, ryd308_amp=ryd308_amp,
@@ -130,7 +123,7 @@ def Revival616Scan(url=None, reps=3, field_G=30, green_amp=0.2, ryd308_amp=0.4,
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
     label = "Revival616Scan_%dG" % round(field_G)
-    did = ybStartScan("RydbergPushoutSurvivalSeq", g, url=url, label=label, **opts)
+    did = ybStartScan(RydbergPushoutSurvivalSeq, g, url=url, label=label, **opts)
     print("submitted %s -> descriptor id %s (url=%s, reps=%s, field=%sG, %d EOM616 pts, "
           "556@%.3f MHz amp %.2f, 308 amp %.2f)"
           % (label, did, url or "default", reps, field_G, npts,

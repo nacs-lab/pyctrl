@@ -20,22 +20,16 @@ monitor's URL). Submit, then watch the dashboard's Tweezer Array / loading.
 """
 
 import argparse
-import os
-import sys
 import numpy as np
 
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+from ImagingPushoutSurvivalSeq import ImagingPushoutSurvivalSeq
 
 
 def LACScan(url=None, reps=None):
     """Build + submit the LAC loading scan. Returns the queued descriptor id."""
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
     from yb_start_scan import ybStartScan
@@ -109,18 +103,18 @@ def LACScan(url=None, reps=None):
     # a finer step. Goal: find setpoints where img1 empty-vs-atom Gaussian
     # SEPARATION ~ 6 (enough for fidelity, not more) while survival stays high.
     # 0 pushout (Pushout.Time below) -> real 50 ms two-image survival + separation.
-    # ===== BEAM-2-OFF, HIGH Img1PIDSet: push beam 1 setpoint past the scanned range =====
-    # Job 2209 (2-D) + 2210 (beam-2-off) both showed beam-1 separation FLAT (d' ~3.2)
-    # over Img1PIDSet 0.2..1.2. Extend beam 1 UPWARD (0.9..2.0) to see whether d'
-    # finally rises with more power, or the PID lock RAILS (laser power ceiling ->
-    # actual power plateaus even as the setpoint climbs). Beam 2 stays OFF
-    # (Imag399.Amp2 = 0) so this is clean beam-1-alone. Setpoint feeds VImg1PIDSet
-    # (Dev1/21, AO) directly, +-10 V hardware limit; 2.0 is well within it.
+    # ===== 25 ms INTENSITY 2-D: Img1PIDSet x Img2PIDSet, both beams on =====
+    # After dropping Orca exposure 35 -> 25 ms (less 399 dose): re-map the two 399
+    # imaging-power setpoints at the NEW exposure. Shorter dose -> less heating, so
+    # the Img2 survival cliff (was ~0.35 at 35 ms) shifts UP; scan both wider. Both
+    # beams ON (DDS Amp1/Amp2 = 1; power set by the PID setpoints). Cooling from the
+    # committed feedback11 ByPattern (X 0.14/0.28, h 0.14/0.20). 0 pushout = real
+    # 25 ms two-image survival + true img1 separation.
     g().Imag399.Amp1 = 1
-    g().Imag399.Amp2 = 0        # BEAM 2 OFF (image step)
-    g().Pushout.Time = 0.001    # ~0 pushout: real 50 ms survival + true separation
-    g().BlueMOT.Img1PIDSet.scan(1, np.linspace(0.9, 2.0, 12))
-    g().BlueMOT.Img2PIDSet = 0.2   # beam 2 setpoint irrelevant (beam off); park low
+    g().Imag399.Amp2 = 1
+    g().Pushout.Time = 0.001    # ~0 pushout: real survival + true separation
+    g().BlueMOT.Img1PIDSet.scan(1, np.linspace(0.4, 1.4, 10))
+    g().BlueMOT.Img2PIDSet.scan(2, np.linspace(0.2, 0.65, 10))
     #g().GreenMOT.BiasCoilCurrent.X = 0.0387
     # g().GreenMOT.BiasCoilCurrent.Y.scan(1, [0.265, 0.278])
     # g().BlueMOT.LoadingTime = 0.5
@@ -142,7 +136,7 @@ def LACScan(url=None, reps=None):
 
     # ---- run params (runp) ------------------------------------------------
     rp = g.runp()
-    rp.NumPerGroup = 240          # = default reps(20) x n_points(12) so the dashboard
+    rp.NumPerGroup = 800          # = default reps(8) x n_points(100) so the dashboard
                                   # shots-total matches the real cap (rep sets shots/point)
     rp.NumImages = 2              # survival: img1 (separation) + img2 (survival)
     rp.isInit = 0
@@ -162,13 +156,14 @@ def LACScan(url=None, reps=None):
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
 
-    desc = ("33x33_feedback11 (VSLMservo 1.9) imaging BEAM-2-OFF, HIGH Img1PIDSet -- "
-            "Imag399.Amp2=0 (beam 2 dark), scan beam 1 setpoint Img1PIDSet 0.9..2.0 "
-            "(12 pts, 20 reps=240 shots), 0 pushout. Extends the beam-2-off diagnostic "
-            "(job 2210) upward past the 0.2..1.2 already scanned: does beam-1 separation "
-            "(d') finally rise with more power, or does the PID lock RAIL (laser power "
-            "ceiling -> actual power plateaus)? Amp1=1, Img2PIDSet parked 0.2 (beam off).")
-    did = ybStartScan("ImagingPushoutSurvivalSeq", g, url=url, label="ImgTest_beam2off_hi_fb11",
+    desc = ("33x33_feedback11 (VSLMservo 1.9) imaging INTENSITY 2-D at 25 ms exposure -- "
+            "scan Img1PIDSet 0.4..1.4 x Img2PIDSet 0.2..0.65 (10x10, 8 reps=800 shots), "
+            "both 399 beams on (DDS Amp1/Amp2=1; PID setpoints are the power lever), "
+            "0 pushout = real 25 ms two-image survival + img1 separation. After dropping "
+            "Orca 35->25 ms; re-mapping the setpoint landscape (Img2 heating cliff expected "
+            "to shift up vs the 35 ms map). Cooling = committed feedback11 ByPattern. "
+            "Locate W, then re-optimize cooling at 25 ms.")
+    did = ybStartScan(ImagingPushoutSurvivalSeq, g, url=url, label="ImgOpt_PIDset_25ms_fb11",
                       description=desc, **opts)
     # print("submitted LACScan sweep (%d pts %.3f..%.3f A) -> descriptor id %s (url=%s)"
     #       % (len(xvals), xvals[0], xvals[-1], did, url or "default"))

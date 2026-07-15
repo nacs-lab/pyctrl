@@ -30,9 +30,12 @@ Run it:
 
 import argparse
 import json
-import os
-import sys
 import numpy as np
+
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
+
+from RearrangeSTIRAPSeq import RearrangeSTIRAPSeq
 
 
 # --------------------------- EDIT ME: layout + patterns ----------------------------- #
@@ -110,19 +113,8 @@ def _image_patterns_json(verify, init_cfg, target_cfg):
     return json.dumps(items)
 
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl", "YbSeqs", "YbSteps"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
-    if root not in sys.path:
-        sys.path.insert(0, root)
-
-
 def build(mode):
     """Build (do NOT submit) the ScanGroup for ``mode`` in ('amp', 'sd')."""
-    _bootstrap()
     from scan_group import ScanGroup
 
     verify = bool(VERIFY_IMAGE)
@@ -310,14 +302,13 @@ _DESCRIPTIONS = {
 
 def HalfPulseSTIRAPScan(mode, url=None, reps=None):
     """Build + SUBMIT one mode. Returns the descriptor id."""
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     if reps is None:
         reps = 10 if mode == "sd" else 15
     g = build(mode)
     label = "HalfPulseSTIRAP_%s" % mode
-    did = ybStartScan("RearrangeSTIRAPSeq", g, url=url, label=label, rep=reps,
+    did = ybStartScan(RearrangeSTIRAPSeq, g, url=url, label=label, rep=reps,
                       description=_DESCRIPTIONS[mode])
     print("submitted %s -> descriptor id %s (reps=%s)" % (label, did, reps))
     return did

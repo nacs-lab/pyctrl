@@ -26,8 +26,11 @@ Run (pyctrl backend live at --url):
 
 import argparse
 import json
-import os
-import sys
+
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
+
+from PushoutSurvivalSeq import PushoutSurvivalSeq
 
 
 PHASE_PATH = "phase/2x15x15_xyoffset_5um.pt"
@@ -37,16 +40,7 @@ DEFAULT_DEFOCUS = -5.0
 DEFAULT_LO, DEFAULT_HI, STEP = 101.0, 106.0, 0.1     # MHz; 51 pts @ 100 kHz
 
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
-
-
 def build(lo=DEFAULT_LO, hi=DEFAULT_HI, defocus=DEFAULT_DEFOCUS):
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
 
@@ -81,14 +75,13 @@ def build(lo=DEFAULT_LO, hi=DEFAULT_HI, defocus=DEFAULT_DEFOCUS):
 
 def Spectrum556_2x15Scan(url=None, reps=10, lo=DEFAULT_LO, hi=DEFAULT_HI,
                          defocus=DEFAULT_DEFOCUS):
-    _bootstrap()
     from yb_start_scan import ybStartScan
     g, npts = build(lo=lo, hi=hi, defocus=defocus)
     opts = {}
     if reps is not None:
         opts["rep"] = reps
     label = "Spectrum556_2x15_mj1"
-    did = ybStartScan("PushoutSurvivalSeq", g, url=url, label=label, **opts)
+    did = ybStartScan(PushoutSurvivalSeq, g, url=url, label=label, **opts)
     print("submitted %s -> id %s (%d pts %.1f-%.1f MHz @ %g kHz, reps=%s, defocus=%g)"
           % (label, did, npts, lo, hi, STEP * 1e3, reps, defocus))
     return did

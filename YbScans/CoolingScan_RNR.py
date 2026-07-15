@@ -36,16 +36,11 @@ Run (pyctrl backend must be live at --url; reps drive passes, 0 = forever):
 """
 
 import argparse
-import os
-import sys
 
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+from ReleaseRecaptureSeq import ReleaseRecaptureSeq
 
 
 # Default sweep colons (the .m's active FreqCooling556Scan block).
@@ -87,7 +82,6 @@ def build(beam="h", fdet=DEF_FDET, famp=DEF_AMP, x_pin=DEF_X_PIN, h_pin=DEF_H_PI
     Hz; ``Cool556hXStep`` adds ``Resonance556mj0Freq``. Pinning to an arbitrary float is byte-safe
     (the param->byte path is verified; only the .m-default grid is oracle-pinned).
     """
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
 
@@ -121,13 +115,12 @@ def build(beam="h", fdet=DEF_FDET, famp=DEF_AMP, x_pin=DEF_X_PIN, h_pin=DEF_H_PI
 def CoolingScan_RNR(url=None, reps=2, beam="h", fdet=DEF_FDET, famp=DEF_AMP,
                     x_pin=DEF_X_PIN, h_pin=DEF_H_PIN, release_time=25e-6):
     """Build + submit the release-recapture cooling scan. Returns the queued descriptor id."""
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     g = build(beam=beam, fdet=fdet, famp=famp, x_pin=x_pin, h_pin=h_pin, release_time=release_time)
     opts = {"rep": reps} if reps is not None else {}
     label = "CoolingScan_RNR_%s" % beam
-    did = ybStartScan("ReleaseRecaptureSeq", g, url=url, label=label, **opts)
+    did = ybStartScan(ReleaseRecaptureSeq, g, url=url, label=label, **opts)
     print("submitted %s -> descriptor id %s (url=%s, reps=%s, nseq=%d)"
           % (label, did, url or "default", reps, g.nseq()))
     return did

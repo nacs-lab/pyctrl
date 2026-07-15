@@ -42,16 +42,11 @@ Run it (pyctrl backend must already be live at --url):
 """
 
 import argparse
-import os
-import sys
 
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+from GreenMOTSeq import GreenMOTSeq
 
 
 def build():
@@ -61,7 +56,6 @@ def build():
     only (the dbstack scanname/scanfilename metadata is dropped -- it never enters the
     serialized bytes). ``runp`` drives the live run (NumImages=1) but never the per-seq bytes.
     """
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
 
@@ -103,7 +97,6 @@ def build():
 
 def FreqAbsImgScan(url=None, reps=3):
     """Build + submit the absorption-imaging frequency scan. Returns the queued descriptor id."""
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     g = build()
@@ -111,7 +104,7 @@ def FreqAbsImgScan(url=None, reps=3):
     if reps is not None:
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
-    did = ybStartScan("GreenMOTSeq", g, url=url, label="FreqAbsImgScan", **opts)
+    did = ybStartScan(GreenMOTSeq, g, url=url, label="FreqAbsImgScan", **opts)
     print("submitted FreqAbsImgScan -> descriptor id %s (url=%s, reps=%s, 16 freq pts)"
           % (did, url or "default", reps))
     return did

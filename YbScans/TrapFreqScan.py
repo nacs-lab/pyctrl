@@ -43,15 +43,11 @@ Run it (pyctrl backend must already be live at --url):
 
 import argparse
 import os
-import sys
 
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+from SLMTrapModulationSeq import SLMTrapModulationSeq
 
 
 # Modulation drive strength -- AmpFactor = fraction of the trap-AOM amplitude used as the
@@ -89,7 +85,6 @@ def _range_arrays(start_khz, step_khz, stop_khz, amp_factor, t_shortest=_T_SHORT
 
 def build(mode="radial"):
     """The TrapFreqScan ScanGroup (single group, modulation Freq/Time co-swept on axis 1)."""
-    _bootstrap()
     from scan_group import ScanGroup
 
     if mode == "radial":
@@ -137,7 +132,6 @@ def build(mode="radial"):
 
 def TrapFreqScan(url=None, reps=3, mode="radial"):
     """Build + submit the trap-frequency scan (radial/axial/both). Returns the descriptor id."""
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     g = build(mode=mode)
@@ -158,7 +152,7 @@ def TrapFreqScan(url=None, reps=3, mode="radial"):
         "array (%s modulation range%s). Survival dips at f_mod = 2*f_trap; modulation time "
         "held inverse-square in frequency for a constant heating dose. %d frequency points."
         % (PATTERN_NAME, mode, ", AmpFactor co-swept 0.4/0.6" if mode == "both" else "", npts))
-    did = ybStartScan("SLMTrapModulationSeq", g, url=url, label=label,
+    did = ybStartScan(SLMTrapModulationSeq, g, url=url, label=label,
                       description=description, **opts)
     print("submitted %s -> descriptor id %s (url=%s, reps=%s, %d freq pts)"
           % (label, did, url or "default", reps, npts))

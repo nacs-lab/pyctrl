@@ -41,8 +41,11 @@ Run (pyctrl backend live at --url; --reps = passes per grid point, total shots =
 """
 
 import argparse
-import os
-import sys
+
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
+
+from ImagingPushoutSurvivalSeq import ImagingPushoutSurvivalSeq
 
 # ---- scan settings (override on the command line) -------------------------
 LOADING_PHASE = "phase/33x33_feedback11.pt"   # SLM loading hologram (+ its ByPattern config)
@@ -56,13 +59,6 @@ COOL = False                                  # 556 cooling during push-out: OFF
 DET_GRID_MHZ = (-25.0, 2.0, 25.0)             # +-15 MHz, 1 MHz step -> 31 points
 
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for p in (root, os.path.join(root, "lib"), os.path.join(root, "YbExptCtrl")):
-        if p not in sys.path:
-            sys.path.insert(0, p)
-
-
 def build(det_grid_mhz=DET_GRID_MHZ, amp=AMP, beam=BEAM, pushout_time=PUSHOUT_TIME,
           cool=COOL, loading_phase=LOADING_PHASE, loading_defocus=LOADING_DEFOCUS,
           center_freq=None):
@@ -74,7 +70,6 @@ def build(det_grid_mhz=DET_GRID_MHZ, amp=AMP, beam=BEAM, pushout_time=PUSHOUT_TI
     on 33x33_feedback9 the true line is ~313.8 MHz, ~3.8 MHz above the config 310 -- center there so the
     +-15 MHz window straddles the dip.)
     """
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
     from seq_config import SeqConfig
@@ -135,7 +130,6 @@ def build(det_grid_mhz=DET_GRID_MHZ, amp=AMP, beam=BEAM, pushout_time=PUSHOUT_TI
 
 
 def main():
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     ap = argparse.ArgumentParser(
@@ -170,7 +164,7 @@ def main():
         g.runp().NumPerGroup = args.reps * n_points
 
     did = ybStartScan(
-        "ImagingPushoutSurvivalSeq", g, url=args.url, label="BeamProfilePushout_399",
+        ImagingPushoutSurvivalSeq, g, url=args.url, label="BeamProfilePushout_399",
         rep=args.reps,
         description=(
             "Single-399-beam push-out FREQUENCY scan to map the imaging beam profile. Beam %d on "

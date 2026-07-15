@@ -22,21 +22,14 @@ Run it (pyctrl backend must already be live):
     python YbScans/PicoMotor308Scan.py
 """
 
-import os
-import sys
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
 
-
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+from PicoMotor308 import PicoMotor308
 
 
 def build(axis, volts, hold_s):
     """A 1-point ScanGroup carrying the picomotor axis + kick (volts) + hold time."""
-    _bootstrap()
     from scan_group import ScanGroup
 
     g = ScanGroup()
@@ -63,12 +56,11 @@ def PicoMotor308Scan(url=None):
     hold_s = 1      # seconds to hold the kick before ramping back to 0
     # -------------------------------
 
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     g = build(axis=axis, volts=volts, hold_s=hold_s)
     description = "one-shot picomotor move: axis=%s, %g V, %g s hold" % (axis, volts, hold_s)
-    did = ybStartScan("PicoMotor308", g, url=url, label="PicoMotor308_%s" % axis,
+    did = ybStartScan(PicoMotor308, g, url=url, label="PicoMotor308_%s" % axis,
                       description=description,
                       rep=1)   # rep=1 + 1 scan point -> exactly one shot (rep=0 would be forever)
     print("submitted PicoMotor308 -> descriptor id %s (url=%s, 1 shot; %s)"

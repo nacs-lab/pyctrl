@@ -25,21 +25,15 @@ Run (pyctrl backend live):
 """
 
 import argparse
-import os
-import sys
 
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+from RydbergPushoutSurvivalSeq import RydbergPushoutSurvivalSeq
 
 
 def build(field_G=30, green_amp=0.12, ryd308_amp=0.4, green_freq_mhz=143.35,
           axis="Vx", vx=(-2.0, 4.0 / 6, 2.0 + 1e-9), eom=(260.0, 1.0, 300.0)):
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
 
@@ -80,12 +74,11 @@ def build(field_G=30, green_amp=0.12, ryd308_amp=0.4, green_freq_mhz=143.35,
 
 
 def submit(url=None, reps=3, **kw):
-    _bootstrap()
     from yb_start_scan import ybStartScan
     g, eom_freqs, vx_vals = build(**kw)
     opts = {"rep": reps} if reps is not None else {}
     ax = kw.get("axis", "Vx")
-    did = ybStartScan("RydbergPushoutSurvivalSeq", g, url=url, label="StarkV%sRevival616Scan" % ax[-1].lower(),
+    did = ybStartScan(RydbergPushoutSurvivalSeq, g, url=url, label="StarkV%sRevival616Scan" % ax[-1].lower(),
                       description=("DC-Stark E-field nulling: 2D %s x 616-EOM revival at 30 G. "
                                    "Per %s (Init.Electrodes.%s, %d pts %.3f..%.3f V) run a 308 "
                                    "revival (616-EOM %.0f..%.0f MHz, %d pts); fit center-vs-%s "

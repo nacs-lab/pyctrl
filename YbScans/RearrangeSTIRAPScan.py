@@ -34,8 +34,6 @@ Run it:
 
 import argparse
 import json
-import os
-import sys
 import numpy as np
 
 
@@ -94,20 +92,18 @@ def _image_patterns_json(verify, init_cfg, target_cfg):
     return json.dumps(items)
 
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl", "YbSeqs", "YbSteps"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
-    if root not in sys.path:
-        sys.path.insert(0, root)
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
+
+# The seq this scan runs. Passing the CALLABLE (not the name string) to ybStartScan gives
+# go-to-definition in the editor and catches a typo at load time; the descriptor still
+# serializes just its __name__, and the backend re-imports it fresh per job as before.
+from RearrangeSTIRAPSeq import RearrangeSTIRAPSeq
 
 
 def build():
     """Build (do NOT submit) the ScanGroup. Kept separate so it can be exercised offline
     WITHOUT touching the live backend (the scan-verification convention)."""
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
 
@@ -122,21 +118,21 @@ def build():
     g().rearrange_kwargs.extras.n_rounds = 1        # one rearrangement round (runner ctx)
 
     # ---- Siglent AWG config (out-of-band; AWGManager reads g().AWG.<name>.*) ------------
-    _GAP = 2.0   # stirap_gap: fwd->rev hold (us), SHARED by both beams
+    _GAP = 2   # stirap_gap: fwd->rev hold (us), SHARED by both beams
 
-    g().AWG.AWG556.shape = "rise_gaussian" #"double_half_gaussian_inner"   # anchor; gap = inner-peak separation
+    g().AWG.AWG556.shape = "double_half_gaussian_inner" #"rise_gaussian" #   # anchor; gap = inner-peak separation
     g().AWG.AWG556.carrier_freq_MHz = 143.4 #.scan(1, np.linspace(142.8, 143.7, 10))   # STIRAP fwd carrier (MHz); opt: 142.8-143.7 coarse -> 143.1-143.7 zoom. RESONANCE LINE w/ EOM616 (degenerate; lock the PAIR 143.4/234.6)
     g().AWG.AWG556.pulse_width_us = 1.437   # lobe 1/e half-width (us); 2026-07-14 STIRAP opt (was 1.467). opt: 0.8-2.0 coarse -> 1.2-1.73 zoom (x delay)
-    g().AWG.AWG556.stirap_gap = _GAP     #.scan(2, np.linspace(1.0, 5.0, 9))  # gap sweep
+    g().AWG.AWG556.stirap_gap.scan(1, np.linspace(1.0, 50, 9)) #= _GAP     #.scan(2, np.linspace(1.0, 5.0, 9))  # gap sweep
     g().AWG.AWG556.max_amplitude_vpp = 15   # 2026-07-14 raised 11->15 (more STIRAP power)
     g().AWG.AWG556.amplitude_scale = 1   # opt: scan 0.4-1.0 @ vpp15 -> monotonic to ceiling, best=1.0 (still power-limited)
 
-    g().AWG.AWG308.shape = "fall_gaussian" #"double_half_gaussian_outer"   # slides by f/r; +=lead/lag (normal)
+    g().AWG.AWG308.shape = "double_half_gaussian_outer" #"fall_gaussian" #   # slides by f/r; +=lead/lag (normal)
     g().AWG.AWG308.carrier_freq_MHz = 200
     g().AWG.AWG308.pulse_width_us = 1.463 #.scan(1, np.linspace(1, 2.5, 10))  # 2026-07-14 STIRAP opt (was 1.5). opt: 1.0-2.5 coarse -> 1.17-1.83 zoom (x delay)
-    g().AWG.AWG308.stirap_gap = _GAP
+    g().AWG.AWG308.stirap_gap.scan(1, np.linspace(1.0, 50, 9)) #= _GAP
     g().AWG.AWG308.f_delay = 2.167 #.scan(2, np.linspace(0.5, 3, 10))   # STIRAP fwd delay (us); opt: 0.5-3.5 coarse -> 1.0-2.67 zoom. Re-swept w/ each pw scan, NOT locked; valley ~1.9-2.1
-    g().AWG.AWG308.r_delay = 2.16
+    g().AWG.AWG308.r_delay = 3.737 #.scan(1, np.linspace(1, 5, 20))
     g().AWG.AWG308.max_amplitude_vpp = 5.5
     g().AWG.AWG308.amplitude_scale = 1
 
@@ -154,7 +150,7 @@ def build():
     g().Pushout.VRydTrap = 0.2
     # g().Pushout.Amp369 = 1
     g().Pushout.Time369 = 3e-6 #.scan(1, np.linspace(1e-6, 6e-6, 10))
-    g().Pushout.TimeDelay.scan(1, np.linspace(0, 5e-6, 20))   # DC-ionization delay (s); opt scan 0-4us x20 -> FLAT/insensitive (slight rise >3.7us from Ryd decay), default ~2.2e-6
+    g().Pushout.TimeDelay = 2.2e-6 #.scan(1, np.linspace(0, 5e-6, 20))   # DC-ionization delay (s); opt scan 0-4us x20 -> FLAT/insensitive (slight rise >3.7us from Ryd decay), default ~2.2e-6
     g().Pushout.BiasCoilCurrent.Ryd = 30
     g().Pushout.Vy = 5 #.scan(1, np.linspace(0, 8, 10))
 
@@ -196,7 +192,7 @@ def build():
     # start. MATCHED to rearrange_kwargs.extras.z4 (the rearrange MODEL z4).
     rp.loading_defocus = -5
     rp.NumImages = 3 if verify else 2
-    rp.Scramble = 1
+    rp.Scramble = 0
     rp.isGrid2 = 0
     rp.isInit = 0
     rp.isHC = 0
@@ -209,14 +205,13 @@ def build():
 
 def RearrangeSTIRAPScan(url=None, reps=10):
     """Build + SUBMIT the scan to the running pyctrl backend. Returns the descriptor id."""
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     g = build()
     opts = {}
     if reps is not None:
         opts["rep"] = reps
-    did = ybStartScan("RearrangeSTIRAPSeq", g, url=url, label="RearrangeSTIRAPScan", **opts)
+    did = ybStartScan(RearrangeSTIRAPSeq, g, url=url, label="RearrangeSTIRAPScan", **opts)
     print("submitted RearrangeSTIRAPScan -> descriptor id %s (url=%s, reps=%s, verify=%s, "
           "NumImages=%d)" % (did, url or "default", reps, VERIFY_IMAGE, 3 if VERIFY_IMAGE else 2))
     return did

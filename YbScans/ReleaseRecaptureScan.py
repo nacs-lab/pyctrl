@@ -38,16 +38,11 @@ Run (pyctrl backend must be live at --url; reps drive passes, 0 = forever):
 """
 
 import argparse
-import os
-import sys
 
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for d in ("lib", "YbExptCtrl"):
-        p = os.path.join(root, d)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+from ReleaseRecaptureSeq import ReleaseRecaptureSeq
 
 
 # Default release-time sweep colon (the .m's ReleaseTimeScan block): (0:1:50)*1e-6 -> 51 pts.
@@ -63,7 +58,6 @@ def build(tstep=DEF_TSTEP, tmax=DEF_TMAX):
     (e.g. a coarser/finer free-flight grid); the param->byte path is identical, only the .m
     default (0..50 us @ 1 us) is oracle-pinned.
     """
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
 
@@ -99,12 +93,11 @@ def build(tstep=DEF_TSTEP, tmax=DEF_TMAX):
 
 def ReleaseRecaptureScan(url=None, reps=2, tstep=DEF_TSTEP, tmax=DEF_TMAX):
     """Build + submit the release-recapture release-time scan. Returns the queued descriptor id."""
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     g = build(tstep=tstep, tmax=tmax)
     opts = {"rep": reps} if reps is not None else {}
-    did = ybStartScan("ReleaseRecaptureSeq", g, url=url, label="ReleaseRecaptureScan", **opts)
+    did = ybStartScan(ReleaseRecaptureSeq, g, url=url, label="ReleaseRecaptureScan", **opts)
     print("submitted ReleaseRecaptureScan -> descriptor id %s (url=%s, reps=%s, nseq=%d)"
           % (did, url or "default", reps, g.nseq()))
     return did

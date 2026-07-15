@@ -39,16 +39,12 @@ Run it (pyctrl backend must already be live at --url):
 """
 
 import argparse
-import os
-import sys
 import numpy as np
 
+import scan_bootstrap
+scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
 
-def _bootstrap():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../pyctrl
-    for p in (root, os.path.join(root, "lib"), os.path.join(root, "YbExptCtrl")):
-        if p not in sys.path:
-            sys.path.insert(0, p)
+from RydbergPushoutSurvivalSeq import RydbergPushoutSurvivalSeq
 
 
 def build(field_G=0):
@@ -64,7 +60,6 @@ def build(field_G=0):
     narrow (+/-0.2 MHz, 10 kHz) known window. Once a field's dip is located, narrow ``COARSE_*``
     here and re-run for the fine scan.
     """
-    _bootstrap()
     from scan_group import ScanGroup
     from scan_export import matlab_colon
     from seq_config import SeqConfig
@@ -139,7 +134,6 @@ def RydbergSpectrum556Scan(url=None, reps=None, field_G=None, amp=None):
     ``amp`` (if given) overrides the field-default ``Pushout.Green.Amp`` -- for live iteration on
     the push strength (the flat-high / no-push case wants a stronger push).
     """
-    _bootstrap()
     from yb_start_scan import ybStartScan
 
     g = build(field_G=field_G)
@@ -151,7 +145,7 @@ def RydbergSpectrum556Scan(url=None, reps=None, field_G=None, amp=None):
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
     label = "RydbergSpectrum556Scan_%dG" % round(field_G)
-    did = ybStartScan("RydbergPushoutSurvivalSeq", g, url=url, label=label, **opts)
+    did = ybStartScan(RydbergPushoutSurvivalSeq, g, url=url, label=label, **opts)
     print("submitted %s -> descriptor id %s (url=%s, reps=%s, field=%sG, %d freq pts)"
           % (label, did, url or "default", reps, field_G, npts))
     return did
