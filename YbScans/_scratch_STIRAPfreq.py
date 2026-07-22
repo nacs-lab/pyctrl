@@ -135,33 +135,29 @@ def build():
     # predicted 97.0% (vs the argmax cell 96.0% -- the flat plateau makes a single-cell pick unreliable,
     # so we fit). pw308 vertex sits ~0.08us past the box edge (fit extrapolation); this 100-shot verify
     # tests it. Freq pair 143.300 / 234.444 (freq-2D re-pin post E-field null). Forward (reverse OFF).
-    #CARRIER_MHZ = [round(float(v), 4) for v in np.linspace(142.0, 145.0, 10)]     # axis 1
-    #EOM616_MHZ  = [round(float(v), 4) for v in np.linspace(279.0, 285.0, 10)]     # axis 2 (MHz)
-    
-    
     g().AWG.AWG556.Ch1.shape = "rise_quintic"   # anchor; gap = inner-peak separation
-    g().AWG.AWG556.Ch1.carrier_freq_MHz = 143.567   # 2026-07-21 mj=0 QUADRUPLE_SPACING freq-2D lock (data 20260721_181013); PAIR w/ EOM616 282.067
-    g().AWG.AWG556.Ch1.pulse_width_us = 6.0   # 2026-07-21 mj=0 quad ridge-3D optimum (data 20260721_182536); 100-shot verify 4.56% target surv = 95.44% exc (data 20260721_190200)
+    g().AWG.AWG556.Ch1.carrier_freq_MHz.scan(1, list(np.linspace(142.9, 144.1, 10)))   # 2026-07-21 mj=0 quad freq-2D ZOOM: carrier broad, keep 142.9-144.1 @10
+    g().AWG.AWG556.Ch1.pulse_width_us = 5.5   # mj=0 plateau-center pw556; ridge-3D re-optimizes
     g().AWG.AWG556.Ch1.max_amplitude_vpp = 15   # 2026-07-16 (now HONORED by AWGManager channel-mode; was silently forced to consts default 15)
     g().AWG.AWG556.Ch1.amplitude_scale = 1   # opt: scan 0.4-1.0 @ vpp15 -> monotonic to ceiling, best=1.0 (still power-limited)
     
     g().AWG.AWG556.Ch2.shape = "fall_quintic"   # anchor; gap = inner-peak separation
-    g().AWG.AWG556.Ch2.carrier_freq_MHz = 143.567  # mj=0 Ch2 (fall); reverse OFF, unused
-    g().AWG.AWG556.Ch2.pulse_width_us = 2  # lobe 1/e half-width (us); 2026-07-14 STIRAP opt (was 1.467). opt: 0.8-2.0 coarse -> 1.2-1.73 zoom (x delay)
+    g().AWG.AWG556.Ch2.carrier_freq_MHz = 143.656  # mj=0 Ch2 (fall); reverse OFF, unused
+    g().AWG.AWG556.Ch2.pulse_width_us = 4.531  # lobe 1/e half-width (us); 2026-07-14 STIRAP opt (was 1.467). opt: 0.8-2.0 coarse -> 1.2-1.73 zoom (x delay)
     g().AWG.AWG556.Ch2.max_amplitude_vpp = 15   # 2026-07-14 raised 11->15 (more STIRAP power)
     g().AWG.AWG556.Ch2.amplitude_scale = 1   # opt: scan 0.4-1.0 @ vpp15 -> monotonic to ceiling, best=1.0 (still power-limited)
     g().AWG.AWG556.Ch2.pad_time_us = 0.0
     
     g().AWG.AWG308.Ch1.shape = "fall_quintic"
     g().AWG.AWG308.Ch1.carrier_freq_MHz = 200
-    g().AWG.AWG308.Ch1.pulse_width_us = 5.7   # 2026-07-21 mj=0 quad ridge-3D optimum (data 20260721_182536)
+    g().AWG.AWG308.Ch1.pulse_width_us = 5.2   # mj=0 plateau-center pw308; ridge-3D re-optimizes
     g().AWG.AWG308.Ch1.max_amplitude_vpp = 8   # 2026-07-15 raised 5.5->7.5 (amp saturated by 7.5)
     g().AWG.AWG308.Ch1.amplitude_scale = 0.9
     g().AWG.AWG308.Ch1.pad_time_us = 2
     
     g().AWG.AWG308.Ch2.shape = "rise_quintic"
     g().AWG.AWG308.Ch2.carrier_freq_MHz = 200
-    g().AWG.AWG308.Ch2.pulse_width_us = 2 #.scan(1, np.linspace(1, 2.5, 10))  # 2026-07-14 STIRAP opt (was 1.5). opt: 1.0-2.5 coarse -> 1.17-1.83 zoom (x delay)
+    g().AWG.AWG308.Ch2.pulse_width_us = 4.094 #.scan(1, np.linspace(1, 2.5, 10))  # 2026-07-14 STIRAP opt (was 1.5). opt: 1.0-2.5 coarse -> 1.17-1.83 zoom (x delay)
     g().AWG.AWG308.Ch2.max_amplitude_vpp = 8
     g().AWG.AWG308.Ch2.amplitude_scale = 0.95
 
@@ -175,21 +171,17 @@ def build():
     g().Pushout.Ramsey.Phase = 0
 
     # ---- STIRAP push-out params (STIRAPPushoutStep reads these; from STIRAPAWGScan) -----
-    # 2026-07-21 mj=0 QUADRUPLE_SPACING forward-STIRAP OPTIMUM (campaign: delay pre-scan -> freq-2D ->
-    # ridge-3D -> 100-shot verify). Metric = TARGET-ONLY + mid-conditioned survival (see stirap-optimization
-    # runbook Rule 1). Verify (data 20260721_190200, 100 shots, 80 target sites): 4.56 +/- 0.56% survival =
-    # 95.44% excitation. Pair 143.567/282.067 (freq-2D 181013); pw556 6.0/pw308 5.7/delay +1.0us (ridge 182536).
-    g().Init.EOM616.Freq = 282.067e6   # mj=0 616-EOM (308) resonance; PAIR w/ Ch1 143.567
-    g().Pushout.VRydTrap = 2 #.scan(1, np.linspace(0, 1, 20))  # NOTE: trap-off block in STIRAPPushoutStep zeroes AmpSLM during the pulse -> this only sets the pre-ramp depth
+    g().Init.EOM616.Freq.scan(2, list(np.linspace(281.4e6, 282.6e6, 10)))   # 2026-07-21 mj=0 quad freq-2D ZOOM: EOM616 282.0 +/-0.6 @10 (0.133 step); coarse (data_20260721_175748) dip 143.5/282.0=5.8%
+    g().Pushout.VRydTrap = 2
     g().Pushout.BiasCoilCurrent.Ryd = 30
-    g().Pushout.STIRAPDelay = 1.0e-6   # 2026-07-21 mj=0 quad ridge-3D optimum (308-first; window +0.6..+1.4us)
+    g().Pushout.STIRAPDelay = 1.0e-6   # 2026-07-21 mj=0 delay-prescan plateau center (data_20260721_174943; window +0.6..+1.4us, best +1.2us=4.0%)
     g().Pushout.STIRAPReverseDelay = 0.132e-6   # 2026-07-16 reverse-delay sweep best (data_20260716_203004, broad plateau ~0.90)
-    g().Pushout.STIRAPGap = 0.1e-6   # short fixed hold (forward optimum). For a Rydberg-lifetime sweep: .scan(1, gap_pts)
-    g().Pushout.IfReverse = 0   # forward optimization -- reverse OFF (round-trip confounds the forward metric; runbook rule)
+    g().Pushout.STIRAPGap = 0.1e-6 #.scan(1, np.linspace(0.1e-6, 200e-6, 20))
+    g().Pushout.IfReverse = 0   # 2026-07-17 reverse drift-check verify (reverse ON; round-trip survival @ ReverseDelay 0.132)
     g().Pushout.IfPump = 0
     g().Pushout.PumpTime = 1e-6
-    g().Pushout.Pump616Freq = 282.355e6   # mj=0 pump616 (pumps OFF this config)
-    g().Pushout.Pump556Freq = 143.556e6   # mj=0 pump556 (pumps OFF this config)
+    g().Pushout.Pump616Freq = 282.355e6   # mj=0 pump616; pumps OFF this campaign
+    g().Pushout.Pump556Freq = 143.556e6   # mj=0 pump556; pumps OFF this campaign
     g().Pushout.Pump556Amp = 0.5 # 2026-07-16 pump556 amp sweep (data_20260716_210005): best ~0.8-1.0 (monotonic to ceiling)
 
     # g().Pushout.Amp369 = 1
@@ -219,7 +211,7 @@ def build():
     g().rearrange_kwargs.extras.overdrive = False
     g().rearrange_kwargs.extras.dynamic = False
     g().rearrange_kwargs.extras.max_step_size = 0.75
-    g().rearrange_kwargs.extras.pattern = "quadruple_no_topright"  # 2026-07-10 quadruple_spacing (post optics move) -- the new default for the 33x33 array
+    g().rearrange_kwargs.extras.pattern = "quadruple_spacing"   # 2026-07-21 double -> quadruple_spacing
     g().rearrange_kwargs.extras.ifEnhanced = False
     g().rearrange_kwargs.extras.precompute = False
     g().rearrange_kwargs.extras.precompute_host = False
@@ -229,7 +221,7 @@ def build():
     g().rearrange_kwargs.extras.final_pattern = TARGET_PATTERN
 
     # ---- run params (runp) ---------------------------------------------------------------
-    rp.NumPerGroup = 2000
+    rp.NumPerGroup = 100 * 4   # 2026-07-21 mj=0 quad freq-2D ZOOM: 100 pts (10x10) x 4 reps (pass rep=4)
     # Loading defocus (ANSI z4, rad) added to the base loading phase on the SLM write at scan
     # start. MATCHED to rearrange_kwargs.extras.z4 (the rearrange MODEL z4).
     rp.loading_defocus = -5
@@ -253,7 +245,14 @@ def RearrangeSTIRAPScan(url=None, reps=10):
     opts = {}
     if reps is not None:
         opts["rep"] = reps
-    did = ybStartScan(RearrangeSTIRAPSeq, g, url=url, label="RearrangeSTIRAPScan", **opts)
+    opts["description"] = (
+        "mj=0 QUADRUPLE_SPACING forward-STIRAP freq-2D ZOOM 2026-07-21 (STEP 1b). carrier556 "
+        "142.9-144.1 @10 x EOM616 281.4-282.6 @10 (0.133 step) at delay +1.0us. Zoom of "
+        "the coarse 9x7 (data_20260721_175748, aborted @218/252) whose interior dip was 143.5/282.0 = "
+        "5.8% surv (94% excitation) on a clean degenerate diagonal line; EOM616 is the sensitive axis "
+        "so tightened to +/-0.6. pw556 5.5 / pw308 5.2, VRydTrap 2 (trap-off block on -> pre-ramp only), "
+        "IfReverse 0. Deepest-dip cell = mj=0 two-photon pair. Metric: verify-conditioned survival (LOW=best).")
+    did = ybStartScan(RearrangeSTIRAPSeq, g, url=url, label="STIRAPmj0quad_freq2D_zoom", **opts)
     print("submitted RearrangeSTIRAPScan -> descriptor id %s (url=%s, reps=%s, verify=%s, "
           "NumImages=%d)" % (did, url or "default", reps, VERIFY_IMAGE, 3 if VERIFY_IMAGE else 2))
     return did
