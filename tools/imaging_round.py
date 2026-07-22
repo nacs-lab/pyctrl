@@ -67,6 +67,45 @@ def _zmq_int(verb, timeout_ms=4000):
         s.close(linger=0); ctx.term()
 
 
+def _queue_json(timeout_ms=4000):
+    """Parsed queue_list reply (dict with queued/running/history), or None on timeout."""
+    import zmq
+    ctx = zmq.Context(); s = ctx.socket(zmq.REQ); s.setsockopt(zmq.LINGER, 0)
+    try:
+        s.connect(URL); s.send_string("queue_list")
+        if s.poll(timeout_ms) == 0:
+            return None
+        return json.loads(s.recv().decode())
+    finally:
+        s.close(linger=0); ctx.term()
+
+
+def _queue_find(q, did):
+    """(where, entry) for job id `did` in a queue_list reply: 'queued' (with position),
+    'running', 'history', or (None, None). Robust to other jobs interleaved in the queue."""
+    if not q:
+        return None, None
+    run = q.get("running")
+    if isinstance(run, dict) and run.get("id") == did:
+        return "running", run
+    for i, ent in enumerate(q.get("queued") or []):
+        if isinstance(ent, dict) and ent.get("id") == did:
+            ent = dict(ent); ent["_pos"] = i
+            return "queued", ent
+    for ent in q.get("history") or []:
+        if isinstance(ent, dict) and ent.get("id") == did:
+            return "history", ent
+    return None, None
+
+
+def _job_data_dir(root, ent):
+    """Resolve the job's data dir from its file_id (YYYYMMDD_HHMMSS)."""
+    fid = ent.get("file_id") if ent else None
+    if not fid:
+        return None
+    return os.path.join(root, fid[:8], "data_" + fid)
+
+
 def _warm4_consts():
     """expConfig consts with the active ByPattern overlay applied (build-time)."""
     _pyctrl_path()
@@ -118,6 +157,12 @@ def build(args):
     c = _warm4_consts()
     reson399 = float(c.Resonance399Freq)
     g = ScanGroup()
+
+    # Pin the root imaging-PID setpoints (g() beats ByPattern) -- e.g. to tri_3013's 0.5/0.5 so a
+    # standalone survival run on a DIFFERENT array mirrors the rearrangement context's held power.
+    if getattr(args, "fix_pid", None):
+        g().BlueMOT.Img1PIDSet = float(args.fix_pid[0])
+        g().BlueMOT.Img2PIDSet = float(args.fix_pid[1])
 
     if args.mode == "detuning":
         dets = _colon(*args.fdet)                       # MHz
@@ -183,6 +228,43 @@ def build(args):
         g().Pushout.Green.h.Amp = float(c.Imag399.Cool556.h.Amp)
         axis_desc = "ratio Amp1=%s Amp2(x%.4f)=%s det=%.2fMHz hold=%.3fs" % (
             [round(a, 3) for a in a1], args.amp2_ratio, [round(a, 3) for a in a2], args.det, args.hold)
+    elif args.mode == "pidset":
+        # PID-servo imaging-power 2-D (the 2026-07-14+ scheme): sweep the BlueMOT PID setpoints
+        # Img1PIDSet (axis1) x Img2PIDSet (axis2) at 0 pushout, DDS Imag399.Amp1/Amp2 HELD AT 1
+        # (else a legacy amp<1 attenuates AFTER the frozen servo point -- gotcha-stale-dds-amps-pid-imaging).
+        # This mirrors the tri_3013_camfb PID scan (scans 20260715_111735/_112905). Cooling-during-image
+        # is pinned from the loading PATTERN overlay (or --xcool/--hcool). Analysis reuses the 2-D path;
+        # the printed "Amp1/Amp2" axis labels are actually Img1PIDSet/Img2PIDSet (values come from dims).
+        p1 = [float(v) for v in _colon(*args.pid1)]
+        p2 = [float(v) for v in _colon(*args.pid2)]
+        det_hz = float(args.det) * 1e6
+        g().Imag399.Amp1 = 1
+        g().Imag399.Amp2 = 1
+        g().BlueMOT.Img1PIDSet.scan(1, p1)
+        g().BlueMOT.Img2PIDSet.scan(2, p2)
+        g().Imag399.FreqDetuning = det_hz
+        reson556 = float(c.Resonance556mj0Freq)
+        xcd = float(args.xcool[0]) * 1e6 if args.xcool else float(c.Imag399.Cool556.X.FreqDetuning)
+        xca = float(args.xcool[1]) if args.xcool else float(c.Imag399.Cool556.X.Amp)
+        hcd = float(args.hcool[0]) * 1e6 if args.hcool else float(c.Imag399.Cool556.h.FreqDetuning)
+        hca = float(args.hcool[1]) if args.hcool else float(c.Imag399.Cool556.h.Amp)
+        g().Imag399.Cool556.X.FreqDetuning = xcd
+        g().Imag399.Cool556.X.Amp = xca
+        g().Imag399.Cool556.h.FreqDetuning = hcd
+        g().Imag399.Cool556.h.Amp = hca
+        g().Pushout.Time = float(args.hold)                # 0 pushout = real 50 ms survival
+        # pushout proxy step (irrelevant at hold~0) -- keep it at the imaging condition, PID-servoed too.
+        g().Pushout.Blue.Amp1 = 1
+        g().Pushout.Blue.Amp2 = 1
+        g().Pushout.Blue.Freq = reson399 + det_hz
+        g().Pushout.Green.X.Freq = reson556 + xcd
+        g().Pushout.Green.X.Amp = xca
+        g().Pushout.Green.h.Freq = reson556 + hcd
+        g().Pushout.Green.h.Amp = hca
+        axis_desc = ("PIDset Img1=%s x Img2=%s (DDS amps=1) det=%.2fMHz hold=%.3fs "
+                     "cool X(%.2fMHz,%.2f) h(%.2fMHz,%.2f)" % (
+                         [round(v, 3) for v in p1], [round(v, 3) for v in p2], args.det, args.hold,
+                         xcd / 1e6, xca, hcd / 1e6, hca))
     elif args.mode == "cool":
         # 0-PUSHOUT cooling scan: sweep Imag399.Cool556.{beam}.{FreqDetuning, Amp} at the REAL 50 ms
         # image (hold ~0), amps + the OTHER beam's cooling FIXED. Survival is the real readout (low
@@ -190,10 +272,12 @@ def build(args):
         beam = args.beam
         dets = _colon(*args.cdet); dets_hz = [float(d) * 1e6 for d in dets]
         cam = [float(a) for a in _colon(*args.famp)]
-        # NEW 399-imaging scheme: DDS Amp1/Amp2 held at 1; the actual imaging power is set
-        # by the BlueMOT PID setpoints Img1PIDSet/Img2PIDSet (V). --img1/--img2 carry W here.
-        g().Imag399.Amp1 = 1
-        g().Imag399.Amp2 = 1
+        # NEW 399-imaging scheme: DDS Amp1/Amp2 nominally 1 (power via the PID setpoints
+        # Img1PIDSet/Img2PIDSet, --img1/--img2). With the servo RAILED (PD gain too low,
+        # 2026-07-16) the working light knob is post-servo DDS attenuation instead:
+        # --dds-amp1/--dds-amp2 pin the image-frame DDS amps (default 1 = old behavior).
+        g().Imag399.Amp1 = float(args.dds_amp1)
+        g().Imag399.Amp2 = float(args.dds_amp2)
         g().BlueMOT.Img1PIDSet = float(args.img1)
         g().BlueMOT.Img2PIDSet = float(args.img2)
         g().Imag399.FreqDetuning = float(args.det) * 1e6
@@ -269,29 +353,31 @@ def do_submit(args):
     g, axis_desc = build(args)
     nseq = g.nseq()
     lbl = "ImagingScan_%s_r%d" % (args.mode, args.round)
-    desc = scangroup_to_descriptor(g, "ImagingPushoutSurvivalSeq", opts={"rep": args.reps}, label=lbl)
+    desc = scangroup_to_descriptor(g, "ImagingPushoutSurvivalSeq", opts={"rep": args.reps}, label=lbl,
+                                   description=getattr(args, "desc", None) or "")
     did = submit_descriptor(URL, json.dumps(desc, ensure_ascii=False), lbl)
     target = start + args.reps * nseq
     print("submitted round %d (%s): id=%d nseq=%d reps=%d -> target=%d  start_seq=%d"
           % (args.round, args.mode, did, nseq, args.reps, target, start))
     print("  " + axis_desc)
 
+    # Resolve OUR job by queue id -> file_id (robust to other runs queued/running in between;
+    # the old newest-data-dir diff mis-attributes when the queue is shared).
     data_dir = None
-    t0 = time.time(); last = start
+    t0 = time.time()
     while time.time() - t0 < 120:
         time.sleep(5)
-        cur = _zmq_int("get_seq_num")
-        new = _data_dirs(root) - pre
-        if new and data_dir is None:
-            data_dir = sorted(new, key=os.path.getmtime)[-1]
-        if cur is not None and cur > last:
-            print("  ALIVE: seq_num %d -> %d (+%d) after %ds; data_dir=%s"
-                  % (last, cur, cur - last, int(time.time() - t0), data_dir))
-            if cur >= start + 2 and data_dir:
-                break
-            last = cur
+        where, ent = _queue_find(_queue_json(), did)
+        if where == "queued":
+            print("  QUEUED behind %d job(s) after %ds (other runs in the queue -- watch will wait)."
+                  % (ent.get("_pos", 0), int(time.time() - t0)))
+            break
+        if where in ("running", "history"):
+            data_dir = _job_data_dir(root, ent)
+            print("  %s after %ds; data_dir=%s" % (where.upper(), int(time.time() - t0), data_dir))
+            break
     else:
-        print("  WARNING: seq_num did not advance enough in 120 s (cur=%s)." % _zmq_int("get_seq_num"))
+        print("  WARNING: job id %d not visible in queue_list after 120 s." % did)
 
     st = {"round": args.round, "mode": args.mode, "start": start, "target": target, "nseq": nseq,
           "reps": args.reps, "data_dir": data_dir, "id": did, "axis_desc": axis_desc}
@@ -323,6 +409,7 @@ def analyze(data_dir, st):
     sid = os.path.basename(data_dir.rstrip("/\\"))
     cfg = json.load(open(os.path.join(data_dir, sid + ".json")))
     dims = extract_scan_dims(cfg)
+    single_point = not dims                       # 1x1 grid: no swept axis -> extract_scan_dims None
     P = np.asarray(cfg["Params"]).ravel().astype(int)
     with h5py.File(os.path.join(data_dir, sid + ".h5"), "r") as f:
         seq_ids = f["seq_ids"][:]
@@ -334,7 +421,11 @@ def analyze(data_dir, st):
     if L2 is not None:
         L2 = L2[:n]
     flat = P[seq_ids - 1] - 1
-    ncell = int(np.prod([d["size"] for d in dims]))
+    if single_point:
+        flat = np.zeros_like(flat)                # everything in one cell
+        ncell = 1
+    else:
+        ncell = int(np.prod([d["size"] for d in dims]))
 
     print("=" * 74)
     print("IMAGING round %d (%s)  scan_id=%s  n_shots=%d  cells=%d"
@@ -371,6 +462,17 @@ def analyze(data_dir, st):
     # two-image survival at the swept frames. (The detuning double-application + surv1 de-magnification
     # model was removed 2026-06-20 -- measure at 0 pushout instead of modelling an amplified hold.)
 
+    if single_point:
+        rec = rows_all[0]
+        if rec is None:
+            print("  (no shots)")
+        else:
+            print("  SINGLE POINT: load=%.4f  fidelity=%.4f  dprime=%.3f  dist=%.1f  survival=%.4f  (n=%d)"
+                  % (rec["load"], rec["fidelity"], rec["dprime"], rec["dist"], rec["survival"], rec["nshot"]))
+            print("  PICK_JSON " + json.dumps({"load": rec["load"], "fidelity": rec["fidelity"],
+                  "dprime": rec["dprime"], "survival": rec["survival"]}))
+        print("=" * 74)
+        return
     if len(dims) == 1:
         vals = np.asarray(dims[0]["values"], float)
         unit = 1e-6 if st["mode"] == "detuning" else 1.0
@@ -461,22 +563,38 @@ def _pick2d(recs, a1v, a2v, s0, s1):
 def do_watch(args):
     with open(_state_path(args.round)) as f:
         st = json.load(f)
-    target, start = st["target"], st["start"]
-    data_dir = st["data_dir"]
-    print("watching round %d: start=%d target=%d data_dir=%s" % (args.round, start, target, data_dir))
-    t0 = time.time(); last, last_change = start, time.time()
+    data_dir = st.get("data_dir")
+    did = st.get("id")
+    total = st["target"] - st["start"]          # this job's own shot count (reps * nseq)
+    root = _data_root()
+    print("watching round %d: job id=%s total=%d data_dir=%s" % (args.round, did, total, data_dir))
+    t0 = time.time(); last_prog, last_change = -1, time.time()
     while True:
-        cur = _zmq_int("get_seq_num"); el = int(time.time() - t0)
-        if cur is None:
-            print("  [%ds] get_seq_num TIMEOUT" % el)
+        el = int(time.time() - t0)
+        where, ent = _queue_find(_queue_json(), did)
+        if where is None:
+            print("  [%ds] job %s not in queue_list (backend restarted?)" % (el, did))
+        elif where == "queued":
+            last_change = time.time()           # no stall clock while other runs go first
+            print("  [%ds] QUEUED (position %d) -- other runs ahead" % (el, ent.get("_pos", 0)))
         else:
-            if cur != last:
-                last, last_change = cur, time.time()
-            done = cur - start
-            print("  [%ds] seq_num=%d  progress=%d/%d (%.0f%%)"
-                  % (el, cur, done, target - start, 100.0 * done / max(target - start, 1)))
-            if cur >= target:
-                print("  COMPLETE"); break
+            if data_dir is None:
+                data_dir = _job_data_dir(root, ent)
+                st["data_dir"] = data_dir
+                with open(_state_path(args.round), "w") as f:
+                    json.dump(st, f, indent=2)
+            if where == "history":
+                print("  [%ds] FINISHED state=%s status=%s (%d shots)"
+                      % (el, ent.get("state"), ent.get("status"), ent.get("seq_num") or -1))
+                break
+            prog = ent.get("seq_num")           # running: per-job shot count if exposed
+            if prog is not None:
+                if prog != last_prog:
+                    last_prog, last_change = prog, time.time()
+                print("  [%ds] RUNNING  progress=%d/%d (%.0f%%)"
+                      % (el, prog, total, 100.0 * prog / max(total, 1)))
+            else:
+                print("  [%ds] RUNNING  (no per-job progress field)" % el)
             if time.time() - last_change > 240:
                 print("  STALL 240 s; analyzing partial."); break
         if time.time() - t0 > args.timeout:
@@ -490,7 +608,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("phase", choices=["submit", "watch"])
     ap.add_argument("--round", type=int, required=True)
-    ap.add_argument("--mode", choices=["detuning", "amps", "ratio", "pushout", "cool"], default="detuning")
+    ap.add_argument("--mode", choices=["detuning", "amps", "ratio", "pushout", "cool", "pidset"], default="detuning")
     ap.add_argument("--beam", choices=["X", "h"], default="X", help="cool mode: which 556 beam to sweep")
     ap.add_argument("--cdet", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=(0.12, 0.02, 0.24),
                     help="cool mode: Imag399.Cool556.{beam}.FreqDetuning colon in MHz "
@@ -523,16 +641,29 @@ if __name__ == "__main__":
                     help="amps mode: Imag399.Amp2 colon "
                          "(2x-finer default 2026-06-24: step 0.015; Amp2 weak lever, narrow span around 0.12)")
     ap.add_argument("--det", type=float, default=-5.0, help="amps mode: fixed Imag399.FreqDetuning (MHz)")
+    ap.add_argument("--pid1", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=(0.30, 0.10, 0.90),
+                    help="pidset mode: BlueMOT.Img1PIDSet colon (V); default = the tri_3013 span 0.30..0.90 (7 pts)")
+    ap.add_argument("--pid2", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=(0.12, 0.038, 0.35),
+                    help="pidset mode: BlueMOT.Img2PIDSet colon (V); default = the tri_3013 span 0.12..0.35 (7 pts)")
     ap.add_argument("--xcool", type=float, nargs=2, metavar=("DET_MHZ", "AMP"), default=None,
                     help="amps mode: override Imag399.Cool556.X (det MHz, amp) via g() (default: pattern overlay)")
     ap.add_argument("--hcool", type=float, nargs=2, metavar=("DET_MHZ", "AMP"), default=None,
                     help="amps mode: override Imag399.Cool556.h (det MHz, amp) via g() (default: pattern overlay)")
     ap.add_argument("--reps", type=int, default=6)
+    ap.add_argument("--fix-pid", type=float, nargs=2, metavar=("PID1", "PID2"), default=None,
+                    help="pin BlueMOT.Img1/Img2PIDSet via g() (beats ByPattern) -- use 0.5 0.5 to "
+                         "mirror the tri_3013 rearrangement context on another array")
     ap.add_argument("--defocus", type=float, default=-5.0)
     ap.add_argument("--loading-phase", type=str, default=None,
                     help="override LOADING_PHASE (e.g. phase/33x33_feedback1.pt) to measure another version")
     ap.add_argument("--pattern", type=str, default=None,
                     help="override PATTERN (ByPattern overlay key, e.g. 33x33_feedback1)")
+    ap.add_argument("--dds-amp1", type=float, default=1.0,
+                    help="cool mode: pin image-frame DDS Imag399.Amp1 (post-servo light-down; default 1)")
+    ap.add_argument("--dds-amp2", type=float, default=1.0,
+                    help="cool mode: pin image-frame DDS Imag399.Amp2 (post-servo light-down; default 1)")
+    ap.add_argument("--desc", type=str, default=None,
+                    help="run description (purpose/context) stamped into the scan sidecar -- always pass for a campaign")
     ap.add_argument("--timeout", type=int, default=1800)
     a = ap.parse_args()
     if a.phase == "submit":
