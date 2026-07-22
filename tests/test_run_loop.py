@@ -1,4 +1,4 @@
-"""Phase-5 runner: the scenario-3 run-loop HOST orchestration (YbExptCtrl/runner.py).
+"""Phase-5 run loop: the scenario-3 run-loop HOST orchestration (YbExptCtrl/run_loop.py).
 
 NO-HARDWARE: every device/engine/socket dependency is injected, so URL resolution, the
 single-backend guard, the descriptor->job dispatch, the consume loop, the camera-command
@@ -13,7 +13,10 @@ import time
 
 import pytest
 
-import runner
+import camera_runtime
+import engine_run
+import run_loop
+import slm_runtime
 
 pytestmark = pytest.mark.no_hardware
 
@@ -30,16 +33,16 @@ def _isolate_data_prefix(tmp_path, monkeypatch):
 class TestResolveUrl:
     def test_argv_wins(self, monkeypatch):
         monkeypatch.setenv("NACS_RUNNER_URL", "tcp://env:1")
-        assert runner.resolve_url(["tcp://argv:9"]) == "tcp://argv:9"
+        assert run_loop.resolve_url(["tcp://argv:9"]) == "tcp://argv:9"
 
     def test_empty_argv_falls_back_to_env(self, monkeypatch):
         monkeypatch.setenv("NACS_RUNNER_URL", "tcp://env:1")
-        assert runner.resolve_url([]) == "tcp://env:1"
-        assert runner.resolve_url(["  "]) == "tcp://env:1"   # blank argv ignored
+        assert run_loop.resolve_url([]) == "tcp://env:1"
+        assert run_loop.resolve_url(["  "]) == "tcp://env:1"   # blank argv ignored
 
     def test_no_argv_no_env_uses_default(self, monkeypatch):
         monkeypatch.delenv("NACS_RUNNER_URL", raising=False)
-        assert runner.resolve_url([]) == runner.DEFAULT_URL
+        assert run_loop.resolve_url([]) == run_loop.DEFAULT_URL
 
 
 # --------------------------------------------------------------------------- #
@@ -48,10 +51,10 @@ class TestResolveUrl:
 class TestSingleBackendGuard:
     def test_raises_when_a_backend_answers(self):
         with pytest.raises(RuntimeError):
-            runner.assert_single_backend("tcp://x:1", ping=lambda url: True)
+            run_loop.assert_single_backend("tcp://x:1", ping=lambda url: True)
 
     def test_ok_when_nothing_answers(self):
-        runner.assert_single_backend("tcp://x:1", ping=lambda url: False)  # no raise
+        run_loop.assert_single_backend("tcp://x:1", ping=lambda url: False)  # no raise
 
 
 # --------------------------------------------------------------------------- #
@@ -146,7 +149,7 @@ class TestHandleDescriptorPop:
             {"id": 1, "descriptor": '{"seq":"A"}'},
             {"id": 2, "descriptor": b'{"seq":"B"}'},   # bytes pass through unchanged
         ])
-        n = runner.handle_descriptor_pop(srv)
+        n = run_loop.handle_descriptor_pop(srv)
         assert n == 2
         # JSON string is utf-8 encoded; bytes are forwarded as-is. The job REUSES
         # the descriptor's id (id-reuse), so submitted/linked ids match the desc ids.
@@ -156,7 +159,7 @@ class TestHandleDescriptorPop:
 
     def test_empty_queue_returns_zero(self):
         srv = FakeQueueServer()
-        assert runner.handle_descriptor_pop(srv) == 0
+        assert run_loop.handle_descriptor_pop(srv) == 0
         assert srv.submitted == []
 
     def test_attaches_queue_summary_to_built_job(self):
@@ -165,7 +168,7 @@ class TestHandleDescriptorPop:
                 '"params":{"GreenMOT.BiasCoilCurrent.Y":{"scan":1,"values":[0.24,0.28,0.32]}},'
                 '"runp":{"NumPerGroup":500,"NumImages":1}}')
         srv = FakeQueueServer(descriptors=[{"id": 1, "descriptor": desc}])
-        assert runner.handle_descriptor_pop(srv) == 1
+        assert run_loop.handle_descriptor_pop(srv) == 1
         s = srv.submitted_summaries[0]
         assert s is not None
         assert s["scan_name"] == "LACScan"
@@ -178,7 +181,7 @@ class TestHandleDescriptorPop:
             {"id": 8, "descriptor": '{"seq":"Y"}'},
         ])
         srv.submit_should_raise = True
-        n = runner.handle_descriptor_pop(srv)
+        n = run_loop.handle_descriptor_pop(srv)
         assert n == 0
         assert [d[0] for d in srv.desc_finished] == [7, 8]   # both reported, loop survived
         assert all(d[1] == "error" for d in srv.desc_finished)
@@ -186,7 +189,7 @@ class TestHandleDescriptorPop:
     def test_cap_bounds_one_call(self):
         srv = FakeQueueServer(descriptors=[
             {"id": i, "descriptor": "{}"} for i in range(5)])
-        assert runner.handle_descriptor_pop(srv, max_per_iter=2) == 2
+        assert run_loop.handle_descriptor_pop(srv, max_per_iter=2) == 2
         assert len(srv.submitted) == 2                        # only 2 drained this call
 
     def test_pop_failure_aborts_call(self):
@@ -196,7 +199,7 @@ class TestHandleDescriptorPop:
             raise RuntimeError("pop boom")
 
         srv.pop_next_descriptor = boom
-        assert runner.handle_descriptor_pop(srv) == 0         # graceful, no raise
+        assert run_loop.handle_descriptor_pop(srv) == 0         # graceful, no raise
 
 
 # --------------------------------------------------------------------------- #
@@ -211,7 +214,7 @@ class TestConsumeLoop:
             calls.append((payload, job_id, kw))
             return type("R", (), {"status": "ok"})()
 
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv,
             should_stop=_stop_after(1),
             run_job_fn=fake_run_job,
@@ -225,7 +228,7 @@ class TestConsumeLoop:
         srv = FakeQueueServer()
         steps = []
         idle = type("Idle", (), {"step": lambda self, sleep: steps.append("step")})()
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             idle=idle, sleep=lambda dt: None)
         assert steps == ["step"]
@@ -234,7 +237,7 @@ class TestConsumeLoop:
     def test_camera_pump_invoked_each_iter(self):
         srv = FakeQueueServer()
         seen = []
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             handle_camera=lambda server, cam: seen.append(cam), camera="CAM",
             sleep=lambda dt: None)
@@ -243,7 +246,7 @@ class TestConsumeLoop:
     def test_dispatch_pop_called_before_job_pop(self):
         srv = FakeQueueServer(jobs=[{"id": 1, "payload": b"{}"}])
         order = []
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1),
             dispatch_pop=lambda s: order.append("disp"),
             run_job_fn=lambda *a, **k: order.append("run") or None,
@@ -259,7 +262,7 @@ class TestConsumeLoop:
         srv.pop_next_job = boom
         slept = []
         # stop after the first failed pop; the loop must sleep and not raise.
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             sleep=lambda dt: slept.append(dt))
         assert slept == [1.0]
@@ -268,7 +271,7 @@ class TestConsumeLoop:
         # End-of-job hook: consume_loop calls server.mark_idle_if_queue_empty() once the job
         # returns, so a finite scan's stuck "running" status returns to idle.
         srv = FakeQueueServer(jobs=[{"id": 5, "payload": b"{}"}])
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1),
             run_job_fn=lambda *a, **k: type("R", (), {"status": "ok"})(),
             dispatch_pop=lambda s: 0, sleep=lambda dt: None)
@@ -279,7 +282,7 @@ class TestConsumeLoop:
         # (a never-run backend is already Init), so mark_idle is NOT called here.
         srv = FakeQueueServer()
         idle = type("Idle", (), {"step": lambda self, sleep: None})()
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             idle=idle, sleep=lambda dt: None)
         assert srv.mark_idle_calls == 0
@@ -289,7 +292,7 @@ class TestConsumeLoop:
         srv = FakeQueueServer(jobs=[{"id": 9, "payload": b"{}"}])
         srv.mark_idle_if_queue_empty = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
         ran = []
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1),
             run_job_fn=lambda *a, **k: ran.append(1) or type("R", (), {"status": "ok"})(),
             dispatch_pop=lambda s: 0, sleep=lambda dt: None)
@@ -326,7 +329,7 @@ class TestConsumeLoopNiRelease:
         from devices.nidaq import NiDAQRunner
         srv = FakeQueueServer()
         srv.dummy_mode = lambda: "off"
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             sleep=lambda dt: None)
         assert _ni_session.closed and not NiDAQRunner.has_session()
@@ -334,7 +337,7 @@ class TestConsumeLoopNiRelease:
     def test_idle_without_dummy_mode_attr_releases(self, _ni_session):
         # A server without dummy_mode (coarse fakes) counts as dummy-off -> release.
         from devices.nidaq import NiDAQRunner
-        runner.consume_loop(
+        run_loop.consume_loop(
             FakeQueueServer(), should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             sleep=lambda dt: None)
         assert not NiDAQRunner.has_session()
@@ -343,7 +346,7 @@ class TestConsumeLoopNiRelease:
         from devices.nidaq import NiDAQRunner
         srv = FakeQueueServer()
         srv.dummy_mode = lambda: "last"
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             sleep=lambda dt: None)
         assert NiDAQRunner.has_session() and not _ni_session.closed
@@ -354,7 +357,7 @@ class TestConsumeLoopNiRelease:
         from devices.nidaq import NiDAQRunner
         srv = FakeQueueServer(jobs=[{"id": 1, "payload": b"{}"}])
         srv.dummy_mode = lambda: "off"
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             run_job_fn=lambda *a, **k: type("R", (), {"status": "ok"})(),
             sleep=lambda dt: None)
@@ -369,7 +372,7 @@ class TestConsumeLoopBackground:
         # No foreground work -> the background job runs via run_job_fn, then requeue_background.
         srv = FakeQueueServer(bg_jobs=[{"id": 7, "payload": b"{}", "seqName": "Cal"}])
         calls = []
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1),
             run_job_fn=lambda s, p, job_id=None, **k:
                 calls.append((p, job_id)) or type("R", (), {"status": "ok"})(),
@@ -384,7 +387,7 @@ class TestConsumeLoopBackground:
         # has_foreground_work() True -> background lane is skipped; idle keep-alive runs instead.
         srv = FakeQueueServer(bg_jobs=[{"id": 7, "payload": b"{}"}], foreground_work=True)
         steps = []
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             dispatch_bg=lambda s: 0,
             idle=type("I", (), {"step": lambda self, sl: steps.append("step")})(),
@@ -397,7 +400,7 @@ class TestConsumeLoopBackground:
         # Global toggle off -> background lane skipped even with no foreground work.
         srv = FakeQueueServer(bg_jobs=[{"id": 7, "payload": b"{}"}], background_enabled=False)
         steps = []
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             dispatch_bg=lambda s: 0,
             idle=type("I", (), {"step": lambda self, sl: steps.append("step")})(),
@@ -410,7 +413,7 @@ class TestConsumeLoopBackground:
         srv = FakeQueueServer(jobs=[{"id": 1, "payload": b"fg"}],
                               bg_jobs=[{"id": 7, "payload": b"bg"}])
         seen = []
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1),
             run_job_fn=lambda s, p, job_id=None, **k:
                 seen.append((p, job_id)) or type("R", (), {"status": "ok"})(),
@@ -421,7 +424,7 @@ class TestConsumeLoopBackground:
     def test_yielded_background_is_requeued(self):
         # A background run that yields (foreground appeared mid-run) is re-queued, not discarded.
         srv = FakeQueueServer(bg_jobs=[{"id": 7, "payload": b"{}", "seqName": "Cal"}])
-        runner.consume_loop(
+        run_loop.consume_loop(
             srv, should_stop=_stop_after(1),
             run_job_fn=lambda *a, **k: type("R", (), {"status": "yielded"})(),
             dispatch_pop=lambda s: 0, dispatch_bg=lambda s: 0, sleep=lambda dt: None)
@@ -434,7 +437,7 @@ class TestConsumeLoopBackground:
             def pop_next_job(self):
                 return None
         steps = []
-        runner.consume_loop(
+        run_loop.consume_loop(
             Coarse(), should_stop=_stop_after(1), dispatch_pop=lambda s: 0,
             idle=type("I", (), {"step": lambda self, sl: steps.append("step")})(),
             sleep=lambda dt: None)
@@ -480,41 +483,41 @@ class FakeCamera:
 class TestHandleCameraCmd:
     def test_no_cmd_no_result(self):
         srv = FakeCameraServer(None)
-        runner.handle_camera_cmd(srv, None)
+        camera_runtime.handle_camera_cmd(srv, None)
         assert srv.results == []
 
     def test_close_without_camera_acks(self):
         srv = FakeCameraServer({"cmd": "close"})
-        runner.handle_camera_cmd(srv, None)
+        camera_runtime.handle_camera_cmd(srv, None)
         assert srv.results == [(False, [0, 0, 0, 0], "", None)]
 
     def test_close_releases_camera(self):
         srv = FakeCameraServer({"cmd": "close"})
         cam = FakeCamera()
-        runner.handle_camera_cmd(srv, cam)
+        camera_runtime.handle_camera_cmd(srv, cam)
         assert cam.closed is True
         assert srv.results == [(False, [0, 0, 0, 0], "", None)]
 
     def test_init_without_camera_reports_unavailable(self):
         srv = FakeCameraServer({"cmd": "init", "roi": [0, 0, 10, 10]})
-        runner.handle_camera_cmd(srv, None)
+        camera_runtime.handle_camera_cmd(srv, None)
         connected, roi, err, _ = srv.results[0]
         assert connected is False and roi == [0, 0, 10, 10] and "unavailable" in err
 
     def test_init_with_camera_reports_actuals(self):
         srv = FakeCameraServer({"cmd": "init", "roi": [0, 0, 10, 10], "exposure_time": 0.1})
-        runner.handle_camera_cmd(srv, FakeCamera())
+        camera_runtime.handle_camera_cmd(srv, FakeCamera())
         assert srv.results == [(True, [1, 2, 3, 4], "", 0.05)]
 
     def test_init_failure_reports_current_roi(self):
         srv = FakeCameraServer({"cmd": "init", "roi": [0, 0, 10, 10]})
-        runner.handle_camera_cmd(srv, FakeCamera(raise_on="init"))
+        camera_runtime.handle_camera_cmd(srv, FakeCamera(raise_on="init"))
         connected, roi, err, _ = srv.results[0]
         assert connected is False and roi == [9, 9, 9, 9] and "init fail" in err
 
     def test_apply_settings_with_camera(self):
         srv = FakeCameraServer({"cmd": "apply_settings", "roi": [0, 0, 1, 1]})
-        runner.handle_camera_cmd(srv, FakeCamera())
+        camera_runtime.handle_camera_cmd(srv, FakeCamera())
         assert srv.results == [(True, [5, 6, 7, 8], "", 0.02)]
 
 
@@ -628,7 +631,7 @@ class TestMakeEngineRun:
                             lambda: reset_calls.__setitem__("n", reset_calls["n"] + 1))
 
         cam, srv, cfg = _ArmCam(), _StoreServer(), _SeqCfg(seq_id=4)
-        run = runner.make_engine_run(srv, cam, cfg)
+        run = engine_run.make_engine_run(srv, cam, cfg)
         res = run(lambda s: s, _NumImagesSG(2), control=_Ctrl(scan_id=555), rep=1)
 
         assert res["status"] == "ok"
@@ -649,7 +652,7 @@ class TestMakeEngineRun:
                             lambda *a, **k: {"status": "ok", "nseq": 1})
         monkeypatch.setattr(seq_manager, "new_run", lambda: None)
         cam, srv = _ArmCam(), _StoreServer()
-        run = runner.make_engine_run(srv, cam, _SeqCfg(2))
+        run = engine_run.make_engine_run(srv, cam, _SeqCfg(2))
         run(lambda s: s, _NumImagesSG(0), control=_Ctrl(1))
         assert cam.started is False and srv.stored == []   # NumImages 0 -> no arm/capture
 
@@ -669,7 +672,7 @@ class TestMakeEngineRun:
             return "captured.json"
 
         monkeypatch.setattr(scan_prep, "write_scan_config", fake_write)
-        run = runner.make_engine_run(_StoreServer(), None, _SeqCfg(seq_id=1))
+        run = engine_run.make_engine_run(_StoreServer(), None, _SeqCfg(seq_id=1))
         order = [1, 2, 3, 1, 2, 3]
         run(lambda s: s, _NumImagesSG(0), control=_Ctrl(1),
             indices=order, rep=1, is_random=False)
@@ -682,7 +685,7 @@ class TestMakeEngineRun:
                             lambda *a, **k: {"status": "ok"})
         monkeypatch.setattr(seq_manager, "new_run", lambda: None)
         srv = _StoreServer()
-        run = runner.make_engine_run(srv, None, _SeqCfg(2))
+        run = engine_run.make_engine_run(srv, None, _SeqCfg(2))
         run(lambda s: s, _NumImagesSG(1), control=_Ctrl(1))
         assert srv.stored == []
 
@@ -703,7 +706,7 @@ class TestScanPrep:
         # _write_scan_prep pulls frameSize from the camera ROI [x,y,w,h] -> (w,h).
         import scan_prep
         cam = _ArmCam()                                  # current_roi -> [0,0,256,256]
-        runner._write_scan_prep(20260603001055, _NumImagesSG(1), cam, 1, log=lambda m: None)
+        engine_run._write_scan_prep(20260603001055, _NumImagesSG(1), cam, 1, log=lambda m: None)
         p = scan_prep.scan_config_path(20260603001055)   # uses YB_DATA_PREFIX (tmp via fixture)
         import json
         assert json.loads(open(p).read())["frameSize"] == [256, 256]
@@ -711,12 +714,12 @@ class TestScanPrep:
 
 class TestScanIdAndNumImages:
     def test_new_scan_id_is_14_digits(self):
-        sid = runner._new_scan_id()
+        sid = engine_run._new_scan_id()
         assert isinstance(sid, int) and len(str(sid)) == 14     # YYYYMMDDHHMMSS
 
     def test_num_images(self):
-        assert runner._num_images(_NumImagesSG(3)) == 3
-        assert runner._num_images(object()) == 0                # bad scangroup -> 0
+        assert engine_run._num_images(_NumImagesSG(3)) == 3
+        assert engine_run._num_images(object()) == 0                # bad scangroup -> 0
 
 
 class TestIdleResilience:
@@ -731,7 +734,7 @@ class TestIdleResilience:
             def dummy_mode(self):
                 return "default"
 
-        sched = runner.make_idle(_Srv(), dummy_seq="DUM", run_real=boom,
+        sched = run_loop.make_idle(_Srv(), dummy_seq="DUM", run_real=boom,
                                  sleep=lambda dt: slept.append(dt), log=logs.append)
         sched.step(sleep=lambda dt: None)        # default -> run_dummy -> boom (must be caught)
         assert any("dummy run failed" in m for m in logs)
@@ -748,11 +751,11 @@ class TestForceDummyOff:
                 setattr(self, "_ExptServer__dummy_lock", threading.Lock())
 
         srv = _Srv()
-        runner._force_dummy_off(srv, log=lambda m: None)
+        run_loop._force_dummy_off(srv, log=lambda m: None)
         assert getattr(srv, "_ExptServer__dummy_mode") == "off"
 
     def test_tolerates_missing_attr(self):
-        runner._force_dummy_off(object(), log=lambda m: None)   # no raise
+        run_loop._force_dummy_off(object(), log=lambda m: None)   # no raise
 
 
 def test_open_camera_none_when_wrapper_absent(monkeypatch):
@@ -764,7 +767,7 @@ def test_open_camera_none_when_wrapper_absent(monkeypatch):
     monkeypatch.setattr(orca_mod, "open_orca_from_config",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no cam")))
     logs = []
-    assert runner.open_camera(log=logs.append, attempts=2, retry_delay=0) is None
+    assert camera_runtime.open_camera(log=logs.append, attempts=2, retry_delay=0) is None
     assert any("camera" in m.lower() for m in logs)
 
 
@@ -780,7 +783,7 @@ def test_open_camera_retries_then_gives_up(monkeypatch):
 
     monkeypatch.setattr(orca_mod, "open_orca_from_config", boom)
     logs = []
-    assert runner.open_camera(log=logs.append, attempts=3, retry_delay=0) is None
+    assert camera_runtime.open_camera(log=logs.append, attempts=3, retry_delay=0) is None
     assert calls["n"] == 3                                    # all attempts used
     assert any("attempt 1/3" in m for m in logs)             # retry logged
 
@@ -799,7 +802,7 @@ def test_open_camera_succeeds_after_transient(monkeypatch):
         return sentinel
 
     monkeypatch.setattr(orca_mod, "open_orca_from_config", flaky)
-    assert runner.open_camera(attempts=3, retry_delay=0) is sentinel
+    assert camera_runtime.open_camera(attempts=3, retry_delay=0) is sentinel
     assert calls["n"] == 2                                    # stopped retrying on success
 
 
@@ -810,13 +813,13 @@ def test_teardown_closes_camera_and_stops_worker():
     order = []
     cam = type("C", (), {"close": lambda self: order.append("close")})()
     srv = type("S", (), {"stop_worker": lambda self: order.append("stop")})()
-    runner._teardown(srv, cam, log=lambda m: None)
+    run_loop._teardown(srv, cam, log=lambda m: None)
     assert order == ["close", "stop"]                         # camera first, then worker
 
 def test_teardown_tolerates_no_camera():
     order = []
     srv = type("S", (), {"stop_worker": lambda self: order.append("stop")})()
-    runner._teardown(srv, None, log=lambda m: None)
+    run_loop._teardown(srv, None, log=lambda m: None)
     assert order == ["stop"]
 
 
@@ -827,7 +830,7 @@ def test_install_signal_handlers_registers_sigint():
     old = signal.getsignal(signal.SIGINT)
     flag = {"hit": False}
     try:
-        runner._install_signal_handlers(lambda *a: flag.__setitem__("hit", True))
+        run_loop._install_signal_handlers(lambda *a: flag.__setitem__("hit", True))
         h = signal.getsignal(signal.SIGINT)
         assert callable(h)
         h(signal.SIGINT, None)                                # invoking it sets the stop flag
@@ -843,7 +846,7 @@ def test_launch_shim_importable_and_delegates(monkeypatch):
     import launcher.run_loop.runner as shim
 
     shim._bootstrap_path()                                    # idempotent; dirs now on path
-    import runner as host
+    import run_loop as host
     called = {}
 
     def fake_main(argv=None):
@@ -877,40 +880,40 @@ def _stop_after(n):
 # --------------------------------------------------------------------------- #
 class TestParentWatchdog:
     def test_pid_alive_self_true(self):
-        assert runner._pid_alive(os.getpid()) is True
+        assert run_loop._pid_alive(os.getpid()) is True
 
     def test_pid_alive_nonpositive_true(self):
         # 0 / negative => "no parent to watch" => treated as alive (no-op guard).
-        assert runner._pid_alive(0) is True
-        assert runner._pid_alive(-1) is True
+        assert run_loop._pid_alive(0) is True
+        assert run_loop._pid_alive(-1) is True
 
     def test_pid_alive_dead_pid_false(self):
         # A very high pid is almost certainly not running.
-        assert runner._pid_alive(2_000_000_000) is False
+        assert run_loop._pid_alive(2_000_000_000) is False
 
     def test_watchdog_noop_without_env(self, monkeypatch):
         monkeypatch.delenv("YB_PARENT_PID", raising=False)
-        assert runner._start_parent_watchdog(lambda: None) is None
+        assert run_loop._start_parent_watchdog(lambda: None) is None
 
     def test_watchdog_noop_bad_env(self, monkeypatch):
         monkeypatch.setenv("YB_PARENT_PID", "not-an-int")
-        assert runner._start_parent_watchdog(lambda: None) is None
+        assert run_loop._start_parent_watchdog(lambda: None) is None
 
     def test_watchdog_trips_stop_when_parent_dies(self, monkeypatch):
         import threading
         monkeypatch.setenv("YB_PARENT_PID", "424242")
         # Force the parent to read as dead immediately.
-        monkeypatch.setattr(runner, "_pid_alive", lambda pid: False)
+        monkeypatch.setattr(run_loop, "_pid_alive", lambda pid: False)
         fired = threading.Event()
-        t = runner._start_parent_watchdog(fired.set, poll_interval_s=0.01)
+        t = run_loop._start_parent_watchdog(fired.set, poll_interval_s=0.01)
         assert t is not None
         assert fired.wait(2.0), "watchdog did not trip stop when parent died"
 
     def test_watchdog_quiet_while_parent_alive(self, monkeypatch):
         monkeypatch.setenv("YB_PARENT_PID", str(os.getpid()))
-        monkeypatch.setattr(runner, "_pid_alive", lambda pid: True)
+        monkeypatch.setattr(run_loop, "_pid_alive", lambda pid: True)
         calls = {"n": 0}
-        runner._start_parent_watchdog(lambda: calls.__setitem__("n", calls["n"] + 1),
+        run_loop._start_parent_watchdog(lambda: calls.__setitem__("n", calls["n"] + 1),
                                       poll_interval_s=0.01)
         time.sleep(0.1)
         assert calls["n"] == 0
@@ -935,13 +938,13 @@ class TestNRounds:
         g = self._group()
         g().rearrange_kwargs.extras.n_rounds = 1
         g.runp().NumImages = 3
-        assert runner._n_rounds(g) == 1
+        assert slm_runtime._n_rounds(g) == 1
 
     def test_fallback_is_numimages_minus_one(self):
         g = self._group()
         g.runp().NumImages = 3
-        assert runner._n_rounds(g) == 2
+        assert slm_runtime._n_rounds(g) == 2
 
     def test_defaults_to_one(self):
         g = self._group()
-        assert runner._n_rounds(g) == 1
+        assert slm_runtime._n_rounds(g) == 1

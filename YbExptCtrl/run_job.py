@@ -1,4 +1,4 @@
-"""sequence_runner.py -- the pyctrl scenario-3 run-loop CONSUMER orchestration.
+"""run_job.py -- the pyctrl scenario-3 run-loop CONSUMER orchestration.
 
 Ports the NO-HARDWARE-testable core of ``matlab_new/YbExptCtrl/SequenceRunner.m``:
   * :func:`run_job`     -- the per-job pipeline (``runJob``), simplified for scenario 3.

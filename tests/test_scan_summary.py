@@ -74,7 +74,7 @@ class TestDescriptorSummary:
 
 class TestDescriptorSummaryRep:
     """An explicit ``rep`` opt is the scan's deliberate pass-count override and MUST drive
-    total_per_group (= nseqs * rep), exactly as sequence_runner._build_scan_order runs it --
+    total_per_group (= nseqs * rep), exactly as run_job._build_scan_order runs it --
     NOT the NumPerGroup-derived StackNum (the bug that made the dashboard 'max' way too big)."""
 
     def _summary(self, **opts):

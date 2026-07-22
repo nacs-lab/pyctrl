@@ -269,17 +269,17 @@ def test_cleanup_disconnects_and_clears_state():
 # --------------------------------------------------------------------------- #
 def test_runp_awgs_and_awg_dot_name_convention():
     from scan_group import ScanGroup
-    from runner import _awg_names
+    from awg_runtime import awg_names
 
     g = ScanGroup()
     # The confirmed convention: g().AWG.<name>.<field>.scan(...) + runp().AWGs.
     g().AWG.AWG556.carrier_freq_MHz.scan(1, [130.0, 131.0, 132.0])
     g.runp().AWGs = ["AWG556"]
 
-    # The runner reads which AWGs to activate from runp().AWGs.
-    assert _awg_names(g) == ["AWG556"]
+    # The run loop reads which AWGs to activate from runp().AWGs.
+    assert awg_names(g) == ["AWG556"]
     # A scan WITHOUT AWGs declared -> [] (the AWG path is skipped, zero overhead).
-    assert _awg_names(ScanGroup()) == []
+    assert awg_names(ScanGroup()) == []
 
     # Per-point AWG params land under AWG.AWG556 in getseq() (what the per-shot pre_cb reads).
     assert g.getseq(1)["AWG"]["AWG556"]["carrier_freq_MHz"] == 130.0

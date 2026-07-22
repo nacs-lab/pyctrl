@@ -5,7 +5,7 @@ Covers, with on-disk fakes (no SLM server, no monitor):
                           resolve_pattern_calibration (grid + per-pattern thresholds).
   * scan_prep          -- resolve_calibration prefers the per-pattern registry, falls back to the
                           day folder; write_scan_config emits imagePatternsJson + per-pattern calib.
-  * runner             -- _loading_patterns_json (port of ybLoadingPatternsJson).
+  * slm_runtime        -- _loading_patterns_json (port of ybLoadingPatternsJson).
   * rearrange_runtime  -- the mid-shot detector uses per-pattern grid+thresholds.
 """
 
@@ -395,7 +395,7 @@ def test_write_scan_config_emits_imagepatternsjson(tmp_path, monkeypatch):
 
 
 # =========================================================================== #
-# runner: _loading_patterns_json (port of ybLoadingPatternsJson)
+# slm_runtime: _loading_patterns_json (port of ybLoadingPatternsJson)
 # =========================================================================== #
 def test_loading_patterns_json_from_warmup_kwargs():
     import sys
@@ -404,7 +404,7 @@ def test_loading_patterns_json_from_warmup_kwargs():
         p = os.path.join(root, d)
         if p not in sys.path:
             sys.path.insert(0, p)
-    import runner
+    import slm_runtime
     from scan_group import ScanGroup
 
     g = ScanGroup()
@@ -413,7 +413,7 @@ def test_loading_patterns_json_from_warmup_kwargs():
     rp.warmup_kwargs.final_phase = "phase/3270_z4eq4.pt"
     rp.warmup_kwargs.extras.final_phase_zernike = [0, 0, 0, 0, -4]
 
-    items = runner._loading_patterns_json(rp, num_images=2)
+    items = slm_runtime._loading_patterns_json(rp, num_images=2)
     assert items[0] == {"name": "33x33_uniform",
                         "base_phase_path": "phase/33x33_uniform.pt",
                         "order": "col", "legacy_zerniked": False}
@@ -431,7 +431,7 @@ def test_loading_patterns_json_from_loading_phase():
         p = os.path.join(root, d)
         if p not in sys.path:
             sys.path.insert(0, p)
-    import runner
+    import slm_runtime
     from scan_group import ScanGroup
 
     g = ScanGroup()
@@ -439,7 +439,7 @@ def test_loading_patterns_json_from_loading_phase():
     rp.loading_phase = "phase/47x47_uniform.pt"
     rp.loading_defocus = -5    # write-only; extraction is defocus-independent
 
-    items = runner._loading_patterns_json(rp, num_images=1)
+    items = slm_runtime._loading_patterns_json(rp, num_images=1)
     assert items == [{"name": "47x47_uniform",
                       "base_phase_path": "phase/47x47_uniform.pt",
                       "order": "col", "legacy_zerniked": False}]
@@ -452,7 +452,7 @@ def test_loading_patterns_json_none_without_pattern():
         p = os.path.join(root, d)
         if p not in sys.path:
             sys.path.insert(0, p)
-    import runner
+    import slm_runtime
     from scan_group import ScanGroup
     g = ScanGroup()
-    assert runner._loading_patterns_json(g.runp(), num_images=1) is None
+    assert slm_runtime._loading_patterns_json(g.runp(), num_images=1) is None

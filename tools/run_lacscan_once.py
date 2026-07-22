@@ -66,14 +66,14 @@ def main(roi=(1000, 100, 2100, 2100), exposure=0.050004):
     # ExposureTime), so the captured frame covers the tweezer array (atoms), not background.
     _bootstrap()
     import numpy as np
-    import runner
+    import engine_run
     from seq_config import SeqConfig
     from devices.orca import OrcaCamera
     from control_channel import ControlChannel
     from ExptServer import ExptServer
     from TweezerLoadingSeq import TweezerLoadingSeq
 
-    runner.load_configs(log=lambda m: print("[cfg]", m))
+    engine_run.load_configs(log=lambda m: print("[cfg]", m))
 
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -84,7 +84,7 @@ def main(roi=(1000, 100, 2100, 2100), exposure=0.050004):
     try:
         print("[cam] temp=%.1fC roi=%s exp=%.4fs" % (
             cam.get_temperature(), cam.current_roi(), cam.get_exposure()))
-        run = runner.make_engine_run(server, cam, SeqConfig.get())
+        run = engine_run.make_engine_run(server, cam, SeqConfig.get())
         g = build_lac_scangroup()
         control = ControlChannel(server)
         print("[run] firing ONE shot of TweezerLoadingSeq ...")

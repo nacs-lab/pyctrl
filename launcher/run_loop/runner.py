@@ -2,13 +2,13 @@
 
 This is the module ``PyctrlLauncher`` spawns (``yb_analysis/config.py`` ``PYCTRL_MODULE``).
 It is a THIN shim: ``-m`` puts only the pyctrl package root on ``sys.path``, but the run loop
-and every class it builds are imported FLAT (``from sequence_runner import ...``,
+and every class it builds are imported FLAT (``from run_job import ...``,
 ``from exp_seq import ExpSeq``) off the pyproject ``pythonpath`` dirs. So before importing the
 real host we prepend those dirs (mirroring ``pyproject.toml`` ``pythonpath`` and
-``tests/conftest.py``), then delegate to ``YbExptCtrl/runner.py``'s :func:`main`.
+``tests/conftest.py``), then delegate to ``YbExptCtrl/run_loop.py``'s :func:`main`.
 
 The real run-loop host -- ExptServer hosting, the consume loop, engine wiring, camera
-release-on-terminate, the single-backend guard -- all lives in ``YbExptCtrl/runner.py``
+release-on-terminate, the single-backend guard -- all lives in ``YbExptCtrl/run_loop.py``
 (the faithful port of ``SequenceRunner.m``). Keeping the path bootstrap separate keeps that
 module flat-importable + NO-HARDWARE-testable exactly like the rest of the codebase.
 """
@@ -30,7 +30,7 @@ def _bootstrap_path():
 
 def main(argv=None):
     _bootstrap_path()
-    from runner import main as _main  # YbExptCtrl/runner.py (now flat-importable)
+    from run_loop import main as _main  # YbExptCtrl/run_loop.py (now flat-importable)
     return _main(argv)
 
 

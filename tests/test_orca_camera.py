@@ -4,14 +4,14 @@ NO-HARDWARE: pylablib is never imported -- a fake DCAMCamera is injected. Covers
 handle_camera_cmd interface (init/apply_settings/current_roi/close), the [x,y,w,h] <-> pylablib
 (hstart,hend,vstart,vend) ROI conversion, exposure/temperature, trigger modes, snap, and the
 store_imgs column-major shaping (to_store_array) -- verified by reconstructing the frame with the
-exact reshape yb_analysis _process_imgs uses. Also drives runner.handle_camera_cmd end-to-end
+exact reshape yb_analysis _process_imgs uses. Also drives camera_runtime.handle_camera_cmd end-to-end
 with a real OrcaCamera over the fake.
 """
 
 import numpy as np
 import pytest
 
-import runner
+import camera_runtime
 from devices.orca import DEFAULT_ROI, OrcaCamera, to_store_array
 
 pytestmark = pytest.mark.no_hardware
@@ -302,7 +302,7 @@ class TestStoreArray:
 
 
 # --------------------------------------------------------------------------- #
-# end-to-end via runner.handle_camera_cmd (real OrcaCamera over the fake)
+# end-to-end via camera_runtime.handle_camera_cmd (real OrcaCamera over the fake)
 # --------------------------------------------------------------------------- #
 class _CmdServer:
     def __init__(self, cmd):
@@ -325,20 +325,20 @@ class TestRunnerIntegration:
     def test_init_cmd_reports_actuals(self):
         cam, _ = _cam()
         srv = _CmdServer({"cmd": "init", "roi": [0, 0, 256, 256], "exposure_time": 0.02})
-        runner.handle_camera_cmd(srv, cam)
+        camera_runtime.handle_camera_cmd(srv, cam)
         assert srv.results == [(True, [0, 0, 256, 256], "", 0.02)]
 
     def test_close_cmd_releases(self):
         cam, fake = _cam()
         srv = _CmdServer({"cmd": "close"})
-        runner.handle_camera_cmd(srv, cam)
+        camera_runtime.handle_camera_cmd(srv, cam)
         assert fake.closed is True
         assert srv.results == [(False, [0, 0, 0, 0], "", None)]
 
     def test_init_pushes_extended_status(self):
         cam, _ = _cam()
         srv = _CmdServer({"cmd": "init", "roi": [0, 0, 256, 256], "exposure_time": 0.02})
-        runner.handle_camera_cmd(srv, cam)
+        camera_runtime.handle_camera_cmd(srv, cam)
         # The full telemetry is also pushed so the monitor/dashboard card is live.
         assert srv.statuses and srv.statuses[-1]["connected"] is True
         assert srv.statuses[-1]["temperature"] == -20.0
@@ -350,7 +350,7 @@ class TestRunnerIntegration:
         cam.close()
         assert cam.connected is False
         srv = _CmdServer({"cmd": "init", "roi": [0, 0, 128, 128], "exposure_time": 0.01})
-        runner.handle_camera_cmd(srv, cam)
+        camera_runtime.handle_camera_cmd(srv, cam)
         assert cam.connected is True                  # reopened
         assert srv.results[-1][0] is True             # reported connected
         assert srv.results[-1][1] == [0, 0, 128, 128]
@@ -358,7 +358,7 @@ class TestRunnerIntegration:
     def test_init_on_closed_handle_does_not_raise_on_unavailable(self):
         # A None camera (pylablib absent) stays a clean disconnected report, not a crash.
         srv = _CmdServer({"cmd": "init", "roi": [0, 0, 64, 64], "exposure_time": 0.01})
-        runner.handle_camera_cmd(srv, None)
+        camera_runtime.handle_camera_cmd(srv, None)
         assert srv.results[-1][0] is False
 
 

@@ -1,4 +1,4 @@
-"""Phase-5 sequence_runner: per-job orchestration (run_job) + dummy-mode IdleScheduler.
+"""Phase-5 run_job: per-job orchestration (run_job) + dummy-mode IdleScheduler.
 
 NO-HARDWARE: a fake ExptServer-like hub + injected dispatch/run drive run_job through all
 failure statuses, and the IdleScheduler dummy-mode state machine (off/default/last +
@@ -11,7 +11,7 @@ import random
 import pytest
 
 from dispatch_descriptor import DispatchResult, NotMigratedError
-from sequence_runner import IdleScheduler, JobResult, run_job
+from run_job import IdleScheduler, JobResult, run_job
 
 pytestmark = pytest.mark.no_hardware
 
@@ -219,7 +219,7 @@ class TestRunJobWiring:
 # --------------------------------------------------------------------------- #
 class TestCodeSnapshotReplay:
     def test_extract_absent_present_and_garbage(self):
-        from sequence_runner import _extract_code_snapshot
+        from run_job import _extract_code_snapshot
         assert _extract_code_snapshot('{"seq":"X"}') is None
         assert _extract_code_snapshot(
             '{"seq":"X","code_snapshot":{"scan_id":1}}') == {"scan_id": 1}
@@ -229,7 +229,7 @@ class TestCodeSnapshotReplay:
 
     def test_no_field_is_nullcontext(self):
         import sys
-        from sequence_runner import _snapshot_replay_ctx
+        from run_job import _snapshot_replay_ctx
         saved = list(sys.path)
         with _snapshot_replay_ctx('{"seq":"X"}', None):
             pass
@@ -240,7 +240,7 @@ class TestCodeSnapshotReplay:
         import os
         import sys
         import code_snapshot
-        from sequence_runner import _snapshot_replay_ctx
+        from run_job import _snapshot_replay_ctx
         root = str(tmp_path / "proj")
         data_root = str(tmp_path / "data")
         # Pin the snapshot base under data_root: the production default is now a LOCAL dir off the

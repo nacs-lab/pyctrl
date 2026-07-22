@@ -1,6 +1,6 @@
 """test_set_chns.py -- set_chns NI + FPGA routing / clocking-hold logic (no_hardware).
 
-The manual set-channel operator tool (YbExptCtrl/set_chns.py) builds a one-shot ExpSeq and runs
+The manual set-channel operator tool (lib/set_chns.py) builds a one-shot ExpSeq and runs
 it through the engine. These tests exercise the BUILD path only: generate() (the one
 engine-needing call) is stubbed, so they prove channel resolution (NI V*/Dev1 -> NiDAQ/Dev1/N,
 FPGA passthrough), the NI clocking hold (added only when an NI channel is present; opt-out via

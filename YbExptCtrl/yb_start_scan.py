@@ -144,7 +144,7 @@ def ybStartScan(seq, scangroup, *, url=None, label=None, description=None,
     lbl = label or desc["seq"]
     wall_send = time.time()           # absolute moment the descriptor is handed to the backend
     if submit is None:
-        from runner import resolve_url
+        from run_loop import resolve_url
         target = resolve_url([url] if url else [])
         did = submit_descriptor(target, desc_json, lbl)
     else:

@@ -27,7 +27,7 @@ import pytest
 
 import ExptServer as expt_mod
 from ExptServer import ExptServer
-from runner import handle_descriptor_pop
+from run_loop import handle_descriptor_pop
 
 pytestmark = pytest.mark.no_hardware
 

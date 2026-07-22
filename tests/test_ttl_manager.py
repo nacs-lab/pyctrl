@@ -1,5 +1,5 @@
 """test_ttl_manager.py -- per-TTL-channel hardware timing manager: serialize byte format +
-runner config resolver.
+engine_run config resolver.
 
 A TTL manager is ``ExpSeq.add_ttl_mgr(chn, off_delay, on_delay, skip_time, min_time, off_val)``
 -> a per-device record inside the version-1 (or version-2 when a trigger is also set) ``ZYNQZYNQ``
@@ -10,7 +10,7 @@ Two halves, both NO-HARDWARE (pure byte math + a config resolver; no engine):
   * the SERIALIZED record layout (THE ONE RULE: matches MATLAB ExpSeq collectBackendData --
     [cid:4B LE][off_delay:8B LE][on_delay:8B LE][skip:8B LE][min:8B LE][off_val:1B]), the per-
     device count byte, and the used-channel gating (a manager on an UNUSED channel is dropped), and
-  * the runner's resolver ``runner._ttl_managers_config`` (expConfig ``consts['TTLManagers']`` +
+  * the resolver ``engine_run._ttl_managers_config`` (expConfig ``consts['TTLManagers']`` +
     per-scan ``runp().TTLManagers`` overrides, all-zero entries dropped, arg-order off/on swap).
 """
 
@@ -19,7 +19,7 @@ import struct
 import pytest
 
 import seq_manager
-import runner
+import engine_run
 from exp_seq import ExpSeq
 
 pytestmark = pytest.mark.no_hardware
@@ -86,7 +86,7 @@ def test_add_ttl_mgr_rejects_negative():
 
 
 # --------------------------------------------------------------------------- #
-# runner._ttl_managers_config: consts source of truth + runp() overrides
+# engine_run._ttl_managers_config: consts source of truth + runp() overrides
 # --------------------------------------------------------------------------- #
 _MISSING = object()
 
@@ -116,7 +116,7 @@ class _SeqCfg:
 def test_resolver_reads_consts_and_swaps_to_add_ttl_mgr_order():
     cfg = _SeqCfg({"TTL556RydAWG": {"on_delay": 1.5e-6, "off_delay": 0.0,
                                     "skip_time": 0.0, "min_time": 0.0, "off_val": False}})
-    got = runner._ttl_managers_config(_ScanGroup(), cfg)
+    got = engine_run._ttl_managers_config(_ScanGroup(), cfg)
     # tuple order is (chn, off_delay, on_delay, skip, min, off_val) -- ready for add_ttl_mgr
     assert got == [("TTL556RydAWG", 0.0, 1.5e-6, 0.0, 0.0, False)]
 
@@ -124,16 +124,16 @@ def test_resolver_reads_consts_and_swaps_to_add_ttl_mgr_order():
 def test_resolver_drops_all_zero_entries():
     cfg = _SeqCfg({"TTL308RydAWG": {"on_delay": 0.0, "off_delay": 0.0,
                                     "skip_time": 0.0, "min_time": 0.0, "off_val": True}})
-    assert runner._ttl_managers_config(_ScanGroup(), cfg) == []   # no-op -> not emitted
+    assert engine_run._ttl_managers_config(_ScanGroup(), cfg) == []   # no-op -> not emitted
 
 
 def test_resolver_runp_overrides_consts_per_field():
     cfg = _SeqCfg({"TTL556RydAWG": {"on_delay": 1.5e-6, "off_delay": 0.0,
                                     "skip_time": 0.0, "min_time": 0.0, "off_val": False}})
     sg = _ScanGroup(TTLManagers={"TTL556RydAWG": {"on_delay": 2.0e-6}})   # bump on_delay only
-    got = runner._ttl_managers_config(sg, cfg)
+    got = engine_run._ttl_managers_config(sg, cfg)
     assert got == [("TTL556RydAWG", 0.0, 2.0e-6, 0.0, 0.0, False)]
 
 
 def test_resolver_consts_absent_returns_empty():
-    assert runner._ttl_managers_config(_ScanGroup(), _SeqCfg()) == []
+    assert engine_run._ttl_managers_config(_ScanGroup(), _SeqCfg()) == []

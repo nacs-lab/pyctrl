@@ -3,7 +3,7 @@ writer proc).
 
 This is the run-loop-level companion to ``test_control_channel_2proc.py``. That file drives
 :class:`ControlChannel` directly against a real :class:`ExptServer`; THIS file drives the actual
-scan loop -- ``run_seq.run_scan_group`` and ``sequence_runner.run_job`` -- against the same real
+scan loop -- ``run_seq.run_scan_group`` and ``run_job.run_job`` -- against the same real
 server while a SEPARATE OS process (``control_writer_helper.py``) issues ``pause_seq`` /
 ``abort_seq`` / ``start_seq`` verbs over ZMQ. It is the "two-process integration test" the Phase-5
 plan flags as the only thing the single-process unit tests can't cover: the verbs travel the wire,
@@ -44,7 +44,7 @@ from control_channel import ControlChannel, SeqRequest
 from dyn_props import DynProps
 from run_seq import run_scan_group
 from seq_config import SeqConfig
-from sequence_runner import run_job
+from run_job import run_job
 
 pytestmark = pytest.mark.no_hardware
 
@@ -130,7 +130,7 @@ class _DwellRunReal:
 class _StubScanGroup:
     """Minimal ScanGroup surface run_scan_group / run_job need, with no engine.
 
-    ``runp()`` raises so sequence_runner._build_scan_order falls back to a plain sequential
+    ``runp()`` raises so run_job._build_scan_order falls back to a plain sequential
     order (deterministic 1..n) -- the production scramble/stack prep is exercised elsewhere; here
     we want a predictable shot count to assert "partial" against.
     """

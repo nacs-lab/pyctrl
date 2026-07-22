@@ -1,4 +1,4 @@
-"""test_line_trigger.py -- 60 Hz AC-line trigger: serialize byte format + runner config resolver.
+"""test_line_trigger.py -- 60 Hz AC-line trigger: serialize byte format + engine_run config resolver.
 
 The line trigger is ``ExpSeq.enable_global_wait_trigger(device, channel, raise_, timeout)`` ->
 a version-2 ``ZYNQZYNQ`` backend block (``trig_type``/``chn``/``timeout_ns``) -> libnacs emits a
@@ -7,7 +7,7 @@ a version-2 ``ZYNQZYNQ`` backend block (``trig_type``/``chn``/``timeout_ns``) ->
 Two halves, both NO-HARDWARE (pure byte math + a config resolver; no engine):
   * the SERIALIZED byte format (THE ONE RULE: matches MATLAB ``serializeTriggerData`` /
     ``collectBackendData`` -- trig_type 2=raise/1=lower, chn, int64 timeout_ns), and
-  * the runner's resolver ``runner._line_trigger_config`` (expConfig ``consts['LineTrigger']`` +
+  * the resolver ``engine_run._line_trigger_config`` (expConfig ``consts['LineTrigger']`` +
     per-scan ``runp().LineTrigger*`` overrides, conservative-off fallback, skip-when-no-channel).
 """
 
@@ -16,7 +16,7 @@ import struct
 import pytest
 
 import seq_manager
-import runner
+import engine_run
 from exp_seq import ExpSeq
 
 pytestmark = pytest.mark.no_hardware
@@ -74,7 +74,7 @@ def test_serialize_without_trigger_has_no_payload():
 
 
 # --------------------------------------------------------------------------- #
-# runner._line_trigger_config: consts source of truth + runp() overrides
+# engine_run._line_trigger_config: consts source of truth + runp() overrides
 # --------------------------------------------------------------------------- #
 _MISSING = object()
 
@@ -106,13 +106,13 @@ class _SeqCfg:
 def test_resolver_disabled_returns_none():
     cfg = _SeqCfg({"Enable": False, "Device": "FPGA1", "Channel": 14,
                    "Raise": True, "Timeout": 0.02})
-    assert runner._line_trigger_config(_ScanGroup(), cfg) is None
+    assert engine_run._line_trigger_config(_ScanGroup(), cfg) is None
 
 
 def test_resolver_enabled_with_channel():
     cfg = _SeqCfg({"Enable": True, "Device": "FPGA1", "Channel": 14,
                    "Raise": True, "Timeout": 0.02})
-    got = runner._line_trigger_config(_ScanGroup(), cfg)
+    got = engine_run._line_trigger_config(_ScanGroup(), cfg)
     assert got == {"device": "FPGA1", "channel": 14, "raise_": True, "timeout": 0.02}
 
 
@@ -120,7 +120,7 @@ def test_resolver_enabled_no_channel_skips_and_logs():
     cfg = _SeqCfg({"Enable": True, "Device": "FPGA1", "Channel": None,
                    "Raise": True, "Timeout": 0.02})
     logs = []
-    assert runner._line_trigger_config(_ScanGroup(), cfg, log=logs.append) is None
+    assert engine_run._line_trigger_config(_ScanGroup(), cfg, log=logs.append) is None
     assert logs and "no input channel" in logs[0]
 
 
@@ -130,10 +130,10 @@ def test_resolver_runp_overrides_consts():
                    "Raise": True, "Timeout": 0.02})
     sg = _ScanGroup(LineTriggerEnable=True, LineTriggerChannel=22,
                     LineTriggerRaise=False, LineTriggerTimeout=0.03)
-    got = runner._line_trigger_config(sg, cfg)
+    got = engine_run._line_trigger_config(sg, cfg)
     assert got == {"device": "FPGA1", "channel": 22, "raise_": False, "timeout": 0.03}
 
 
 def test_resolver_consts_absent_falls_back_off():
     # No LineTrigger subtree at all -> conservative fallback (Enable=False) -> None.
-    assert runner._line_trigger_config(_ScanGroup(), _SeqCfg()) is None
+    assert engine_run._line_trigger_config(_ScanGroup(), _SeqCfg()) is None
