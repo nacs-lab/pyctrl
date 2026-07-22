@@ -58,13 +58,20 @@ def build(field_G=30, green_amp=0.12, ryd308_amp=0.4, green_freq_mhz=143.35,
     g().Pushout.Amp369 = 0
 
     # ---- timing + Ryd bias field ----
-    g().Pushout.Time = 2e-3
+    # 2026-07-16: 2e-3 -> 1e-3 to match the reference Revival616Scan (data_20260716_114348); the
+    # longer 2 ms Rydberg hold let the atom decay before readout and SHRANK the revival peak
+    # (~0.2-0.3 vs the reference 0.665 at the same 308 amp 0.4). Bright revival needs 1 ms.
+    g().Pushout.Time = 1e-3
     g().Pushout.BiasCoilCurrent.Ryd = field_G
 
     rp = g.runp()
     rp.NumPerGroup = 2000
     rp.NumImages = 2
-    rp.Scramble = 1
+    # 2026-07-16: Scramble OFF. Scrambling jumps Init.EOM616.Freq randomly shot-to-shot; large
+    # random EOM616 jumps UNLOCK the 616 laser (scan aborts at seq ~5-7). A monotonic (unscrambled)
+    # EOM sweep steps the EOM gently and the lock survives -- confirmed vs the plain Revival616Scan
+    # (Scramble 0) which ran clean under identical config. Keep 0 for any 616-freq sweep.
+    rp.Scramble = 0
     rp.isInit = 0
     rp.isHC = 0
     rp.isGrid2 = 0

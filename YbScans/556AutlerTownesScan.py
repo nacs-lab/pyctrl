@@ -127,14 +127,14 @@ if __name__ == "__main__":
                          "use >100 for the site-resolved splitting run")
     ap.add_argument("--field", type=float, default=30,
                     help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 30)")
-    ap.add_argument("--eom616", type=float, default=234.62e6,
+    ap.add_argument("--eom616", type=float, default=282e6,
                     help="616-EOM freq (Hz) = 308 resonance (default 236.5e6, the measured 30 G "
                          "revival peak, scan 20260702134131; was 282.52e6 pre-2026-07-02)")
     ap.add_argument("--ryd308-amp", type=float, default=0.4,
                     help="308 coupling AOM amp, max 0.4 (default 0.4)")
     ap.add_argument("--amp", type=float, default=0.15,
                     help="override the 556 probe push amp (else field-scaled 0.5 @ 30 G)")
-    ap.add_argument("--half", type=float, default=2.5,
+    ap.add_argument("--half", type=float, default=1.5,
                     help="556 window half-width in MHz (default 3.0; widen if the doublet is clipped)")
     ap.add_argument("--step", type=float, default=0.1,
                     help="556 window step in MHz (default 0.1)")

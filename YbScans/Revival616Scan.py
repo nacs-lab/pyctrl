@@ -66,13 +66,16 @@ def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
     # 556 push-out resonance (MHz): mirrors RydbergSpectrum556Scan's calibration (2026-06-10 fit).
     # RES0_MHZ = 107.8049
     # ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
-    res556_mhz = 143.43 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz (model)
+    res556_mhz = 143.524 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz (model)
     if green_freq_mhz is not None:
         res556_mhz = float(green_freq_mhz)   # explicit override: the located dip after drift
 
     # 616-EOM sweep window (MHz): the Spectrum308Scan.m "revival" window, centred near the 30 G
     # EOM value (~282.89 MHz). 21 pts @ 0.5 MHz. Edit these to re-centre / refine.
-    EOM_LO_MHZ, EOM_STEP_MHZ, EOM_HI_MHZ = 210, 1, 260
+    # 2026-07-22: revival back near ~234 MHz (mj-1 pi regime); bracket 220-250 @ 1 MHz (31 pts).
+    # (2026-07-21 sigma-pol test used 260-300 @ 1 MHz for the ~282 MHz sigma regime; the historical
+    # mj-1 pi revival is ~234, comment note "210,1,260 = mj-1 pi revival ~234".)
+    EOM_LO_MHZ, EOM_STEP_MHZ, EOM_HI_MHZ = 275, 0.2, 290
 
     g = ScanGroup()
 

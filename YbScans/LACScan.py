@@ -54,7 +54,7 @@ def LACScan(url=None, reps=None):
     # Phase-8 overrides differ slightly from expConfig and now fall back to it:
     # BlueMOT.LoadingTime 0.23 -> 0.30 s and GreenMOT.CoolDown.HoldTime 0.12 ->
     # 0.20 s (a touch more saturated/longer); the rest are identical to expConfig.
-    g().Init.VSLMservo = 1.9
+    g().Init.VSLMservo = 3.5
     # ===== PHASE 0: BlueMOT.LoadingTime curve (3270_tri loading opt) =====
     # Find the loading cliff + a sub-saturation work-point (~25-40% fill) on the
     # 3270_tri hologram (3270 sites, ~300 uK traps -- shallower than the 33x33
@@ -110,35 +110,35 @@ def LACScan(url=None, reps=None):
     # beams ON (DDS Amp1/Amp2 = 1; power set by the PID setpoints). Cooling from the
     # committed feedback11 ByPattern (X 0.14/0.28, h 0.14/0.20). 0 pushout = real
     # 25 ms two-image survival + true img1 separation.
-    g().Imag399.Amp1 = 1
-    g().Imag399.Amp2 = 1
-    g().Pushout.Time = 0.001    # ~0 pushout: real survival + true separation
-    g().BlueMOT.Img1PIDSet.scan(1, np.linspace(0.4, 1.4, 10))
-    g().BlueMOT.Img2PIDSet.scan(2, np.linspace(0.2, 0.65, 10))
+    #g().Imag399.Amp1 = 1
+    #g().Imag399.Amp2 = 1
+    #g().Pushout.Time = 0.001    # ~0 pushout: real survival + true separation
+    #g().BlueMOT.Img1PIDSet.scan(1, np.linspace(0.4, 1.4, 10))
+    #g().BlueMOT.Img2PIDSet.scan(2, np.linspace(0.2, 0.65, 10))
     #g().GreenMOT.BiasCoilCurrent.X = 0.0387
     # g().GreenMOT.BiasCoilCurrent.Y.scan(1, [0.265, 0.278])
-    # g().BlueMOT.LoadingTime = 0.5
+    #g().BlueMOT.LoadingTime = 1.0    # 2026-07-15: longer blue-MOT load (was ~0.23-0.3 default) -- redo LAC scan with more atoms delivered
     # g().BlueMOT.FreqDetuning = -44e6
     # g().BlueMOT.Amp = 0.6
-    # g().GreenMOT.BiasCoilCurrent.X.scan(1, np.linspace(0.037, 0.041, 12))
-    # g().GreenMOT.BiasCoilCurrent.Y.scan(2, np.linspace(0.24, 0.28, 18))
+    #g().GreenMOT.BiasCoilCurrent.X.scan(1, np.linspace(0.037, 0.041, 7))    # razor-sharp X (dim1) -- tri_3013_camfb MOT-position scan
+    #g().GreenMOT.BiasCoilCurrent.Y.scan(2, np.linspace(0.24, 0.28, 9))      # broader Y (dim2)
     # g().GreenMOT.BiasCoilCurrent.Z.scan(1, np.linspace(0.16, 0.20, 11))
     # g().GreenMOT.PowerBroaden.HandoverTime = 0.015
     # g().GreenMOT.CoolDown.FreqDetuning = 0.5e6
     # g().GreenMOT.CoolDown.Amp = 0.25
     # g().GreenMOT.CoolDown.HoldTime = 0.2
     # g().GreenMOT.CoolDown.RampdownTime = 0.05
-    # LAC
-    # g().LAC.FreqDetuning = 0.11e6
-    # g().LAC.Amp = 0.2
+    # LAC -- 2026-07-15 tri_3013_v2 LAC drive-plane scan: Amp (dim1) x FreqDetuning (dim2).
+    # Seed (overlay): Amp 0.2, FreqDetuning 0.11 MHz, Time 30 ms. Bracket both sides.
+    g().LAC.Amp.scan(1, np.linspace(0.04, 0.20, 7))                 # LAC intensity (dim1) -- camfb re-verify around committed 0.10
+    g().LAC.FreqDetuning.scan(2, np.linspace(0.10e6, 0.30e6, 7))    # LAC detuning Hz (dim2) -- around committed 0.22
     # g().LAC.Time = 0.02 #.scan(1, np.linspace(0.02, 0.05, 5))
     # g().LAC.DeadTime = 10e-3
 
     # ---- run params (runp) ------------------------------------------------
     rp = g.runp()
-    rp.NumPerGroup = 800          # = default reps(8) x n_points(100) so the dashboard
-                                  # shots-total matches the real cap (rep sets shots/point)
-    rp.NumImages = 2              # survival: img1 (separation) + img2 (survival)
+    rp.NumPerGroup = 2000
+    rp.NumImages = 1              # loading-rate readout (MOT-position opt); img1 only
     rp.isInit = 0
     rp.Scramble = 1   # randomize point order so run-start warmup doesn't bias low-time points
     rp.isHC = 0
@@ -147,23 +147,19 @@ def LACScan(url=None, reps=None):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    g.runp().loading_phase = "phase/33x33_feedback11.pt"   # server-side WGS phase path
-    g.runp().loading_defocus = -5
-    # g().loading_defocus.scan(1, np.linspace(-10, 10, 10));                     # ANSI z4 loading defocus (rad) -- new focus (was -5; array was defocused)
+    g.runp().loading_phase = "phase/tri_3013_camfb.pt"   # server-side WGS phase path
+    g.runp().loading_defocus = -2
+    #g().loading_defocus.scan(1, np.linspace(-20, 0, 5));                    # ANSI z4 loading defocus (rad): -20..20 step 5 (9 pts) -- tri_3013_v2 focus bracket
 
     opts = {}
     if reps is not None:
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
 
-    desc = ("33x33_feedback11 (VSLMservo 1.9) imaging INTENSITY 2-D at 25 ms exposure -- "
-            "scan Img1PIDSet 0.4..1.4 x Img2PIDSet 0.2..0.65 (10x10, 8 reps=800 shots), "
-            "both 399 beams on (DDS Amp1/Amp2=1; PID setpoints are the power lever), "
-            "0 pushout = real 25 ms two-image survival + img1 separation. After dropping "
-            "Orca 35->25 ms; re-mapping the setpoint landscape (Img2 heating cliff expected "
-            "to shift up vs the 35 ms map). Cooling = committed feedback11 ByPattern. "
-            "Locate W, then re-optimize cooling at 25 ms.")
-    did = ybStartScan(ImagingPushoutSurvivalSeq, g, url=url, label="ImgOpt_PIDset_25ms_fb11",
+    desc = ("tri_3013_camfb (z4=-2) LAC drive-plane re-verify: LAC.Amp 0.04-0.20 (7) x "
+            "LAC.FreqDetuning 0.10-0.30 MHz (7), TweezerLoadingSeq loading-rate, 6 reps=294 shots. "
+            "Committed 0.22/0.10 was tuned on v2; re-check on camfb @ 0.6 loading before imaging opt.")
+    did = ybStartScan("TweezerLoadingSeq", g, url=url, label="tri3013camfb_LAC_Amp_Det",
                       description=desc, **opts)
     # print("submitted LACScan sweep (%d pts %.3f..%.3f A) -> descriptor id %s (url=%s)"
     #       % (len(xvals), xvals[0], xvals[-1], did, url or "default"))

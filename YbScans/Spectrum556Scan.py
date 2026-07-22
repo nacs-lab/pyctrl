@@ -40,7 +40,8 @@ scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so 
 from PushoutSurvivalSeq import PushoutSurvivalSeq
 
 
-def build(mj=0):
+def build(mj=0, loading_phase=None, defocus=None, mj0_center_mhz=None,
+          mj1_window=None, mj1_amp=None):
     """The Spectrum556Scan ScanGroup (single group, 1-D Pushout.Green.Freq sweep).
 
     Mirrors Spectrum556Scan.m's active blocks; the byte-affecting params only (the dbstack
@@ -71,7 +72,9 @@ def build(mj=0):
     elif mj == 1:
         # |mj|=1 "check trap depth": stronger + longer to drive the weaker,
         # trap-shifted |mj|=1 feature (Spectrum556Scan.m active block).
-        g().Pushout.Green.Amp = 0.08
+        # 2026-07-16 kagome campaign: started 0.12 (fresh ~7% CV); walked DOWN to 0.10 after r2
+        # per user ("turn down the pushout, we're getting deep") + runbook (3270 ended at 0.08).
+        g().Pushout.Green.Amp = 0.10 if mj1_amp is None else float(mj1_amp)
         g().Pushout.Time = 20e-3
     else:
         raise ValueError("mj must be 0 or 1, got %r" % (mj,))
@@ -91,7 +94,12 @@ def build(mj=0):
         # Falls back to a recent center if the config can't be read on the submit side.
         STEP_MHZ, HALF_MHZ = 0.01, 0.20
         center_mhz = 107.82
+        if mj0_center_mhz is not None:
+            center_mhz = float(mj0_center_mhz)
+          # explicit override wins (per-pattern f0); skip the expConfig read below
         try:
+            if mj0_center_mhz is not None:
+                raise RuntimeError("explicit center")
             _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../pyctrl
             if _root not in sys.path:
                 sys.path.insert(0, _root)
@@ -106,7 +114,16 @@ def build(mj=0):
         # centered_level family (dip ~104.9 MHz at servo 1.9; matches the sinc_dcfree /
         # centered_level_fb1 mj=1 scans of 20260620). The camera-feedbacked camfb_wrapper
         # seed has a large depth spread, so this window brackets the per-site dip spread.
-        freqs = [v * 1e6 for v in matlab_colon(103.5, 0.1, 106.5)]    # 31 pts, MATLAB-exact
+        # 2026-07-16 kagome campaign: kagome_2078/2198 are DEEPER than tri_3013 at the same
+        # VSLMServo 3.5 (fewer traps, same power -> ~1.4x depth -> ~1.4x |mj|=1 shift). tri_3013
+        # dip sat >106.5; kagome dip expected ~105.8-106.5 -> wide first-round window 104.8-107.4.
+        # (tri_3013_camfb 07-15 used 105.5:0.1:107.5.)
+        # 2026-07-16 back on 33x33_feedback11: standard 33x33 window 103.5:0.1:106.5.
+        if mj1_window is not None:
+            lo, step, hi = mj1_window
+            freqs = [v * 1e6 for v in matlab_colon(float(lo), float(step), float(hi))]
+        else:
+            freqs = [v * 1e6 for v in matlab_colon(103.5, 0.1, 106.5)]
     g().Pushout.Green.Freq.scan(1, freqs)
     
     # ---- run params (runp); no byte effect, drive the live run ------------
@@ -121,17 +138,23 @@ def build(mj=0):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    g.runp().loading_phase = "phase/33x33_feedback11.pt"  # 2026-07-10: fb9 depth re-flattened after optics move (fb9 -> feedback10, CV 7.05->2.22%); match other scans + the array on the SLM
-    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    if loading_phase is not None:
+        g.runp().loading_phase = loading_phase
+        g.runp().loading_defocus = -5 if defocus is None else float(defocus)
+    else:
+        g.runp().loading_phase = "phase/33x33_feedback11.pt"  # 2026-07-16 daily cal on 33x33_feedback11
+        g.runp().loading_defocus = -5                         # ANSI z4; 33x33 focal plane
     return g
 
 
-def Spectrum556Scan(url=None, reps=3, mj=0):
+def Spectrum556Scan(url=None, reps=3, mj=0, loading_phase=None, defocus=None,
+                    mj0_center_mhz=None, mj1_window=None, mj1_amp=None):
     """Build + submit the 556 spectrum scan (mj=0 or mj=1). Returns the queued descriptor id."""
     from yb_start_scan import ybStartScan
 
-    g = build(mj=mj)
-    npts = 41 if mj == 0 else 31
+    g = build(mj=mj, loading_phase=loading_phase, defocus=defocus,
+              mj0_center_mhz=mj0_center_mhz, mj1_window=mj1_window, mj1_amp=mj1_amp)
+    npts = g.nseq()
     opts = {}
     if reps is not None:
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
@@ -151,5 +174,13 @@ if __name__ == "__main__":
                     help="passes over the sweep (0 = forever); default 3 for a short A/B run")
     ap.add_argument("--mj", type=int, default=0, choices=(0, 1),
                     help="which 556 block: 0 = ULE-shift mj=0 (default), 1 = |mj|=1 trap-depth")
+    ap.add_argument("--loading-phase", default=None, help="override loading hologram (e.g. phase/kagome_res_2198_closer.pt)")
+    ap.add_argument("--defocus", type=float, default=None, help="loading_defocus ANSI z4 (default -5; use -3 for 2198)")
+    ap.add_argument("--mj0-center", type=float, default=None, help="mj=0 window center MHz (per-pattern f0)")
+    ap.add_argument("--mj1-window", type=float, nargs=3, metavar=("LO","STEP","HI"), default=None,
+                    help="mj=1 sweep colon in MHz (e.g. 104.8 0.1 107.4)")
+    ap.add_argument("--mj1-amp", type=float, default=None, help="mj=1 pushout Green.Amp (default 0.10)")
     args = ap.parse_args()
-    Spectrum556Scan(url=args.url, reps=args.reps, mj=args.mj)
+    Spectrum556Scan(url=args.url, reps=args.reps, mj=args.mj, loading_phase=args.loading_phase,
+                    defocus=args.defocus, mj0_center_mhz=args.mj0_center,
+                    mj1_window=args.mj1_window, mj1_amp=args.mj1_amp)
