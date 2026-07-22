@@ -77,6 +77,127 @@ def test_affine_knm_to_camera_cropped():
 
 
 # =========================================================================== #
+# pattern_grid: knm orientation guard (_canonical_knm)
+#   Regression for 2x11x11_5um_back2um (2026-07-14): record.json knm was written
+#   TRANSPOSED as [x,y] -> the detection grid landed on the wrong side of the frame
+#   (grid on the bottom, atoms on the right) -> loading/survival read ~0.
+# =========================================================================== #
+def test_canonical_knm_corrects_transposed_record():
+    """knm written as [x,y] but positions_knm3d is the [y,x,z] truth -> guard returns [y,x]."""
+    import pattern_grid as pg
+    yx = [[454.5, 636.5], [500.5, 632.0], [512.0, 632.0]]          # canonical [y, x]
+    p3 = [[y, x, -2.7778] for (y, x) in yx]                         # [y, x, z]
+    knm_bad = [[x, y] for (y, x) in yx]                            # written swapped [x, y]
+    out = pg._canonical_knm({"knm": knm_bad, "positions_knm3d": p3})
+    assert np.allclose(out, yx)                                    # un-swapped back to [y, x]
+
+
+def test_canonical_knm_passes_through_canonical_record():
+    """knm already [y,x] and matches positions_knm3d -> returned unchanged."""
+    import pattern_grid as pg
+    yx = [[454.5, 636.5], [500.5, 632.0]]
+    p3 = [[y, x, 1.0] for (y, x) in yx]
+    out = pg._canonical_knm({"knm": yx, "positions_knm3d": p3})
+    assert np.allclose(out, yx)
+
+
+def test_canonical_knm_trusts_unrelated_knm():
+    """knm matches NEITHER orientation of positions_knm3d (edited/different) -> trust knm, don't
+    guess. Only the exact provable transpose is corrected."""
+    import pattern_grid as pg
+    p3 = [[10.0, 20.0, 0.0], [30.0, 40.0, 0.0]]
+    knm = [[1.0, 2.0], [3.0, 4.0]]                                 # unrelated to p3
+    out = pg._canonical_knm({"knm": knm, "positions_knm3d": p3})
+    assert np.allclose(out, knm)
+
+
+def test_canonical_knm_no_positions3d_returns_asis():
+    """No positions_knm3d -> cannot prove orientation -> knm returned as-is (no heuristic)."""
+    import pattern_grid as pg
+    knm = [[454.5, 636.5], [500.5, 632.0]]
+    assert np.allclose(pg._canonical_knm({"knm": knm}), knm)
+
+
+def test_canonical_knm_tolerates_float_noise():
+    """A tiny numeric drift between knm and positions_knm3d (as the real record had: knm vs 3D
+    differed by ~0.7 px on a 120-px span) must still be recognized as the transpose, not rejected as
+    'unrelated'. The guard decides by RELATIVE fit, so sub-pixel drift is fine."""
+    import pattern_grid as pg
+    # A realistic bilayer: 120-px span, knm stored SWAPPED with ~0.7 px drift vs the 3D truth.
+    yx = [[454.5, 632.0], [570.0, 632.0], [454.5, 752.0], [570.0, 752.0]]
+    p3 = [[y, x, -2.7778] for (y, x) in yx]
+    knm_bad = [[x + 0.7, y - 0.5] for (y, x) in yx]               # swapped + sub-px noise
+    out = pg._canonical_knm({"knm": knm_bad, "positions_knm3d": p3})
+    assert np.allclose(out, yx)                                    # snapped to the 3D truth
+
+
+def test_canonical_knm_real_record_separation():
+    """Mirror the actual 2x11x11_5um_back2um failure: swapped fit ~1.6 px vs as-stored ~298 px
+    (180x better) -> corrected. This is the regression that motivated the guard."""
+    import pattern_grid as pg
+    rng = np.random.RandomState(0)
+    ys = np.linspace(454, 570, 11); xs = np.linspace(632, 752, 11)
+    yx = np.array([[y, x] for y in ys for x in xs], float)        # 121 sites, canonical [y, x]
+    p3 = np.column_stack([yx, np.full(len(yx), -2.7778)])
+    knm_bad = yx[:, ::-1] + rng.uniform(-0.8, 0.8, yx.shape)      # stored [x, y] + drift
+    out = pg._canonical_knm({"knm": knm_bad.tolist(), "positions_knm3d": p3.tolist()})
+    assert np.allclose(out, yx)
+
+
+def test_canonical_knm_shape_mismatch_returns_knm():
+    """positions_knm3d with a different row count can't cross-check -> return knm untouched."""
+    import pattern_grid as pg
+    knm = [[1.0, 2.0], [3.0, 4.0]]
+    p3 = [[1.0, 2.0, 0.0]]                                         # only 1 row vs 2
+    assert np.allclose(pg._canonical_knm({"knm": knm, "positions_knm3d": p3}), knm)
+
+
+def test_canonical_knm_ignores_nan_rows():
+    """A NaN row in positions_knm3d must not decide (or break) the orientation check; the finite
+    rows still prove the transpose."""
+    import pattern_grid as pg
+    yx = [[454.5, 636.5], [500.5, 632.0], [512.0, 640.0]]
+    p3 = [[float("nan"), float("nan"), 0.0], [500.5, 632.0, 0.0], [512.0, 640.0, 0.0]]
+    knm_bad = [[x, y] for (y, x) in yx]                            # swapped
+    out = pg._canonical_knm({"knm": knm_bad, "positions_knm3d": p3})
+    # finite rows (1,2) drive the decision -> whole array un-swapped
+    assert np.allclose(out[1:], yx[1:])
+
+
+def test_canonical_knm_resilient_to_garbage():
+    """Malformed inputs never throw -- return the raw knm (or None when there's no usable knm)."""
+    import pattern_grid as pg
+    assert pg._canonical_knm({}) is None
+    assert pg._canonical_knm({"knm": []}) is None
+    assert pg._canonical_knm(None) is None
+    knm = [[1.0, 2.0], [3.0, 4.0]]
+    # positions_knm3d unparsable / wrong width -> fall back to knm, no exception
+    assert np.allclose(pg._canonical_knm({"knm": knm, "positions_knm3d": "not-an-array"}), knm)
+    assert np.allclose(pg._canonical_knm({"knm": knm, "positions_knm3d": [[1.0], [2.0]]}), knm)
+
+
+def test_pattern_camera_grid_uses_guard_end_to_end(tmp_path, monkeypatch):
+    """A registry record with a TRANSPOSED knm still yields the correct camera grid because
+    pattern_camera_grid runs the guard against positions_knm3d."""
+    import pattern_grid as pg
+    yx = [[10.0, 30.0], [12.0, 30.0]]                             # canonical [y, x]
+    p3 = [[y, x, -2.0] for (y, x) in yx]
+    knm_bad = [[x, y] for (y, x) in yx]                           # stored swapped [x, y]
+    patterns = tmp_path / "patterns"
+    pdir = patterns / "bilayer"
+    pdir.mkdir(parents=True)
+    with open(pdir / "record.json", "w") as f:
+        json.dump({"name": "bilayer", "knm": knm_bad, "positions_knm3d": p3}, f)
+    affine = tmp_path / "affine_transform.json"
+    with open(affine, "w") as f:                                  # A: [x,y,1] -> [Y=y, X=x]
+        json.dump({"current": {"A": [[0, 1, 0], [1, 0, 0]]}}, f)
+    _set_registry_env(monkeypatch, str(patterns), str(affine))
+    grid = pg.pattern_camera_grid("bilayer", roi=[0, 0, 40, 40])
+    # Correct grid = canonical [y,x] -> camera [Y=y, X=x] = the y,x values themselves.
+    assert np.allclose(grid, yx)
+
+
+# =========================================================================== #
 # pattern_grid: registry readers + resolve_pattern_calibration
 # =========================================================================== #
 def test_resolve_pattern_calibration(tmp_path, monkeypatch):

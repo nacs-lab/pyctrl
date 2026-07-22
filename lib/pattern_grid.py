@@ -96,6 +96,32 @@ def load_affine_matrix():
     return np.asarray(cur["A"], dtype=np.float64).reshape(2, 3)
 
 
+def load_dz():
+    """The optional LINEAR DEFOCUS (3-D) correction block from affine_transform.json, or None.
+
+    Mirror of yb_analysis.analysis.affine_transform.load_dz (see its docstring for the model +
+    conventions): ``{"v": ndarray(2) px/rad in _apply_affine_cropped's output column order,
+    "z_ref": float}``. Applied only to 3-D pattern grids, per site:
+    ``grid[i] += v * ((loading_defocus - z_ref) + z_rad[i])``."""
+    p = affine_path()
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    dz = (data or {}).get("dz") if isinstance(data, dict) else None
+    if not isinstance(dz, dict) or dz.get("v") is None:
+        return None
+    import numpy as np
+    try:
+        v = np.asarray(dz["v"], dtype=np.float64).reshape(2)
+    except (TypeError, ValueError):
+        return None
+    return {"v": v, "z_ref": float(dz.get("z_ref", -5.0))}
+
+
 def load_pattern_thresholds(name):
     """Per-pattern thresholds (+ infidelities + Gaussian fits) from ``<name>/threshold.mat``, or
     None.
@@ -169,6 +195,69 @@ def _parse_gauss_fits_struct(d):
 
 
 # =========================================================================== #
+# knm orientation guard (resilient against a transposed record.json knm)
+# =========================================================================== #
+def _canonical_knm(rec):
+    """Return the record's trap positions as canonical registry ``[y, x]`` (N,2), guarding against a
+    record whose ``knm`` was written transposed as ``[x, y]``.
+
+    The registry convention -- and every sibling pattern, and the run-analysis reader -- is ``knm =
+    [y, x]``. A derivation path once wrote ``knm = [x, y]`` for a pattern (``2x11x11_5um_back2um``,
+    2026-07-14), which silently TRANSPOSED the detection grid so the boxes landed on the wrong side of
+    the frame (grid on the bottom, atoms on the right) and every loading/survival number read ~0.
+
+    The authoritative cross-check is ``positions_knm3d`` (columns ``[y, x, z]``): when present, the
+    first two columns ARE the canonical ``[y, x]``, so:
+      * if ``knm`` matches ``positions_knm3d[:, :2]``  -> knm is already canonical, use it.
+      * if ``knm`` matches ``positions_knm3d[:, [1,0]]`` (the swap) -> knm is transposed; use
+        ``positions_knm3d[:, :2]`` (the un-swapped 3D truth) instead.
+      * if it matches NEITHER (a genuinely different / edited knm) -> trust ``knm`` unchanged; we only
+        correct the exact, provable transpose, never guess.
+    When there is no ``positions_knm3d`` we cannot prove an orientation, so ``knm`` is returned as-is
+    (no heuristic -- a tall/wide array must not be "corrected"). Any failure returns the raw ``knm``.
+    Returns None only when there is no usable ``knm`` at all.
+    """
+    import numpy as np
+    raw = rec.get("knm") if isinstance(rec, dict) else None
+    if not raw:
+        return None
+    try:
+        knm = np.asarray(raw, dtype=np.float64).reshape(-1, 2)
+    except (ValueError, TypeError):
+        return None
+    p3 = rec.get("positions_knm3d") if isinstance(rec, dict) else None
+    if not p3:
+        return knm                                   # no 3D truth to check against -> as-is
+    try:
+        p3 = np.asarray(p3, dtype=np.float64)
+        if p3.ndim != 2 or p3.shape[0] != knm.shape[0] or p3.shape[1] < 2:
+            return knm                               # shape mismatch -> can't cross-check
+        yx = p3[:, :2]                               # canonical [y, x] from the 3D source
+        # Compare only over finite rows; a NaN anywhere must not decide the orientation.
+        finite = np.isfinite(knm).all(1) & np.isfinite(yx).all(1)
+        if not finite.any():
+            return knm
+        k, g = knm[finite], yx[finite]
+        # RELATIVE fit, not an absolute tolerance: knm and positions_knm3d were derived at slightly
+        # different times/precisions, so even a correctly-oriented knm differs from the 3D source by
+        # ~O(1 px) drift. The transpose is unmistakable by RATIO -- on the real bad record d_swap was
+        # 1.6 px vs d_same 298 px (180x better fit). So we call it transposed only when the swapped
+        # orientation fits DRAMATICALLY better (<= 1/8 of d_same) AND is small in absolute terms
+        # (<= array_span/20, i.e. sub-lattice) -- an unrelated/edited knm (both large, no clear
+        # winner) is left untouched. Correct only a provable, well-separated transpose.
+        d_same = float(np.max(np.abs(k - g)))
+        d_swap = float(np.max(np.abs(k - g[:, ::-1])))
+        span = float(np.max(g.max(axis=0) - g.min(axis=0))) if len(g) > 1 else 0.0
+        abs_ok = d_swap <= max(1.0, span / 20.0)     # swapped fit is sub-lattice-scale
+        rel_ok = d_swap <= d_same / 8.0              # and fits far better than the as-stored order
+        if abs_ok and rel_ok:
+            return yx                                # knm is transposed -> use the 3D [y, x]
+        return knm                                   # already canonical, or unrelated -> trust knm
+    except Exception:  # noqa: BLE001 - the guard must never break grid resolution
+        return knm
+
+
+# =========================================================================== #
 # affine math (ports of affine_transform._knm_to_xy / apply_affine[_cropped])
 # =========================================================================== #
 def _knm_to_xy(knm):
@@ -210,7 +299,10 @@ def pattern_camera_grid(name, roi):
     if A is None:
         return None
     try:
-        return _apply_affine_cropped(_knm_to_xy(rec["knm"]), A, roi)
+        knm = _canonical_knm(rec)          # guard: correct a transposed [x,y] record -> [y,x]
+        if knm is None:
+            return None
+        return _apply_affine_cropped(_knm_to_xy(knm), A, roi)
     except Exception:  # noqa: BLE001
         return None
 
