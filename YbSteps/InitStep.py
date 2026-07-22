@@ -33,12 +33,14 @@ def InitStep(s, g):
     Vz = g.Electrodes.Vz(Consts().Init.Electrodes.Vz)
     VSLMservo = g.VSLMServo(Consts().Init.VSLMServo)
 
+    Amp_AOM616Divert = Consts().AOM616Divert.Amp()
+    
     # s.wait(10e-6)
     (s.add_step(10e-6)
         .add('Freq2DMOT', Freq_2DMOT).add('Amp2DMOT', Amp_2DMOT)
         .add('FreqZeeman', Freq_Zeeman).add('AmpZeeman', Amp_Zeeman)
         .add('FreqAOM308', 200e6).add('AmpAOM308', 0)
-        .add('FreqAOM616', 120e6).add('AmpAOM616', 0.12)
+        .add('FreqAOM616', 120e6).add('AmpAOM616', Amp_AOM616Divert)
         .add('FreqAODv', 100e6)
         .add('Amp556MOTX', 0)
         .add('Amp556RydbergMOTh', 0)
