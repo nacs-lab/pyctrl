@@ -1,4 +1,4 @@
-"""Phase-5 seq_reload: per-job hot-reload of ported experiment modules (rehash()+str2func analog).
+"""seq_reload: per-job hot-reload of ported experiment modules (rehash()+str2func analog).
 
 NO-HARDWARE. Uses throwaway modules written to tmp dirs (added to sys.path) so we can edit a file
 on disk and prove the next import re-reads it -- without touching the real YbSeqs. Verifies:

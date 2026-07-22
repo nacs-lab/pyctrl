@@ -1,4 +1,4 @@
-"""Phase-5 control_channel TWO-PROCESS abort/pause coherency (real ExptServer + a writer proc).
+"""control_channel TWO-PROCESS abort/pause coherency (real ExptServer + a writer proc).
 
 A genuine cross-process integration test: a real :class:`ExptServer` is bound to a localhost port
 in THIS process, its :class:`ControlChannel` polls ``check_request`` at the run-loop gate, while a

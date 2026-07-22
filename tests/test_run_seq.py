@@ -1,6 +1,6 @@
-"""Phase-5 run_seq: the scan-loop body (port of runSeq2.m).
+"""run_seq: the scan-loop body (port of runSeq2.m).
 
-NO-HARDWARE: a REAL ScanGroup drives ``getseq_with_var`` (Phase 4), while ``compile_point``,
+NO-HARDWARE: a REAL ScanGroup drives ``getseq_with_var``, while ``compile_point``,
 ``run_real``, and the control channel are injected fakes -- so the orchestration (three
 memos, gate placement, dual counters, retry, rep/random loops, clear-at-job-start, config
 bracket) is verified with the engine never loaded.

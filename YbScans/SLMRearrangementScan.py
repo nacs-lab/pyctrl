@@ -19,7 +19,7 @@ its OWN per-pattern registry grid + thresholds (via imagePatternsJson + rearrang
 {initial,middle,final}_pattern), so the three patterns may be genuinely different arrays / spot
 counts -- provided the lab detection agrees with what the SLM server scores that round.
 
-What the backend does (see runner.py + RearrangeCommSeq / RearrangeCommSeq2):
+What the backend does (see engine_run.py / slm_runtime.py + RearrangeCommSeq / RearrangeCommSeq2):
   * AT DEQUEUE -- grab the scan-long ``slm`` lock, write the loading phase, push the initial
     ``setup_rearrangement`` (model + phases + ``reset_params=True``).
   * PER SHOT   -- grab the ``compute`` lock, push setup_rearrangement (swept params, sticky),

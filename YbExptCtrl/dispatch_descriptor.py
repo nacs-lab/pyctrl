@@ -1,17 +1,17 @@
 """dispatch_descriptor.py -- build a ScanGroup + resolve a seq from a JSON descriptor.
 
 Transliteration of ``matlab_new/YbExptCtrl/dispatch_descriptor.m``, but deliberately
-SIMPLER for the pyctrl scenario-3 run loop. In MATLAB the dispatcher builds a ScanGroup,
+SIMPLER for the pyctrl run loop. In MATLAB the dispatcher builds a ScanGroup,
 hands it to ``ybBuildScanPayload`` and submits the resulting MATLAB byte stream via
-``srv.server.submit_job(...)``. pyctrl is BOTH producer and consumer of the queue entry
-(scenario 3: new monitor + pyctrl), so the payload IS the descriptor JSON itself -- there
+``srv.server.submit_job(...)``. pyctrl is BOTH producer and consumer of the queue entry,
+so the payload IS the descriptor JSON itself -- there
 is no ``getByteStreamFromArray`` / ``ybBuildScanPayload`` / ``submit_job`` round-trip and
 no ROI side-channel. This function does only the cross-backend part: rebuild a ScanGroup
 from ``descriptor.params`` + ``descriptor.runp``, resolve the seq function, auto-derive
 ``NumPerGroup``, and return ``(scangroup, seq, opts)`` for the run loop (run_seq.py) to
 consume exactly as ``runSeq2`` consumes a ScanGroup + func.
 
-Only two things are cross-backend contracts (PYTHON_FRONTEND_PLAN.md Phase 5): the
+Only two things are cross-backend contracts: the
 descriptor JSON (this file's input), and the per-point serialized seq bytes (THE ONE
 RULE). The MATLAB payload-byte test (``ybStartScan_refactor_test.m``) is a MATLAB-refactor
 check, NOT a pyctrl contract -- so the proprietary payload is not reproduced here.
@@ -24,15 +24,15 @@ Differences from dispatch_descriptor.m (justified, see references/runtime-design
     ``importlib.import_module(name); getattr(mod, name)``. Works because ``YbSeqs`` /
     ``YbSteps`` / ``lib`` are flat on ``sys.path`` and the module name equals the attr
     name (verbatim naming, see references/naming.md). A missing module/attr raises
-    :class:`NotMigratedError` -- this makes scenario 3's "only ported seqs are runnable"
+    :class:`NotMigratedError` -- this makes the "only ported seqs are runnable" rule
     loud instead of silent. No registry. ``seq="auto"`` raises in v1 (mirror).
   * **No ExptServer submit / ROI / payload** -- the run loop owns those.
   * **JSON numbers are float-coerced** to match ``jsondecode`` (which always yields
     ``double``). A bare JSON ``1`` left as a Python ``int`` would tag ``ARG_CONST_INT32``
-    and break byte-equality for any param used as a SeqVal operand (Phase 3 finding).
+    and break byte-equality for any param used as a SeqVal operand.
     Booleans stay ``bool`` (MATLAB ``logical``); strings / null pass through.
 
-Sweep / single-element-collapse traps reproduced (Phase 5 findings E):
+Sweep / single-element-collapse traps reproduced (findings E):
 
   * ``linspace [a,b,n]`` with ``n == 1`` yields the **STOP** endpoint ``b`` (MATLAB
     ``linspace(a,b,1) == b``), NOT the START (NumPy's ``linspace(a,b,1) == a``).
@@ -63,7 +63,7 @@ class NotMigratedError(Exception):
     """A descriptor referenced a seq / function name that pyctrl has not ported.
 
     Raised by the import-by-convention resolver when ``import_module(name)`` fails or the
-    module has no attribute named ``name``. In scenario 3 only ported (importable) seqs are
+    module has no attribute named ``name``. Only ported (importable) seqs are
     runnable; this surfaces an attempt to run an un-migrated one rather than failing deep in
     the run loop.
     """

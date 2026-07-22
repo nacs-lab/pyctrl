@@ -89,7 +89,7 @@ def pre_run(s1, *, flags=("rearrange_img1_ok",), lock_desc="rearrange compute",
         frames_label = "/".join("img%d" % (i + 1) for i in range(len(flags) + 1))
 
     # Per-shot frame-buffer resync. The Orca free-runs into a circular buffer armed ONCE per
-    # scan (runner.py: flush + start_video); within a scan the frames are grabbed one at a
+    # scan (engine_run.py: flush + start_video); within a scan the frames are grabbed one at a
     # time, so a single straggler -- a frame whose readout landed after its grab timed out, a
     # cancelled pair's leftover, or a spurious trigger -- offsets the stream by one and the
     # frames come out SHIFTED for the rest of the scan. pre_run runs BEFORE this shot's

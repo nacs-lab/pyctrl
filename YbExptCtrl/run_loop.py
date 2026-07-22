@@ -1,8 +1,8 @@
-"""run_loop.py -- the pyctrl scenario-3 run-loop HOST (port of ``SequenceRunner.m``).
+"""run_loop.py -- the pyctrl run-loop HOST (port of ``SequenceRunner.m``).
 
-This is the long-lived backend process the new monitor drives in **scenario 3** (new
-monitor + pyctrl, MATLAB off). It hosts the shared :class:`ExptServer` ZMQ hub, drains the
-queue, and runs each scan through the engine -- the Python counterpart of the MATLAB
+This is the long-lived backend process the monitor drives: pyctrl is the runtime, and the
+MATLAB stack is a retired backup/reference. It hosts the shared :class:`ExptServer` ZMQ hub,
+drains the queue, and runs each scan through the engine -- the Python counterpart of the MATLAB
 ``SequenceRunner(url)`` function (``matlab_new/YbExptCtrl/SequenceRunner.m``). It is launched
 as ``python -m launcher.run_loop.runner <url>`` (see ``launcher/run_loop/runner.py``, which only
 bootstraps ``sys.path`` and calls :func:`main` here).
@@ -16,8 +16,8 @@ and the ExptServer + signal/teardown lifecycle.
 Submission paths (verified with the user 2026-06-02): today a scan is started either by a
 JSON **descriptor** (``submit_scan_descriptor`` -- the new monitor) or by the **".m run
 button"** in a scan file (``ybStartScan`` -> ``submit_job`` with a MATLAB byte-stream
-payload). The run-button path needs a live MATLAB, which is OFF in scenario 3, and its
-payload is MATLAB-proprietary (``getArrayFromByteStream``) -- so **pyctrl consumes the
+payload). The run-button path needs a live MATLAB, which is not part of the pyctrl runtime, and
+its payload is MATLAB-proprietary (``getArrayFromByteStream``) -- so **pyctrl consumes the
 descriptor path only**. :func:`handle_descriptor_pop` mirrors MATLAB ``handleDescriptorPop``
 but, since pyctrl is BOTH producer and consumer, it dispatches a descriptor into a JSON job
 payload it emits and consumes itself (``submit_job`` + ``link_descriptor_to_job``); the main
@@ -79,8 +79,8 @@ def resolve_url(argv):
 def assert_single_backend(url, ping=None):
     """Refuse to start if a backend already answers ``ping`` at ``url`` (mutual exclusion).
 
-    The two run loops NEVER run simultaneously (the three scenarios are mutually exclusive,
-    references/runtime-design.md). The monitor's restart handoff frees the port before
+    The pyctrl and legacy-MATLAB run loops never run simultaneously
+    (references/runtime-design.md). The monitor's restart handoff frees the port before
     spawning us, so normally nothing answers; this is a belt-and-braces guard against a
     second backend silently failing to bind onto a live one. Raises :class:`RuntimeError`
     when a live backend is detected.

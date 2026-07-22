@@ -1,11 +1,11 @@
-"""Phase-5 RUN-LOOP two-process abort/pause coherency (real ExptServer + real run loop + a
+"""RUN-LOOP two-process abort/pause coherency (real ExptServer + real run loop + a
 writer proc).
 
 This is the run-loop-level companion to ``test_control_channel_2proc.py``. That file drives
 :class:`ControlChannel` directly against a real :class:`ExptServer`; THIS file drives the actual
 scan loop -- ``run_seq.run_scan_group`` and ``run_job.run_job`` -- against the same real
 server while a SEPARATE OS process (``control_writer_helper.py``) issues ``pause_seq`` /
-``abort_seq`` / ``start_seq`` verbs over ZMQ. It is the "two-process integration test" the Phase-5
+``abort_seq`` / ``start_seq`` verbs over ZMQ. It is the "two-process integration test" the
 plan flags as the only thing the single-process unit tests can't cover: the verbs travel the wire,
 are applied by the server's worker thread, and must be honored by the run loop at the per-sequence
 gate -- proving the end-to-end control contract, not just its halves.

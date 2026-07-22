@@ -3,15 +3,15 @@
 ``ybStartScan(seq, g, **opts)`` is the pyctrl entry that lets a "scan file" read like the
 MATLAB one (``YbScans/scanConfig/ybStartScan.m``): build a :class:`ScanGroup` field by field,
 then submit it. Under the hood it EXPORTS the group to a descriptor JSON
-(:func:`scan_export.scangroup_to_descriptor`) and submits it over the SAME ZMQ verb the new
+(:func:`scan_export.scangroup_to_descriptor`) and submits it over the SAME ZMQ verb the
 monitor uses (``submit_scan_descriptor``) -- so it rides the one intra-backend payload the
-run loop already consumes (runner.py / dispatch_descriptor.py). This is **Option A** (chosen
+run loop already consumes (run_loop.py / dispatch_descriptor.py). This is **Option A** (chosen
 2026-06-02): MATLAB ergonomics on the single descriptor contract.
 
 This DIVERGES from MATLAB's ``ybStartScan.m`` mechanism on purpose. MATLAB serializes the
 ScanGroup into a MATLAB byte-stream job (``ybBuildScanPayload`` -> ``getByteStreamFromArray``
 -> ``submit_job``); that payload is MATLAB-proprietary and needs a live MATLAB, neither of
-which exists in scenario 3. pyctrl instead emits the portable descriptor JSON.
+which is part of the pyctrl runtime. pyctrl instead emits the portable descriptor JSON.
 
 Example scan file (``YbScans``-style)::
 

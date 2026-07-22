@@ -1,4 +1,4 @@
-"""Phase-5 generate() validation against the REAL libnacs engine (compile-only).
+"""generate() validation against the REAL libnacs engine (compile-only).
 
 `needs_engine`, COMPILE-ONLY: builds real ported YbSeqs and calls ``ExpSeq.generate()``,
 which is ``create_sequence(serialize())`` + ``get_nidaq_channel_info`` + ``reset_globals`` --

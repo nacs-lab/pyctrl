@@ -243,8 +243,8 @@ def _await_camera_init(server, seq_config=None, wait_s=CAMERA_INIT_WAIT_S, log=p
     camera = open_camera(seq_config, log=lambda m: log("[runner] %s" % m))
     # Report the just-opened+configured camera as CONNECTED right away (with its ROI /
     # exposure / trigger / cooler / temperature). Without this the monitor would show
-    # "disconnected" until a camera_init arrives -- but in scenario 3 the camera is already
-    # open and configured from expConfig, so the truthful state is connected.
+    # "disconnected" until a camera_init arrives -- but the camera is already open (pyctrl opens
+    # it at startup) and configured from expConfig, so the truthful state is connected.
     push_camera_status(server, camera)
     deadline = time.time() + wait_s
     while time.time() < deadline:

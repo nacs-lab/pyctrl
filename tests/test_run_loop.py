@@ -1,4 +1,4 @@
-"""Phase-5 run loop: the scenario-3 run-loop HOST orchestration (YbExptCtrl/run_loop.py).
+"""run loop: the run-loop HOST orchestration (YbExptCtrl/run_loop.py).
 
 NO-HARDWARE: every device/engine/socket dependency is injected, so URL resolution, the
 single-backend guard, the descriptor->job dispatch, the consume loop, the camera-command

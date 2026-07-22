@@ -1,4 +1,4 @@
-"""Phase-5 orca_camera: the pylablib Orca wrapper, against a FAKE DCAM backend.
+"""orca_camera: the pylablib Orca wrapper, against a FAKE DCAM backend.
 
 NO-HARDWARE: pylablib is never imported -- a fake DCAMCamera is injected. Covers the
 handle_camera_cmd interface (init/apply_settings/current_roi/close), the [x,y,w,h] <-> pylablib

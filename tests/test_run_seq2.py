@@ -1,4 +1,4 @@
-"""Phase-5 run_seq2: per-shot engine execution (run_real / run_bseq) call-order.
+"""run_seq2: per-shot engine execution (run_real / run_bseq) call-order.
 
 NO-HARDWARE: a fake ``pyseq`` (scripted ``post_run`` next_idx walk + scripted ``wait``
 poll-loop) and a fake ``nidaq`` drive run_real/run_bseq with the engine never loaded. Every

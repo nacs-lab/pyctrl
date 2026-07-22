@@ -1,7 +1,7 @@
-"""Phase-5 Orca camera LIVE checks (needs_hardware -- excluded by default).
+"""Orca camera LIVE checks (needs_hardware -- excluded by default).
 
-Run only when the camera is free of MATLAB (DCAM is one-handle-per-camera) and pylablib is
-installed (the .venv-engine-py312 has it):
+Run only when no other process holds the camera handle (DCAM is one-handle-per-camera, so stop
+the live backend first) and pylablib is installed (the .venv-engine-py312 has it):
 
     cd pyctrl; .venv-engine-py312/Scripts/python -m pytest -m needs_hardware tests/test_orca_hardware.py
 

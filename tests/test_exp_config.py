@@ -1,7 +1,7 @@
-"""Phase-5 expConfig.py: executable config drift oracle + hot-reload.
+"""expConfig.py: executable config drift oracle + hot-reload.
 
-The executable ``expConfig.py`` is pyctrl's production config source AND (since 2026-06-05, the
-gradual MATLAB -> pyctrl switch) the human-edited SOURCE OF TRUTH for the front-end config. The
+The executable ``expConfig.py`` is pyctrl's production config source AND (since 2026-06-05) the
+human-edited SOURCE OF TRUTH for the front-end config. The
 committed snapshot ``tests/reference/config_reference.json`` is a frozen copy of
 ``expConfig.build_config()`` (regenerated engine-free by ``tools/capture_config_reference.py``).
 This test is the DRIFT ORACLE: an accidental/unintended edit to ``expConfig.py`` that is not a

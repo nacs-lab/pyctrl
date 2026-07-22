@@ -1,14 +1,14 @@
 """Controlled single-shot LACScan validation -- NEEDS-HARDWARE (fires the experiment ONCE).
 
-Isolates the scenario-3 capture chain BEFORE involving the monitor/dashboard: load config,
+Isolates the pyctrl capture chain BEFORE involving the monitor/dashboard: load config,
 open + arm the Orca, run ONE shot of TweezerLoadingSeq (the seq LACScan uses) through the real
 engine + FPGA, capture the 1 image via the run-loop capture path (make_engine_run), store it to
 a LOCAL ExptServer, and verify get_imgs() returns exactly one image.
 
 ⚠ This DRIVES THE FULL EXPERIMENT: TweezerLoadingSeq runs Init -> BlueMOT -> SLM -> GreenMOT ->
 LAC -> Imag399 -> Init (MOT load, SLM tweezers, LAC, 399 imaging), arms the NI DAQ (14 analog
-channels), and drives every FPGA/NI channel to its expConfig default. Run only with MATLAB OFF,
-the camera free, and a confirmed-safe hardware state.
+channels), and drives every FPGA/NI channel to its expConfig default. Run only with the live
+backend stopped (so the camera is free) and a confirmed-safe hardware state.
 
 Params mirror LACScan.m's active settings (BlueMOT.LoadingTime=0.4, GreenMOT.CoolDown.HoldTime
 =0.1; runp NumImages=1, NumPerGroup=500, isInit=1). rep=1 -> a single shot -> a single image.

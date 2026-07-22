@@ -1,7 +1,7 @@
 """autocal -- continuous background-calibration system (the "auto-calibrations" lane).
 
 A small, deterministic controller that keeps a tweezer pattern (or several, cycled) in
-calibration by riding the ExptServer *background* queue lane (see ``YbExptCtrl/runner.py``
+calibration by riding the ExptServer *background* queue lane (see ``YbExptCtrl/run_loop.py``
 ``_try_pop_background`` / ``lib/run_seq.py`` yield-at-shot-boundary). It submits the most
 important measure-only calibration scans as low-priority ``background=True, cycle=True`` jobs,
 pools their results across the many short (frequently-yielded) partial runs, fits the pooled

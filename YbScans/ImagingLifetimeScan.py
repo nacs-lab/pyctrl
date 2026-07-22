@@ -79,9 +79,9 @@ def build():
 
     # Resolve the hold's imaging/cooling against the loading PATTERN this scan images (base (+)
     # ByPattern overlay) so the hold TRACKS the array, not bare base. Effective pattern mirrors
-    # the runner's non-rearrange logic (_first_loading_pattern): LOADING_PHASE wins, else
+    # the run loop's non-rearrange logic (_first_loading_pattern): LOADING_PHASE wins, else
     # expConfig's every-scan default (SLM.Loading.DefaultPhase when AllScansLoadPattern). The
-    # name<-path map matches runner.py (basename, no extension). apply_pattern() returns base
+    # name<-path map matches slm_runtime.py (basename, no extension). apply_pattern() returns base
     # UNCHANGED for an unknown/empty pattern, so None + no default = bare base (byte-identical).
     base_store = SeqConfig.get().consts
     loading_cfg = (base_store.get("SLM", {}) or {}).get("Loading", {}) or {}

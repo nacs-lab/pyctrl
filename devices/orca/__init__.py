@@ -1,4 +1,4 @@
-"""orca -- Hamamatsu Orca-Quest qCMOS camera (scenario-3 capture).
+"""orca -- Hamamatsu Orca-Quest qCMOS camera (pyctrl capture).
 
 pylablib (DCAM) wrapper + the ``store_imgs`` wire-format helper. Import-safe with
 no pylablib present (the DCAM import is lazy inside the open/connect path).

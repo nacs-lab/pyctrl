@@ -1,12 +1,12 @@
-"""run_job.py -- the pyctrl scenario-3 run-loop CONSUMER orchestration.
+"""run_job.py -- the pyctrl run-loop CONSUMER orchestration.
 
 Ports the NO-HARDWARE-testable core of ``matlab_new/YbExptCtrl/SequenceRunner.m``:
-  * :func:`run_job`     -- the per-job pipeline (``runJob``), simplified for scenario 3.
+  * :func:`run_job`     -- the per-job pipeline (``runJob``), simplified for pyctrl.
   * :class:`IdleScheduler` -- the dummy-mode idle state machine (the main loop's empty-queue
     branch: ``off`` / ``default`` / ``last`` + the ``last_fallback_logged`` cross-iteration
     flag).
 
-**Scenario-3 simplification (references/runtime-design.md).** In MATLAB, ``runJob`` decodes a
+**Descriptor-path simplification (references/runtime-design.md).** In MATLAB, ``runJob`` decodes a
 proprietary MATLAB byte payload (``getArrayFromByteStream``), ``ScanGroup.load``s it, sets up
 the AWG, runs ``ybBuildScanJob`` (ROI / dated dir / camera prep), writes the ``ScanParamsSet``
 memmap handshake, flushes stale camera frames, then ``runSeq2``. pyctrl is BOTH producer and

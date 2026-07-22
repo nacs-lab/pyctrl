@@ -1,4 +1,4 @@
-"""Phase-5 control_channel: the ZMQ SeqRequest gate that replaces the memmap CheckPauseAbort.
+"""control_channel: the ZMQ SeqRequest gate that replaces the memmap CheckPauseAbort.
 
 NO-HARDWARE: a fake control source models ExptServer's SeqRequest/State transitions, and a
 scripted ``sleep`` advances the request timeline deterministically (standing in for the
@@ -7,7 +7,7 @@ while the run loop spins). Asserts CheckPauseAbort parity + the single-clear-poi
 abort-sticky / request-vs-reached must-fixes.
 
 The live two-process coherency test (a real ExptServer + a separate control writer) is
-item-7 territory per PYTHON_FRONTEND_PLAN.md Phase 5.
+item-7 territory per PYTHON_FRONTEND_PLAN.md.
 """
 
 import pytest

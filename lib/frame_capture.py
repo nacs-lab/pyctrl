@@ -1,7 +1,7 @@
 """frame_capture.py -- the default per-shot camera capture (run-loop ACQUIRE side).
 
-The pyctrl counterpart of MATLAB ``server_post_run`` for non-rearrangement scans. In scenario 3
-the FPGA pulses the Orca trigger (``FPGA1/TTL54``, rising edge) at each imaging step, so after a
+The pyctrl counterpart of MATLAB ``server_post_run`` for non-rearrangement scans. The
+FPGA pulses the Orca trigger (``FPGA1/TTL54``, rising edge) at each imaging step, so after a
 shot the camera buffer holds ``num_images`` frames. This module's job is the **acquire** half:
 read those frames off the buffer (synchronously -- buffer-timing sensitive, and cheap). The
 **persist** half (encode + ``store_imgs`` + ``seq_finish``) is owned by ``ExptServer`` and runs on

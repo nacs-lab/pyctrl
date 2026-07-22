@@ -1,4 +1,4 @@
-"""Phase-5 scan metadata for the dashboard: scan_summary.build_descriptor_summary (queue panel)
+"""scan metadata for the dashboard: scan_summary.build_descriptor_summary (queue panel)
 and scangroup_scan_config (DataManager live scan-info). NO-HARDWARE -- pure ScanGroup +
 descriptor math, mirroring the LACScan the live backend runs.
 """

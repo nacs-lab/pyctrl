@@ -7,7 +7,7 @@ reports which AWGs a scan activates.
 The ordering contract (AWG setup BEFORE the scan-long SLM lock, for lease freshness) is owned by
 engine_run, not this module. QICK wiring will land here next to the Siglent code.
 
-Split out of runner.py 2026-07-22.
+Split out of runner.py (now run_loop.py) 2026-07-22.
 """
 
 

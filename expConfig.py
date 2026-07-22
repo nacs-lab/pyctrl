@@ -202,11 +202,11 @@ def _consts():
         "AOM": {"Freq": 120e6, "Amp": 0.55},
         "VServo": None,                        # cross-ref -> Init.VSLMServo (set below)
         "Modulation": {"Time": 10e-3, "Freq": 100e3, "Amp": 0},
-        # Every-scan default loading pattern. RUNTIME-ONLY: consumed by the pyctrl runner
-        # (_loading_defaults in YbExptCtrl/runner.py), never read by a sequence -> no
+        # Every-scan default loading pattern. RUNTIME-ONLY: consumed by the pyctrl run loop
+        # (_loading_defaults in YbExptCtrl/slm_runtime.py), never read by a sequence -> no
         # serialize() byte effect, so it does NOT touch the byte oracles. expConfig.py is the
         # live source of truth and hot-reloads per job, so the default array changes WITHOUT a
-        # backend restart. The runner.py module constants (DEFAULT_LOADING_PATTERN_PHASE /
+        # backend restart. The slm_runtime.py module constants (DEFAULT_LOADING_PATTERN_PHASE /
         # DEFAULT_LOADING_DEFOCUS / ALL_SCANS_LOAD_PATTERN) are now only the fallback when this
         # "Loading" key is absent (e.g. a bare JSON snapshot). After editing this, regenerate
         # the config drift oracle: ``python pyctrl/tools/capture_config_reference.py``.
@@ -350,8 +350,8 @@ def _consts():
     }
 
     # Per-TTL-channel hardware timing managers (ExpSeq.add_ttl_mgr -> serialized into the byte blob
-    # -> libnacs/FPGA shifts every edge on that channel). Consumed by the runner's compile_point
-    # (YbExptCtrl/runner.py), like LineTrigger; a channel absent here (or all-zero) adds NOTHING to
+    # -> libnacs/FPGA shifts every edge on that channel). Consumed by the run loop's compile_point
+    # (YbExptCtrl/engine_run.py), like LineTrigger; a channel absent here (or all-zero) adds NOTHING to
     # the bytes (byte-identical), and a manager only serializes if its channel is actually USED in
     # the sequence. Per-channel fields (all times in SECONDS):
     #   on_delay / off_delay -- fire the rising / falling edge THIS MUCH EARLIER (advance). The
@@ -380,8 +380,8 @@ def _consts():
     # 60 Hz AC-line trigger. When enabled, the FPGA waits for an edge on a TTL INPUT line at the
     # start of each basic sequence (ExpSeq.enable_global_wait_trigger -> a version-2 ZYNQZYNQ
     # block -> libnacs emits a WaitTrigger bytecode op), so every shot begins at the same mains
-    # phase (B-field stability). Consumed ONLY by the runner's compile_point
-    # (YbExptCtrl/runner.py) -- it is never read by a sequence step, so it does NOT enter the
+    # phase (B-field stability). Consumed ONLY by the run loop's compile_point
+    # (YbExptCtrl/engine_run.py) -- it is never read by a sequence step, so it does NOT enter the
     # serialized bytes (the MATLAB byte oracles are unaffected; only this config snapshot needs
     # re-capturing). Per-scan override: runp().LineTriggerEnable / LineTriggerChannel /
     # LineTriggerRaise / LineTriggerTimeout.

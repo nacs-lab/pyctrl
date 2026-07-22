@@ -2,7 +2,7 @@
 
 The ExptServer ZMQ protocol is the contract between the backend and the yb_analysis monitor
 (references/runtime-design.md: "one contract ... hosted by whichever backend is live"). The
-pyctrl run loop (``runner.py``) instantiates this and drains the queue via
+pyctrl run loop (``run_loop.py``) instantiates this and drains the queue via
 ``pop_next_descriptor`` / ``pop_next_job``. The **WIRE FORMAT** must stay compatible with the
 monitor -- the verb names, ``ping``->``pong``, and the ``get_imgs`` column-major /
 shape-prefix / 0-separated flat-double layout ``_process_imgs`` parses -- or the monitor
@@ -38,14 +38,14 @@ On top of them, ``publish_shot`` / ``stage_frame`` / ``finish_shot`` / ``cancel_
 overlaps the next shot's hardware (the run loop hands raw frames here and moves on). The worker is
 the SOLE writer of ``temp_imgs`` -> single-writer by construction, so no caller locks/joins are
 needed; FIFO ordering preserves (img1 -> img2 -> finish) and shot order. Pass ``async_=False``
-(the ``YB_ASYNC_FRAME_SAVE=0`` kill-switch, applied per-scan by the runner) to run a call inline
+(the ``YB_ASYNC_FRAME_SAVE=0`` kill-switch, applied per-scan by the run loop) to run a call inline
 on the caller thread -- byte-for-byte the pre-async behaviour, for an A/B or a rollback.
 
-Scenario-3 note: only TWO submission paths exist today -- a JSON ``submit_scan_descriptor``
-(the new monitor) and the MATLAB ".m run-button" ``submit_job`` (a MATLAB byte-stream
+Submission note: only TWO submission paths exist today -- a JSON ``submit_scan_descriptor``
+(the monitor) and the MATLAB ".m run-button" ``submit_job`` (a MATLAB byte-stream
 payload via ybStartScan). The latter needs a live MATLAB and is unavailable under pyctrl,
-so the pyctrl runner consumes the descriptor path only (it dispatches a descriptor into a
-JSON job payload it produces and consumes itself -- see runner.py).
+so the pyctrl run loop consumes the descriptor path only (it dispatches a descriptor into a
+JSON job payload it produces and consumes itself -- see run_loop.py).
 """
 
 import errno
@@ -1359,7 +1359,7 @@ class ExptServer(object):
                     return True
             return False
 
-    # -------- Descriptor queue (Phase 3) --------
+    # -------- Descriptor queue --------
     #
     # Descriptors live in the same self.__queue list as jobs, distinguished
     # by `kind` ('job' default, 'descriptor' for new entries). The
@@ -1872,8 +1872,8 @@ class ExptServer(object):
             e = dict(raw)
             kind = e.get('kind', 'job')
             # Downgrade safety: unknown future kinds are warned + skipped
-            # rather than crashing the runner (Phase 3 plan: pre-Phase-3
-            # code must skip unknown 'kind' rows).
+            # rather than crashing the run loop (older code reading a newer
+            # queue file must skip unknown 'kind' rows).
             if kind not in ('job', 'descriptor'):
                 skipped_unknown += 1
                 continue

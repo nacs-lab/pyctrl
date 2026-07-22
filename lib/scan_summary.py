@@ -70,7 +70,7 @@ def build_descriptor_summary(descriptor):
 
     # total_per_group = the number of shots the scan is SET to run ("supposed to do") =
     # nseqs * StackNum. StackNum honors an explicit ``rep`` opt EXACTLY as the run loop does
-    # (sequence_runner._build_scan_order): a ``rep >= 1`` is the deliberate pyctrl pass-count
+    # (run_job._build_scan_order): a ``rep >= 1`` is the deliberate pyctrl pass-count
     # override that BYPASSES the NumPerGroup formula -- so a 4-pt sweep with rep=3 is 12 shots,
     # NOT the NumPerGroup-derived StackNum. With no explicit rep (or rep==0 run-forever, which has
     # no finite plan), fall back to ybScanSummary's StackNum = max(ceil(NumPerGroup / nseqs), 2).

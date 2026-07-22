@@ -1,4 +1,4 @@
-"""Phase-5 scan_export + ybStartScan: build a ScanGroup imperatively, export -> descriptor.
+"""scan_export + ybStartScan: build a ScanGroup imperatively, export -> descriptor.
 
 NO-HARDWARE. The headline check is the ROUND TRIP: a ScanGroup built field-by-field, exported
 with ``scangroup_to_descriptor``, then rebuilt with ``dispatch_descriptor``, must enumerate the

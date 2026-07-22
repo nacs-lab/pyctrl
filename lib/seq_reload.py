@@ -1,8 +1,8 @@
 """seq_reload.py -- per-job hot-reload of ported experiment modules (rehash()+str2func analog).
 
-The long-lived pyctrl runner (``YbExptCtrl/runner.py``) imports a seq the first time a job needs
+The long-lived pyctrl run loop (``YbExptCtrl/run_loop.py``) imports a seq the first time a job needs
 it, and Python CACHES the module in ``sys.modules``. Without intervention, editing a ported
-seq/step file would NOT take effect until the runner restarts. MATLAB's runner does
+seq/step file would NOT take effect until the run loop restarts. MATLAB's runner does
 ``rehash()`` + ``str2func`` every job, so ``.m`` edits go live immediately on the next job;
 :func:`reload_experiment_modules` gives pyctrl the same behavior -- no restart, no button.
 

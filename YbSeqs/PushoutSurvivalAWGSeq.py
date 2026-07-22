@@ -12,7 +12,7 @@ Init -> BlueMOT -> SLM -> GreenMOT -> LAC -> Imag399 -> Cool556 -> STIRAPPushout
 AWG / QICK wiring (differs from the .m's ``server_pre_run``):
   * **Siglent AWG recall is RUNNER-SIDE, not here.** The .m called ``AWGManager.recallForSeq`` in
     ``server_pre_run``; in pyctrl the run loop wires ``AWGManager.setup``/``recall_for_seq`` from
-    ``runp().AWGs`` (``YbExptCtrl/runner.py``), so this seq adds no AWG call -- the scan just lists
+    ``runp().AWGs`` (``YbExptCtrl/awg_runtime.py``), so this seq adds no AWG call -- the scan just lists
     ``g.runp().AWGs = ['AWG556', 'AWG308']``. ``STIRAPPushoutStep`` drives the FPGA gate TTLs.
   * **QICK microwave upload is DEFERRED** (per the migration decision -- not ported yet). The .m's
     ``server_pre_run`` also uploaded a QICK Ramsey program + ``start_program``; that is omitted. The

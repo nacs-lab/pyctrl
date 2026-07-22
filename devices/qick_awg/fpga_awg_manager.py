@@ -21,7 +21,8 @@ program map through these classmethods (like the Siglent ``AWGManager`` and ``re
 
 ⚠ Out-of-band device: QICK output is NOT in the serialized byte blob, so THE ONE RULE does not apply.
 The per-seq program selection (what ``recall_for_seq`` is handed) and the run-loop wiring are a
-Phase-6 scan-convention decision and are deliberately NOT wired into ``runner.py`` here.
+scan-convention decision; this is wired via ``YbExptCtrl/awg_runtime.py``, hardware verification
+pending.
 """
 import json
 import logging

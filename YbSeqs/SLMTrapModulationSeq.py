@@ -11,7 +11,7 @@ Survival (img1 vs img2) dips at the parametric resonance ``f_mod = 2*f_trap``.
 Server callbacks: the MATLAB ``regBeforeStart(@server_pre_run)`` /
 ``regAfterEnd(@server_post_run)`` become deferred no-ops here. The pyctrl run loop
 attaches the per-shot frame-capture callback (``store_imgs`` / ``seq_finish``) for every
-non-rearrange scan (runner.py make_capture_post_cb), so the seq need not deliver frames
+non-rearrange scan (engine_run.py make_capture_post_cb), so the seq need not deliver frames
 itself -- same pattern as ImagingSurvivalSeq. There is intentionally NO 616-EOM ramp:
 the MATLAB SLMTrapModulationSeq has none (it is not a Rydberg/clock sequence).
 """

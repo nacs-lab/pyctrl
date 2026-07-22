@@ -2,7 +2,7 @@
 
 Replaces the memmap ``CheckPauseAbort`` gate (``matlab_new/+archived/scripts/
 CheckPauseAbort.m``, called at ``runSeq2.m:305``) with a poll of the ExptServer ZMQ
-``SeqRequest`` -- the user-ratified "scenario 3 has NO memmap" resolution
+``SeqRequest`` -- the user-ratified "pyctrl has NO memmap" resolution
 (references/runtime-design.md). The ExptServer ``SeqRequest`` (``NoRequest`` / ``Pause`` /
 ``Abort``) is the single source of truth; this module is the run-loop-side CONSUMER.
 

@@ -1,11 +1,12 @@
-"""orca_camera.py -- pylablib wrapper for the Orca-Quest qCMOS (scenario-3 capture).
+"""orca_camera.py -- pylablib wrapper for the Orca-Quest qCMOS (pyctrl capture).
 
 pyctrl mirror of the MATLAB Orca path (``OrcaInit.m`` / ``OrcaImag.m`` + the ``server_post_run``
-capture), but a PORT, not a reuse: production capture is MATLAB IMAQ ``videoinput('hamamatsu')``;
-pyctrl scenario-3 captures via **pylablib** (``pylablib.devices.DCAM.DCAMCamera``) over the
+capture), but a PORT, not a reuse: the legacy MATLAB capture is MATLAB IMAQ ``videoinput('hamamatsu')``;
+pyctrl captures via **pylablib** (``pylablib.devices.DCAM.DCAMCamera``) over the
 installed ``C:\\Windows\\System32\\dcamapi.dll`` (``pylablib-lightweight`` needs only that runtime
 DLL -- no DCAM-SDK). The camera reports ``C15550-20UP`` (ORCA-Quest qCMOS, 4096x2304). DCAM is
-ONE handle per camera, so this opens it only when MATLAB is off (the scenario design).
+ONE handle per camera, so only one process may own it at a time (pyctrl, since the MATLAB stack
+is retired).
 
 The three documented uses map to attributes (references/runtime-design.md):
   * cooler / temperature -- ``sensor_temperature`` (read), ``sensor_cooler*`` status.

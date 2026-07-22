@@ -10,7 +10,7 @@ Everything that touches the engine is injected so the orchestration is NO-HARDWA
 
     compile_point(seqfn, seqparam) -> runnable_seq
         prepare_seq's leaf: ``s = ExpSeq(seqparam); seqfn(s); s.generate()``. The default
-        builds + generates a real ExpSeq (needs the engine -> only used in scenario 3);
+        builds + generates a real ExpSeq (needs the engine -> only used in the live run loop);
         tests inject a fake returning a stub.
     run_real(seq)                 default: run_seq2.run_real (run the shot).
     control                       a ControlChannel (control_channel.py); ``None`` disables
@@ -219,7 +219,7 @@ def _scan_loop(run_one, nseq, rep, is_random, rng):
     to a status. A ``rep=0`` forever scan only ever exits via such a sentinel.
 
     Faithful to runSeq2: ``is_random`` here is runSeq2's OWN global ``randperm``. In the
-    production path this branch is NOT used -- ``sequence_runner._build_run_kwargs`` hands a
+    production path this branch is NOT used -- ``run_job._build_run_kwargs`` hands a
     pre-built, pre-scrambled order in ``indices`` with ``rep=1, is_random=False`` (the
     randomization lives in the prep layer, ybBuildScanJob's ``scramble_groups`` + ``stack``),
     so this loop just walks that order. The global-shuffle / forever branches remain for the

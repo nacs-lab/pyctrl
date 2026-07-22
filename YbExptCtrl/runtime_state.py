@@ -7,13 +7,14 @@ backend must carry:
     ``PushoutSurvivalSeq`` & friends open with a slow ramp that slews the 616 EOM from its LAST
     value to this run's target; that "last value" used to live in ``MemoryMap.Data(1).FreqEOM616Old``.
   * offset 8 (uint8)   -- the dashboard "save sequence dumps" toggle (0=off, 1=on). Written by the
-    dashboard control (out-of-process), read by ``runner.run()`` at scan start to gate the SeqPlotter
-    auto-dump. Lives here (not over ExptServer's control verbs) by design: a live global flag that
+    dashboard control (out-of-process), read by ``engine_run``'s per-scan ``run()`` at scan start to
+    gate the SeqPlotter auto-dump. Lives here (not over ExptServer's control verbs) by design: a live
+    global flag that
     avoids touching the fragile ZMQ control plane.
 
 This is **pyctrl-private**: its OWN ``<tempdir>/nacsctl/pyctrl_runtime_state.dat`` (8 bytes, one
 little-endian float64 at offset 0), NOT the MATLAB ``nacs_mem_map.dat``. So it carries no
-``MemoryMap.m`` byte-layout coupling, and the scenario-3 "no memmap" control boundary is untouched
+``MemoryMap.m`` byte-layout coupling, and the "no memmap" control boundary is untouched
 -- this is benign physical state, read/written only from the DEFERRED ``server_pre_run`` /
 ``server_post_run`` callbacks, which ``serialize()`` never runs (so the byte path is unaffected).
 

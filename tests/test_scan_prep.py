@@ -1,4 +1,4 @@
-"""Phase-5 scan_prep: the run-order construction (ybBuildScanJob's Scan.Params) + the
+"""scan_prep: the run-order construction (ybBuildScanJob's Scan.Params) + the
 scan-config Params field.
 
 NO-HARDWARE: pure index math (stack / scramble_groups / build_scan_order) with a seeded PRNG,

@@ -72,7 +72,7 @@ Z_WEIGHT_VALUES = [0, 0.5, 1, 1.5, 2, 3, 5]
 #   * REPS_PER_POINT = number of PASSES = the ``rep`` opt = how many times EACH grid point runs.
 #   * TOTAL SHOTS = REPS_PER_POINT * N_POINTS   (NOT REPS_PER_POINT alone, NOT NumPerGroup).
 # The scan is submitted with rep=REPS_PER_POINT (the explicit pass-count override, which BYPASSES
-# the NumPerGroup/nseqs formula -- see yb_start_scan.py / sequence_runner._build_scan_order), so it
+# the NumPerGroup/nseqs formula -- see yb_start_scan.py / run_job._build_scan_order), so it
 # runs EXACTLY TOTAL_SHOTS then STOPS. NumPerGroup is ALSO set = TOTAL_SHOTS so the two agree and
 # the dashboard's "shots scheduled" is honest. NEVER set NumPerGroup to a giant run-forever
 # sentinel here: it only governs the count when ``rep`` is absent, but it pollutes the displayed

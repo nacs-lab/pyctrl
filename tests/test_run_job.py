@@ -1,4 +1,4 @@
-"""Phase-5 run_job: per-job orchestration (run_job) + dummy-mode IdleScheduler.
+"""run_job: per-job orchestration (run_job) + dummy-mode IdleScheduler.
 
 NO-HARDWARE: a fake ExptServer-like hub + injected dispatch/run drive run_job through all
 failure statuses, and the IdleScheduler dummy-mode state machine (off/default/last +

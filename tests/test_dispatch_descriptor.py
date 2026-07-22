@@ -1,6 +1,6 @@
-"""Phase-5 dispatch_descriptor: descriptor JSON -> ScanGroup + resolved seq.
+"""dispatch_descriptor: descriptor JSON -> ScanGroup + resolved seq.
 
-Two layers (PYTHON_FRONTEND_PLAN.md Phase 5, finding E + the L1/L2 byte-oracle plan):
+Two layers (PYTHON_FRONTEND_PLAN.md finding E + the L1/L2 byte-oracle plan):
 
   * **Unit / trap tests** (NO config, fake seq resolver): the sweep + collapse + coercion
     + resolution rules a naive port gets wrong -- linspace ``n==1`` STOP endpoint,

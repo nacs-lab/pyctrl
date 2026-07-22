@@ -1,4 +1,4 @@
-"""Phase-5 devices registry: the name -> factory lookup (devices.register/create/available).
+"""devices registry: the name -> factory lookup (devices.register/create/available).
 
 NO-HARDWARE: orca is constructed with an injected fake backend (``cam=...``) so no DCAM /
 pylablib is touched; the NI entries resolve to a namespace / module (no device driven).

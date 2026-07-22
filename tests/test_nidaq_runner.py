@@ -1,4 +1,4 @@
-"""Phase-5 nidaq_runner: the transpose (#1 silent-bug risk) + structural session caching.
+"""nidaq_runner: the transpose (#1 silent-bug risk) + structural session caching.
 
 NO-HARDWARE: the device hooks (_build_task / _write_and_start / _wait_task / _close_task) are
 stubbed, so the pure transpose and the cache-invalidation DECISION are exercised without
