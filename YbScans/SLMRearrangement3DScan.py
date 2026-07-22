@@ -63,8 +63,8 @@ import sys
 # Zernike + axial planes by _pattern_cfg below (port of ybLoadingPatternCfg.m's 3-D entry). For a
 # plain "fill the same multi-layer array" rearrangement leave them equal. Default: the 2-layer
 # 15x15 diamond (two planes at +-2.5 um).
-INIT_PATTERN = "2x15x15_xyoffset_5um"
-TARGET_PATTERN = "2x15x15_xyoffset_5um"
+INIT_PATTERN = "2x11x11_5um_back2um"
+TARGET_PATTERN = "2x11x11_5um_back2um"
 # ------------------------------------------------------------------------------------ #
 
 # 3-D rearrangement checkpoint (server-side path, relative to the SLM PC's slm/ project root).
@@ -73,10 +73,11 @@ MODEL_FILENAME = "SLMnet/checkpoints/experiment_3d/models/base5x5_fp16/best_mode
 
 # ANSI z4 (rad) written for the WHOLE scan: drops the stack MIDPLANE onto the science camera (the
 # plane the global SLM->camera affine is calibrated against). The two layers then sit at
-# loading_defocus +- planes_z_rad. -5 is the established 2-D/midplane value (see
-# TwoLayer2x15ImagingScan.py). The per-layer depths are declared via planes_z_rad, RELATIVE to
-# this midplane -- NOT added here.
-LOADING_DEFOCUS = -5
+# loading_defocus +- planes_z_rad. The per-layer depths are declared via planes_z_rad, RELATIVE to
+# this midplane -- NOT added here. For 2x11x11_5um_back2um the measured layer-focus CROSSOVER is
+# -6.5 (front layer peaks ~-3.5, back ~<-9; NOT the geometric -5) -- the imaging-optimization
+# operating point 2026-07-14.
+LOADING_DEFOCUS = -6.5
 
 # Cross-plane xy-dedup radius (knm-1024 px) for the 3-D grid derivation. The two layers are only
 # +-2.5 um apart (within DOF) but xy-offset, so each spot clears the global amplitude threshold in
@@ -85,9 +86,11 @@ LOADING_DEFOCUS = -5
 # 2026-06-13 via /eval: radius 2-15 all give 445 = [224, 221] (insensitive in that range).
 # WIRED 2026-06-13: _derive_grid_3d_impl resolves the dedup radius as explicit-arg ->
 # setup extra 'dedup_xy_knm' (this) -> module default DEDUP_XY_KNM_OVERRIDE (6.0). The same dedup
-# is applied to the lab registry derive, so the detection grid + server init_grid share the 445
-# per-plane order. (For a future same-(x,y) bifocal array set this to 0 to disable.)
-DEDUP_XY_KNM = 6
+# is applied to the lab registry derive, so the detection grid + server init_grid share the same
+# per-plane order. 2x11x11_5um_back2um: the two layers are only ~4.6 knm px apart in xy -- ANY
+# dedup radius >= ~5 MERGES the front/back pairs (242 -> 121, verified via /eval 2026-07-14), so
+# dedup MUST be 0 for this array (all 242 sites kept, [121, 121] per plane).
+DEDUP_XY_KNM = 0
 
 
 def _pattern_cfg(name):
@@ -98,6 +101,10 @@ def _pattern_cfg(name):
         # 3-D (multi-layer) arrays: planes_z_rad declares the axial layer depths.
         # 2-layer 15x15 diamond; zernike-free base; layers +-2.5 um = +-0.768 rad, 5 um xy offset.
         "2x15x15_xyoffset_5um": ("phase/2x15x15_xyoffset_5um.pt", [0, 0, 0, 0, 0], [-0.768, 0.768]),
+        # 2-layer 11x11 back-2um array (2026-07-14): layers at z4 +-2.7778 rad, xy-OFFSET ~4.6 knm
+        # px (laterally separated, NOT coincident). Layer-focus crossover = loading defocus -6.5.
+        # ByPattern + 242-site registry record exist under this same name.
+        "2x11x11_5um_back2um": ("phase/2x11x11_5um_back2um.pt", [0, 0, 0, 0, 0], [-2.7778, 2.7778]),
 
         # Flat 2-D patterns (planes_z_rad empty) -- usable as a degenerate single-plane target, or
         # to mix a 2-D load with a 3-D target. Mirror SLMRearrangementScan.py's table.
@@ -204,8 +211,9 @@ def SLMRearrangement3DScan(url=None, reps=None):
     rp.warmup_kwargs.derive_threshold = 0.35
 
     # ---- rearrange_kwargs (g(); per-shot setup, sweepable) -----------------------------
-    g().rearrange_kwargs.nsteps = 200
-    g().rearrange_kwargs.step_period_ms = 1
+    g().rearrange_kwargs.extras.prob_hungarian = True
+    g().rearrange_kwargs.nsteps = 40
+    g().rearrange_kwargs.step_period_ms = 0.696
     g().rearrange_kwargs.protocol = "rearrange"
     g().rearrange_kwargs.extras.block_max_size = 256
     # 3-D target pattern: fill the FRONT layer (every site in the front plane; empties the back).
@@ -248,7 +256,14 @@ def SLMRearrangement3DScan(url=None, reps=None):
     if reps is not None:
         opts["rep"] = reps
 
-    did = ybStartScan("RearrangeCommSeq", g, url=url, label="SLMRearrangement3DScan", **opts)
+    description = (
+        "3-D rearrangement on %s (planes_z_rad %s, dedup 0, defocus %g): protocol 'rearrange' "
+        "with the 3-D model %s, target pattern 'front_layer' (sign default +1 = max-z layer; "
+        "flip via extras.front_layer_sign=-1 if the wrong layer is kept). Imaging = 07-14 "
+        "optimized ByPattern (50 ms, PID 0.625/0.35, X(0.14,0.26)/h(0.13,0.20))."
+        % (INIT_PATTERN, init_cfg["planes_z_rad"], LOADING_DEFOCUS, MODEL_FILENAME))
+    did = ybStartScan("RearrangeCommSeq", g, url=url, label="SLMRearrangement3DScan",
+                      description=description, **opts)
     print("submitted SLMRearrangement3DScan -> descriptor id %s (url=%s, model=%s, planes=%s)"
           % (did, url or "default", MODEL_FILENAME or "<BLANK>",
              init_cfg["planes_z_rad"] or target_cfg["planes_z_rad"]))

@@ -51,9 +51,9 @@ import numpy as np
 # INIT_PATTERN = "33x33_feedback11"
 # MIDDLE_PATTERN = "33x33_feedback11"
 # TARGET_PATTERN = "33x33_feedback11"
-INIT_PATTERN = "3013_tri"
-MIDDLE_PATTERN = "2198_kagome_res"
-TARGET_PATTERN = "2078_kagome"
+INIT_PATTERN = os.environ.get("YB_INIT_PATTERN", "3013_tri")
+MIDDLE_PATTERN = os.environ.get("YB_MIDDLE_PATTERN", "2198_kagome_res")
+TARGET_PATTERN = os.environ.get("YB_TARGET_PATTERN", "2078_kagome")
 
 # Rounds of rearrangement. 1 -> single-round (RearrangeCommSeq, 2 images). 2 -> two-round
 # (RearrangeCommSeq2, 3 images: LOADING/MIDDLE/FINAL). This is the single source of truth; NumImages
@@ -148,7 +148,9 @@ def build():
     init_cfg = _pattern_cfg(INIT_PATTERN)
     middle_cfg = _pattern_cfg(MIDDLE_PATTERN)
     target_cfg = _pattern_cfg(TARGET_PATTERN)
-    seq_name = "RearrangeCommSeq2" if n_rounds >= 2 else "RearrangeCommSeq"
+    # Dev sandbox: the 2-round path runs the Dev seq copy (adds the opt-in MinLoadAtoms /
+    # MinMidAtoms shot gates; physics identical -- it delegates the build to RearrangeCommSeq2).
+    seq_name = "RearrangeCommSeq2Dev" if n_rounds >= 2 else "RearrangeCommSeq"
 
     g = ScanGroup()
 
@@ -231,7 +233,9 @@ def build():
         _ns = [int(x) for x in os.environ["YB_NSTEPS_SWEEP"].split(",")]
         g().rearrange_kwargs.nsteps.scan(1, _ns)
     else:
-        g().rearrange_kwargs.nsteps = 50   # 2026-07-19 fixed (nsteps plateau ~94% by 20)
+        # 2026-07-19 evening: full-chain optimum 70-80 (final fill 0.9675 med @70; 20/60 worse,
+        # >=100 flat) -- was 50.
+        g().rearrange_kwargs.nsteps = int(os.environ.get("YB_NSTEPS", "70"))
     g().rearrange_kwargs.step_period_ms = 0.696#.scan(2, 0.696 * np.array([1, 2, 3, 4, 5, 6, 7, 8]))  # sweep (timing-vs-step_period_ms)
     g().rearrange_kwargs.protocol = "rearrange2"
     
@@ -260,6 +264,22 @@ def build():
     # rearrange eff 0.964, 2-round final fill 0.940 (vs -5's 0.899). Was -5.
     _DEFOCUS = float(os.environ.get("YB_DEFOCUS", "-4"))
     g().rearrange_kwargs.extras.z4 = _DEFOCUS       # MATCH rp.loading_defocus (same focal plane)
+
+    # ===================== DEV EXPERIMENT KNOBS (opt-in via env; defaults = production) =====================
+    # 2026-07-19 (revised): RearrCoolAmp defaults to 0 -> NO cooling light for the whole rearrange
+    # window (detect + GPU compute + SLM playback, ~1 s, twice per shot in 3013-way-split shallow
+    # traps). Per-command accounting on run 20260719_040452 shows a ~18%/round arrival loss that is
+    # nearly FLAT vs move distance and vs nsteps>=40 -> uniform dark-hold/morph heating, not
+    # transport speed. (Earlier "mid d' 2.3" note here was a wrong-grid analysis artifact; true mid
+    # d'=3.98 vs load 4.45.) Sweep the transit-cooling amp to null it (SLMHoldTestScan: 0.12/+0.2MHz).
+    if os.environ.get("YB_REARR_COOL_AMP_SWEEP"):   # e.g. "0,0.04,0.08,0.12,0.18,0.25" -> axis 1
+        _ca = [float(x) for x in os.environ["YB_REARR_COOL_AMP_SWEEP"].split(",")]
+        g().rearrange_kwargs.extras.RearrCoolAmp.scan(1, _ca)
+    elif os.environ.get("YB_REARR_COOL_AMP"):
+        g().rearrange_kwargs.extras.RearrCoolAmp = float(os.environ["YB_REARR_COOL_AMP"])
+    if os.environ.get("YB_REARR_COOL_DET"):     # MHz -> Hz offset from Resonance556mj0Freq
+        g().rearrange_kwargs.extras.RearrCoolDet = float(os.environ["YB_REARR_COOL_DET"]) * 1e6
+    # ======================================================================================================
     # Per-bseq cooling/imaging overlay (expConfig ByPattern) + per-frame detection pattern:
     # RearrangeCommSeq(2) tags each bseq's image with the pattern below, so each resolves
     # cooling/imaging/VSLMServo from ByPattern[that pattern] AND detects with that pattern's registry
@@ -280,10 +300,75 @@ def build():
         g().BlueMOT.Img1PIDSet = float(os.environ["YB_IMG1PID"])
     if os.environ.get("YB_IMG2PID"):
         g().BlueMOT.Img2PIDSet = float(os.environ["YB_IMG2PID"])
-    if os.environ.get("YB_BLUELAC_DET"):
+    if os.environ.get("YB_BLUELAC_DET_SWEEP"):    # MHz list -> axis 1
+        _bd = [float(x) * 1e6 for x in os.environ["YB_BLUELAC_DET_SWEEP"].split(",")]
+        g().LAC.BlueLAC.FreqDetuning.scan(1, _bd)
+    elif os.environ.get("YB_BLUELAC_DET"):
         g().LAC.BlueLAC.FreqDetuning = float(os.environ["YB_BLUELAC_DET"]) * 1e6
-    if os.environ.get("YB_BLUELAC_AMP"):
+    if os.environ.get("YB_BLUELAC_AMP_SWEEP"):    # list -> axis 2
+        _ba = [float(x) for x in os.environ["YB_BLUELAC_AMP_SWEEP"].split(",")]
+        g().LAC.BlueLAC.Amp.scan(2, _ba)
+    elif os.environ.get("YB_BLUELAC_AMP"):
         g().LAC.BlueLAC.Amp = float(os.environ["YB_BLUELAC_AMP"])
+    if os.environ.get("YB_BLUELAC_TIME"):         # seconds
+        g().LAC.BlueLAC.Time = float(os.environ["YB_BLUELAC_TIME"])
+
+    # Min-load shot gates (RearrangeCommSeq2Dev only; 0/unset = off). Atoms, not rate.
+    if os.environ.get("YB_MIN_LOAD"):
+        g().rearrange_kwargs.extras.MinLoadAtoms = int(os.environ["YB_MIN_LOAD"])
+    if os.environ.get("YB_MIN_MID"):
+        g().rearrange_kwargs.extras.MinMidAtoms = int(os.environ["YB_MIN_MID"])
+    # Mid/final image DOSE (RearrangeCommSeq2Dev only): DDS attenuation on top of the held PID
+    # power (user-proposed alternative to a PID relock; AOM nonlinear -> sweep, don't compute).
+    if os.environ.get("YB_MID_PAIRS"):
+        # paired candidates "a1:a2,a1:a2,..." -> both beams co-vary on axis 1
+        _prs = [tuple(float(y) for y in x.split(":"))
+                for x in os.environ["YB_MID_PAIRS"].split(",")]
+        g().rearrange_kwargs.extras.MidImgAmp1.scan(1, [p[0] for p in _prs])
+        g().rearrange_kwargs.extras.MidImgAmp2.scan(1, [p[1] for p in _prs])
+    elif os.environ.get("YB_MID_AMP1_SWEEP") and os.environ.get("YB_MID_AMP2_SWEEP"):
+        # 2D per-beam mid-image dose: beam1 -> axis 1, beam2 -> axis 2
+        _m1 = [float(x) for x in os.environ["YB_MID_AMP1_SWEEP"].split(",")]
+        _m2 = [float(x) for x in os.environ["YB_MID_AMP2_SWEEP"].split(",")]
+        g().rearrange_kwargs.extras.MidImgAmp1.scan(1, _m1)
+        g().rearrange_kwargs.extras.MidImgAmp2.scan(2, _m2)
+    elif os.environ.get("YB_MID_AMP_SWEEP"):      # list -> axis 1 (applies to BOTH mid beams)
+        _ma = [float(x) for x in os.environ["YB_MID_AMP_SWEEP"].split(",")]
+        g().rearrange_kwargs.extras.MidImgAmp1.scan(1, _ma)
+        g().rearrange_kwargs.extras.MidImgAmp2.scan(1, _ma)
+    else:
+        if os.environ.get("YB_MID_AMP1"):
+            g().rearrange_kwargs.extras.MidImgAmp1 = float(os.environ["YB_MID_AMP1"])
+        if os.environ.get("YB_MID_AMP2"):
+            g().rearrange_kwargs.extras.MidImgAmp2 = float(os.environ["YB_MID_AMP2"])
+    if os.environ.get("YB_FIN_AMP_SWEEP"):        # list -> axis 1 (both final-image beams)
+        _fa = [float(x) for x in os.environ["YB_FIN_AMP_SWEEP"].split(",")]
+        g().rearrange_kwargs.extras.FinImgAmp1.scan(1, _fa)
+        g().rearrange_kwargs.extras.FinImgAmp2.scan(1, _fa)
+    else:
+        if os.environ.get("YB_FIN_AMP1"):
+            g().rearrange_kwargs.extras.FinImgAmp1 = float(os.environ["YB_FIN_AMP1"])
+        if os.environ.get("YB_FIN_AMP2"):
+            g().rearrange_kwargs.extras.FinImgAmp2 = float(os.environ["YB_FIN_AMP2"])
+    # PID relock variant (fallback; RelockPIDs=1 re-engages the 399 imaging PID per bseq)
+    if os.environ.get("YB_RELOCK"):
+        g().rearrange_kwargs.extras.RelockPIDs = 1
+        if os.environ.get("YB_RELOCK_MS"):
+            g().rearrange_kwargs.extras.RelockTime = float(os.environ["YB_RELOCK_MS"]) * 1e-3
+    # Trap depth (532 servo setpoint, whole shot -- root bseq sets it; per-pattern ByPattern
+    # values don't reach the mid/final bseqs since no step there re-reads Init.VSLMServo).
+    if os.environ.get("YB_VSLM_SWEEP"):           # volts list -> axis 1
+        _vs = [float(x) for x in os.environ["YB_VSLM_SWEEP"].split(",")]
+        g().Init.VSLMServo.scan(1, _vs)
+    elif os.environ.get("YB_VSLM"):
+        g().Init.VSLMServo = float(os.environ["YB_VSLM"])
+    # Inter-image 556 X+h recool time (Cool556hXStep g.Time, default 5 ms). The all-stays
+    # controls point at WARM atoms entering the round windows; sweep to rethermalize.
+    if os.environ.get("YB_COOL556_TIME_SWEEP"):   # ms list -> axis 1
+        _ct = [float(x) * 1e-3 for x in os.environ["YB_COOL556_TIME_SWEEP"].split(",")]
+        g().Cool556.Time.scan(1, _ct)
+    elif os.environ.get("YB_COOL556_TIME"):       # ms
+        g().Cool556.Time = float(os.environ["YB_COOL556_TIME"]) * 1e-3
 
     # ---- non-rearrangement scan settings ----------------------------------------------
     # MOT/loading: 2026-06-05 loading-rate optimization (copied from YbScans/LACScan.py
@@ -333,7 +418,10 @@ def SLMRearrangementScan(url=None, reps=None):
     opts = {}
     if reps is not None:
         opts["rep"] = reps
-    did = ybStartScan(seq_name, g, url=url, label="SLMRearrangementScan", **opts)
+    desc = os.environ.get("YB_SCAN_DESC",
+                          "Dev 2-round rearrange sandbox (SLMRearrangementScanDev)")
+    did = ybStartScan(seq_name, g, url=url, label="SLMRearrangementScanDev",
+                      description=desc, **opts)
     print("submitted SLMRearrangementScan (%d round(s) -> %s) -> descriptor id %s (url=%s)"
           % (max(int(N_ROUNDS), 1), seq_name, did, url or "default"))
     return did

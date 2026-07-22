@@ -111,6 +111,13 @@ def RearrangeCommSeq2(s):
 
     s2.add_step(Cool556hXStep, s.C.Cool556)
 
+    # NI-DAQ minimum-buffer guard: DAQmx FINITE AO rejects a 1-sample buffer
+    # (SampQuant_SampPerChan min 2, error -200077), and the VMOTCoil keep-alive above is this
+    # bseq's ONLY NI update time (Cool556hX/Imag399 touch only TTL+DDS). Re-asserting it AFTER
+    # the cooling step adds a second update time -> >= 2 samples. Physical no-op (same guard
+    # as RearrangeSTIRAPSeq's verify bseq).
+    s2.add('VMOTCoil', 0)
+
     # Second Imag399 (img2, MIDDLE pattern).
     s2.add_step(Imag399Step, s.C.Imag399)
 
@@ -128,6 +135,10 @@ def RearrangeCommSeq2(s):
     s3.add('VMOTCoil', 0)
 
     s3.add_step(Cool556hXStep, s.C.Cool556)
+
+    # NI-DAQ minimum-buffer guard (same as s2). The trailing InitStep likely adds NI updates
+    # of its own, but the explicit second update time keeps this bseq >= 2 samples regardless.
+    s3.add('VMOTCoil', 0)
 
     # Third Imag399 (img3, FINAL pattern).
     s3.add_step(Imag399Step, s.C.Imag399)

@@ -721,6 +721,8 @@ def make_engine_run(server, camera, seq_config, log=None):
                 pattern_name=(pat0 or {}).get("name"), server_grid_knm=server_grid_knm,
                 frame_patterns=_frame_patterns(scangroup, num_images, seq_config,
                                                log=lambda m: log("[runner] %s" % m)),
+                loading_defocus=_runp_num(scangroup.runp(), "loading_defocus",
+                                          DEFAULT_LOADING_DEFOCUS),
                 log=lambda m: log("[runner] %s" % m)))
         # Capture ownership comes from the SEQ's own declaration (@seq_capabilities(owns_frames=
         # True)), NOT a runp sniff: the seq that does the mid-sequence grab is the source of truth.
@@ -773,14 +775,17 @@ def make_engine_run(server, camera, seq_config, log=None):
         # lib/run_seq.py, so the framework stays experiment-agnostic / byte-faithful. None ->
         # disabled/unconfigured -> leave compile_point at its engine default (byte-identical).
         lt = _line_trigger_config(scangroup, seq_config, log)
-        if lt is not None:
-            def _compile_point(seqfn, seqparam, _lt=lt):
+        ttl_mgrs = _ttl_managers_config(scangroup, seq_config, log)
+        if lt is not None or ttl_mgrs:
+            def _compile_point(seqfn, seqparam, _lt=lt, _ttl_mgrs=ttl_mgrs):
                 from exp_seq import ExpSeq
                 s = ExpSeq(seqparam)
                 seqfn(s)
-                if getattr(s, "trigger_device", "") == "":   # don't double-enable if the seq did
+                if _lt is not None and getattr(s, "trigger_device", "") == "":  # seq may self-enable
                     s.enable_global_wait_trigger(_lt["device"], _lt["channel"],
                                                  _lt["raise_"], _lt["timeout"])
+                for mgr in _ttl_mgrs:                         # per-channel edge-timing managers
+                    s.add_ttl_mgr(*mgr)
                 s.generate()
                 return s
             opts.setdefault("compile_point", _compile_point)
@@ -1000,6 +1005,53 @@ def _line_trigger_config(scangroup, seq_config, log=None):
             "channel": int(channel),
             "raise_": bool(_runp_get(rp, "LineTriggerRaise", cfg["Raise"])),
             "timeout": float(_runp_get(rp, "LineTriggerTimeout", cfg["Timeout"]))}
+
+
+_TTL_MGR_FIELDS = ("on_delay", "off_delay", "skip_time", "min_time", "off_val")
+
+
+def _ttl_managers_config(scangroup, seq_config, log=None):
+    """Resolve the per-channel TTL managers for this scan: a list of
+    ``(chn, off_delay, on_delay, skip_time, min_time, off_val)`` tuples ready for
+    ``ExpSeq.add_ttl_mgr`` (note the arg ORDER: off_delay before on_delay), or ``[]`` to add none.
+
+    Source of truth is expConfig ``consts["TTLManagers"]`` (``{chn: {on_delay, off_delay,
+    skip_time, min_time, off_val}}``, times in seconds); a per-scan ``runp().TTLManagers`` dict, if
+    present, is merged on top (per channel, per field). All-zero timing entries are dropped (adds
+    nothing to the bytes anyway). Defensive: any error -> whatever resolved so far (never breaks a
+    run)."""
+    merged = {}
+    try:
+        consts = getattr(seq_config, "consts", None) or {}
+        base = consts.get("TTLManagers") or {}
+        for chn, params in base.items():
+            merged[chn] = dict(params)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        rp = scangroup.runp()
+        ov = _runp_get(rp, "TTLManagers", None)
+        if isinstance(ov, dict):
+            for chn, params in ov.items():
+                merged.setdefault(chn, {}).update(dict(params))
+    except Exception:  # noqa: BLE001
+        pass
+    out = []
+    for chn, params in merged.items():
+        vals = {k: params.get(k, 0.0) for k in _TTL_MGR_FIELDS}
+        # Skip a pure no-op (all timings zero) so it never touches the byte blob.
+        if not (vals["on_delay"] or vals["off_delay"] or vals["skip_time"] or vals["min_time"]):
+            continue
+        out.append((chn, float(vals["off_delay"]), float(vals["on_delay"]),
+                    float(vals["skip_time"]), float(vals["min_time"]), bool(vals["off_val"])))
+        if log is not None:
+            try:
+                log("[runner] TTL manager on %s: on_delay=%gus off_delay=%gus "
+                    "skip=%gus min=%gus" % (chn, vals["on_delay"] * 1e6, vals["off_delay"] * 1e6,
+                                            vals["skip_time"] * 1e6, vals["min_time"] * 1e6))
+            except Exception:  # noqa: BLE001
+                pass
+    return out
 
 
 def _awg_names(scangroup):

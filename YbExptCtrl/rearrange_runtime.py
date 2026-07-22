@@ -41,6 +41,20 @@ _SIGMA = 2
 # yb_analysis/gui/control_panel.py (FAILING_DISPLAY_SCAN_ID) -- keep the two in sync.
 FAILING_DISPLAY_SCAN_ID = -2
 
+# Flag file that turns on the per-frame common-mode probs normalization (same effect as env
+# YB_NORM_PROBS=1) WITHOUT a backend restart: the env can't be injected into the long-lived
+# backend process, the flag file can. Checked per probs() call (a stat(); negligible).
+# DEFAULT OFF: normalization runs ONLY while this file exists (Dev campaign 2026-07-19).
+_NORM_PROBS_FLAG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "tmp", "yb_norm_probs.flag")
+
+
+def _norm_probs_flag():
+    try:
+        return os.path.isfile(_NORM_PROBS_FLAG)
+    except Exception:  # noqa: BLE001
+        return False
+
 
 # =========================================================================== #
 # the process-global scan context
@@ -51,7 +65,7 @@ class ScanContext:
     def __init__(self, *, session, camera, server, client, scan_id,
                  is_rearrange=False, n_rounds=1, pattern_name=None,
                  server_grid_knm=None, calib_root=None, log=None,
-                 frame_patterns=None):
+                 frame_patterns=None, loading_defocus=None):
         self.session = session          # SlmScanSession (scan-long slm lock owner)
         self.camera = camera            # OrcaCamera (or None)
         self.server = server            # ExptServer (store_imgs / seq_finish / seq_cancel)
@@ -87,9 +101,11 @@ class ScanContext:
         self._calib_root = calib_root or _DATA_ROOT
         self._roi_provider = (camera.current_roi if camera is not None else None)
         self._server_grid_knm = server_grid_knm
+        self._loading_defocus = loading_defocus   # scan carrier z4 (rad); for the 3-D dz term
         self._detector = _Detector(self._calib_root, pattern_name=pattern_name,
                                    roi_provider=self._roi_provider,
-                                   server_grid_knm=server_grid_knm, log=self.log)
+                                   server_grid_knm=server_grid_knm, log=self.log,
+                                   loading_defocus=loading_defocus)
         # The frame-0 detector doubles as the cache entry for the loading pattern name so
         # detect_*_for(pattern_name, ...) reuses it (server-grid-anchored) instead of rebuilding.
         if pattern_name:
@@ -124,7 +140,8 @@ class ScanContext:
         det = self._detector_cache.get(pattern_name)
         if det is None:
             det = _Detector(self._calib_root, pattern_name=pattern_name,
-                            roi_provider=self._roi_provider, server_grid_knm=None, log=self.log)
+                            roi_provider=self._roi_provider, server_grid_knm=None, log=self.log,
+                            loading_defocus=self._loading_defocus)
             self._detector_cache[pattern_name] = det
         return det
 
@@ -351,11 +368,12 @@ class _Detector:
     changes."""
 
     def __init__(self, data_root, pattern_name=None, roi_provider=None, server_grid_knm=None,
-                 log=None):
+                 log=None, loading_defocus=None):
         self._data_root = data_root
         self._pattern_name = pattern_name
         self._roi_provider = roi_provider
         self._server_grid_knm = server_grid_knm   # server init_grid (N,2 [y,x] knm); single source
+        self._loading_defocus = loading_defocus   # scan carrier z4 (rad); for the 3-D dz term
         self._log = log or (lambda _m: None)
         self._W = None                 # scipy.sparse (M, H*W)
         self._thresholds = None        # (M,)
@@ -411,7 +429,35 @@ class _Detector:
                       "hard intensity>threshold (1.0/0.0)")
             logicals = intensities > self._thresholds
             return [1.0 if b else 0.0 for b in logicals]
-        post = _atom_posterior(np.asarray(intensities, dtype=float), gp)
+        inten = np.asarray(intensities, dtype=float)
+        # OPT-IN (env YB_NORM_PROBS=1; DEFAULT OFF): per-frame COMMON-MODE brightness normalization
+        # before the posterior. The stored Gaussian fits (gp) come from a BRIGHT standalone calibration;
+        # an in-context frame (e.g. the dim mid/final rearrange image) is globally dimmer, so every
+        # intensity falls toward the calibration EMPTY peak -> posterior ~0 -> bits collapse
+        # (measured 0.175 vs true ~0.68 on the 2198 middle, 2026-07-19). Rescale this frame's
+        # atom-signal so its loaded-site mean matches the calibration's mean atom brightness, then
+        # apply the stored posterior. Contained, gated, reversible. (mu_e per site subtracted as the
+        # per-site baseline; a single global gain applied to the signal part.)
+        if os.environ.get("YB_NORM_PROBS") == "1" or _norm_probs_flag():
+            try:
+                mu_e = np.array([p[0] if p is not None else np.nan for p in gp])
+                mu_a = np.array([p[3] if p is not None else np.nan for p in gp])
+                thr = np.asarray(self._thresholds, dtype=float)
+                good = np.isfinite(mu_e) & np.isfinite(mu_a) & ((mu_a - mu_e) > 0.5)
+                sig = inten - np.nan_to_num(mu_e)              # per-site signal above empty
+                loaded = good & (inten > thr)                 # this frame's confidently-loaded sites
+                if loaded.sum() >= 30:
+                    cur = sig[loaded].mean()                  # this frame's mean atom signal
+                    ref = (mu_a - mu_e)[loaded].mean()        # calibration's mean atom signal
+                    if cur > 0 and ref > 0:
+                        gain = ref / cur
+                        inten = np.nan_to_num(mu_e) + sig * gain   # rescale signal to calibration frame
+                        self._log("[rearrange_runtime] YB_NORM_PROBS: common-mode gain %.3f "
+                                  "(frame atom-sig %.2f -> calib %.2f, %d loaded)"
+                                  % (gain, cur, ref, int(loaded.sum())))
+            except Exception as e:  # noqa: BLE001 - never break detection over the normalization
+                self._log("[rearrange_runtime] YB_NORM_PROBS skipped (%s)" % e)
+        post = _atom_posterior(inten, gp)
         return [float(p) for p in post]
 
     def _ensure(self, img_shape):
@@ -466,11 +512,22 @@ class _Detector:
             if rknm.shape[0] != n or rthr.shape[0] != n:
                 return None                  # site-count mismatch -> let registry/day handle it
             from scipy.spatial import cKDTree
-            dist, idx = cKDTree(rknm).query(sknm)   # for each server site, nearest record site
-            if float(np.max(dist)) > 5.0 or len(set(idx.tolist())) != n:
+            # Self-orienting match: record ``knm`` column order is [y,x] for some records and
+            # [x,y] for others (the registry never enforced one; a centered SQUARE array is
+            # near-symmetric under the swap so production 2D never noticed, but an off-diagonal
+            # array -- e.g. 2x11x11_5um_back2um at knm x~631-751/y~454-569 -- hard-fails one
+            # orientation, max~254). Try both; use whichever passes the gate.
+            dist = idx = None
+            for cand in (rknm, rknm[:, ::-1]):
+                d_c, i_c = cKDTree(cand).query(sknm)   # for each server site, nearest record site
+                if float(np.max(d_c)) <= 5.0 and len(set(i_c.tolist())) == n:
+                    dist, idx = d_c, i_c
+                    break
+            if idx is None:
+                d_raw, i_raw = cKDTree(rknm).query(sknm)
                 self._log("[rearrange_runtime] server-grid<->record position match failed "
-                          "(max=%.2f, bijection=%s); registry/day"
-                          % (float(np.max(dist)), len(set(idx.tolist())) == n))
+                          "(max=%.2f, bijection=%s; both orientations); registry/day"
+                          % (float(np.max(d_raw)), len(set(i_raw.tolist())) == n))
                 return None
             thr = rthr[idx]
             # Gaussian fits (for the posterior path), reordered to the server's site order by the
@@ -482,6 +539,26 @@ class _Detector:
         except Exception as e:  # noqa: BLE001
             self._log("[rearrange_runtime] server-grid threshold match failed (%s); registry/day" % e)
             return None
+        # 3-D linear-defocus correction (pattern_grid.load_dz): a site away from the camera-focus
+        # plane walks laterally ~ v * z_total px. Applied ONLY for a 3-D record with a configured
+        # dz block -- every flat-2-D pattern (any defocus) is byte-identical without it. The
+        # record's per-site z_rad rides the SAME position match (idx) as the thresholds, so
+        # z aligns with the server's site order.
+        try:
+            if rec.get("is_3d") and rec.get("z_rad") is not None:
+                dz = pattern_grid.load_dz()
+                if dz is not None:
+                    z_rad = np.asarray(rec["z_rad"], dtype=float).ravel()
+                    if z_rad.shape[0] == n:
+                        zc = (self._loading_defocus if self._loading_defocus is not None
+                              else dz["z_ref"])
+                        z_tot = (float(zc) - dz["z_ref"]) + z_rad[idx]
+                        grid = grid + z_tot[:, None] * dz["v"][None, :]
+                        self._log("[rearrange_runtime] dz correction: v=%s px/rad carrier=%s "
+                                  "z=[%.2f, %.2f]" % (list(dz["v"]), zc,
+                                                      float(z_tot.min()), float(z_tot.max())))
+        except Exception as e:  # noqa: BLE001 - the dz term must never break the grid source
+            self._log("[rearrange_runtime] dz correction skipped (%s)" % e)
         thr_mtime = _mtime(pattern_grid._pattern_threshold_path(self._pattern_name))
         key = ("server", self._pattern_name, tuple(float(v) for v in roi[:4]), n, thr_mtime)
         return grid, thr, gp, key
@@ -502,6 +579,20 @@ class _Detector:
         import numpy as np
         grid = np.asarray(pc["grid"], dtype=float).reshape(-1, 2)
         thr = np.asarray(pc["thresholds"], dtype=float).ravel()
+        # 3-D linear-defocus correction (same model as _server_source; record order, no re-match).
+        try:
+            rec = pattern_grid.get_pattern_record(self._pattern_name)
+            if rec and rec.get("is_3d") and rec.get("z_rad") is not None:
+                dz = pattern_grid.load_dz()
+                if dz is not None:
+                    z_rad = np.asarray(rec["z_rad"], dtype=float).ravel()
+                    if z_rad.shape[0] == grid.shape[0]:
+                        zc = (self._loading_defocus if self._loading_defocus is not None
+                              else dz["z_ref"])
+                        z_tot = (float(zc) - dz["z_ref"]) + z_rad
+                        grid = grid + z_tot[:, None] * dz["v"][None, :]
+        except Exception as e:  # noqa: BLE001
+            self._log("[rearrange_runtime] dz correction skipped (%s)" % e)
         # Gaussian fits (for the posterior path), already aligned to the grid by
         # resolve_pattern_calibration (record.json knm + threshold.mat share the registry order).
         gp = pc.get("gauss_params")

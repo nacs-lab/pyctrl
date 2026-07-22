@@ -161,7 +161,7 @@ def pre_run(s1, *, flags=("rearrange_img1_ok",), lock_desc="rearrange compute",
 # =========================================================================== #
 def rearrange_round(s1, frame_idx, *, ok_flag, tag, prior_flag=None,
                     use_frame_pattern=False, record_ok=False,
-                    grab_timeout=0.1, drain_timeout=0.2):
+                    grab_timeout=0.1, drain_timeout=0.2, min_load=None):
     """One rearrangement round on camera frame ``frame_idx`` (0-based): grab the frame, detect
     per-site probabilities, ``rearrange(probs)``, and stage the frame (async persist).
 
@@ -178,6 +178,12 @@ def rearrange_round(s1, frame_idx, *, ok_flag, tag, prior_flag=None,
         record_ok: call ``ctx.record_ok()`` on a healthy rearrange (the single-round seq
             clears the "shots failing" banner here; the multi-round seqs clear it in
             :func:`finalize` once the whole shot published).
+        min_load: OPT-IN atom-count gate (None/0 = off, the production default -- only the Dev
+            seq passes it): if this round's detected atom count (probs > 0.5) is below it, the
+            shot is SKIPPED (frame drained + cancel_shot, no rearrange, ok_flag left False so
+            later rounds/finalize cancel too). Keeps thermalization (the sequence still runs)
+            without spending SLM playback / polluting stats on shots that can't reach the
+            final target.
     """
     if frame_idx == 0:
         reset_stash()                   # first frame of the shot -> fresh stash
@@ -207,6 +213,17 @@ def rearrange_round(s1, frame_idx, *, ok_flag, tag, prior_flag=None,
              if use_frame_pattern else ctx.detect_probs(img))
     if not probs:
         return                          # calibration mismatch -> don't rearrange on a stale grid
+
+    if min_load:
+        n_at = sum(1 for p in probs if p > 0.5)
+        if n_at < int(min_load):
+            # Normal failing-shot abort path (same as grab-fail): record + cancel; ok_flag stays
+            # False so later rounds drain their frames and finalize republishes display-only.
+            ctx.record_error("[%s] seq %d: low load %d < %d -- shot aborted (min-load gate)"
+                             % (tag, _seq_id(s1), n_at, int(min_load)),
+                             kind="low_load", seq_id=_seq_id(s1))
+            _safe(ctx.server, "cancel_shot")
+            return
 
     _do_rearrange_round(ctx, s1, img, probs, tag, ok_flag, record_ok=record_ok)
 
