@@ -47,23 +47,28 @@ class FakeConn:
         self.connected = True
         return "FAKE,SDG6X,0,1"
 
-    def build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz):
+    def build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz, channel=None):
         # reuse the real framing so the test also exercises it through the manager
-        return AWGConnection.build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz)
+        return AWGConnection.build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz,
+                                                channel=channel)
 
     def send_waveform(self, cmd):
         self.sent.append(cmd)
 
-    def set_amplitude(self, amp):
+    def set_amplitude(self, amp, channel=None):
         self.amplitudes.append(amp)
+        self.amp_channels = getattr(self, "amp_channels", [])
+        self.amp_channels.append(channel or self.channel)
 
-    def configure_burst(self):
+    def configure_burst(self, channel=None, mode="GATE", ncyc=1, dlay=0.0):
         self.burst_configured += 1
+        self.bursts = getattr(self, "bursts", [])
+        self.bursts.append((channel or self.channel, mode, ncyc, dlay))
 
-    def enable_output(self):
+    def enable_output(self, channel=None):
         self.output_enabled += 1
 
-    def disable_output(self):
+    def disable_output(self, channel=None):
         self.output_disabled += 1
 
     def disconnect(self):
@@ -79,16 +84,17 @@ class FakeConnARWV(FakeConn):
         self.recalled = []        # names via recall_by_name
         self.arb_mode = 0
 
-    def build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz, name="active"):
-        return AWGConnection.build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz, name=name)
+    def build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz, name="active", channel=None):
+        return AWGConnection.build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz,
+                                                name=name, channel=channel)
 
-    def set_arb_mode(self):
+    def set_arb_mode(self, channel=None):
         self.arb_mode += 1
 
     def store_waveform(self, cmd):
         self.stored.append(cmd)
 
-    def recall_by_name(self, name):
+    def recall_by_name(self, name, channel=None):
         self.recalled.append(name)
 
 
@@ -523,6 +529,70 @@ def test_linear_shapes_ramp_and_ignore_steepness():
     assert np.max(e[:50]) > 0.9 and np.max(e[-50:]) < 0.06       # 1 -> 0 ramp
 
 
+def test_spline_total_is_pw_and_exact_ends():
+    # cubic/quintic splines: compact support, total = pw (NOT 3*pw), exactly 0 / 1 at the ends,
+    # peak at the END (rise) / START (fall). pw=4 in _DEFAULTS["AWG556"].
+    from devices.sigilent_awg import pulse_envelope
+    from devices.sigilent_awg.pulse_waveform import pulse_total_us
+    for shape in ("rise_cubic", "fall_cubic", "rise_quintic", "fall_quintic"):
+        info = _env(shape, steepness=99)                         # steepness IGNORED
+        assert info["total_width_us"] == pytest.approx(4)        # total = pw
+        assert info["freq_hz"] == pytest.approx(1e6 / 4)         # DDS FREQ over pw
+        assert pulse_total_us(shape, 4.0) == pytest.approx(4)
+        t, e = pulse_envelope(shape, 5000, 4.0, 0.0, 0.0)
+        assert t[-1] == pytest.approx(4)
+        assert 0.0 <= e.min() and e.max() <= 1.0 + 1e-12
+        if shape.startswith("rise_"):
+            assert e[0] == pytest.approx(0.0, abs=1e-9) and e[-1] == pytest.approx(1.0, abs=1e-9)
+        else:
+            assert e[0] == pytest.approx(1.0, abs=1e-9) and e[-1] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_spline_fall_is_mirror_of_rise():
+    from devices.sigilent_awg import pulse_envelope
+    for rise, fall in (("rise_cubic", "fall_cubic"), ("rise_quintic", "fall_quintic")):
+        _, er = pulse_envelope(rise, 4001, 4.0, 0.0, 0.0)
+        _, ef = pulse_envelope(fall, 4001, 4.0, 0.0, 0.0)
+        assert np.allclose(ef, er[::-1])
+
+
+def test_spline_endpoint_slopes_zero_quintic_also_curvature():
+    # cubic + quintic both have zero endpoint SLOPE (smoothstep); quintic additionally has zero
+    # endpoint CURVATURE (smootherstep -> no acceleration kink at turn-on / peak).
+    from devices.sigilent_awg import pulse_envelope
+    t, ec = pulse_envelope("rise_cubic", 20001, 4.0, 0.0, 0.0)
+    _, eq = pulse_envelope("rise_quintic", 20001, 4.0, 0.0, 0.0)
+    dc, dq = np.gradient(ec, t), np.gradient(eq, t)
+    for d in (dc, dq):                                           # zero slope at both ends
+        assert abs(d[0]) < 1e-3 and abs(d[-1]) < 1e-3
+    d2c, d2q = np.gradient(dc, t), np.gradient(dq, t)
+    assert abs(d2q[0]) < 1e-3 and abs(d2q[-1]) < 1e-3            # quintic: zero endpoint curvature
+    assert abs(d2c[0]) > 0.05                                    # cubic: curvature JUMPS at the end
+
+
+def test_spline_ignores_steepness_and_smooth():
+    from devices.sigilent_awg import pulse_envelope
+    _, a = pulse_envelope("rise_quintic", 3000, 4.0, 0.0, 0.0)
+    _, b = pulse_envelope("rise_quintic", 3000, 4.0, 0.9, 88.0)  # smooth + steepness ignored
+    assert np.allclose(a, b)
+
+
+def test_flat_shape():
+    from devices.sigilent_awg import pulse_envelope
+    from devices.sigilent_awg.pulse_waveform import pulse_total_us
+    # envelope is a constant 1 over [0, pw]; smooth/steepness ignored
+    t, e = pulse_envelope("flat", 5000, 5.0, 3.0, 88.0)
+    assert np.all(e == 1.0) and t[-1] == pytest.approx(5.0)
+    assert pulse_total_us("flat", 5.0) == pytest.approx(5.0)
+    # output peak reaches full amplitude_scale; voltage = scale * vpp / 2
+    _, info = pulse_waveform(dict(shape="flat", num_points=2000, pulse_width_us=5.0,
+                                  carrier_freq_MHz=10.0, amplitude_scale=0.7,
+                                  max_amplitude_vpp=2.0))
+    assert np.max(np.abs(info["waveform"])) == pytest.approx(0.7, abs=1e-3)
+    assert np.max(np.abs(info["voltage"])) == pytest.approx(0.7, abs=1e-3)
+    assert info["freq_hz"] == pytest.approx(1e6 / 5.0)
+
+
 def test_smooth_width_ignored_for_gaussian():
     a, ia = pulse_waveform(dict(_DEFAULTS["AWG556"]))
     b, ib = pulse_waveform(dict(_DEFAULTS["AWG556"], smooth_width_us=1.0))
@@ -534,8 +604,9 @@ def test_pulse_waveform_validation():
         pulse_waveform(dict(_DEFAULTS["AWG556"], shape="half_gaussian"))
     with pytest.raises(ValueError, match="smooth_width_us"):
         pulse_waveform(dict(_DEFAULTS["AWG556"], shape="rise_linear", smooth_width_us=-0.1))
-    assert set(SHAPES) == {"gaussian", "rise_gaussian", "fall_gaussian",
+    assert set(SHAPES) == {"flat", "gaussian", "rise_gaussian", "fall_gaussian",
                            "rise_linear", "fall_linear",
+                           "rise_cubic", "fall_cubic", "rise_quintic", "fall_quintic",
                            "double_half_gaussian_inner", "double_half_gaussian_outer"}
 
 
@@ -567,3 +638,59 @@ def test_setup_dedups_by_shape():
     assert len(conn.sent) == n0
     AWGManager.recall_for_seq({"AWG556": {"shape": "fall_gaussian"}})    # switch -> resend
     assert len(conn.sent) == n0 + 1
+
+
+# --------------------------------------------------------------------------- #
+# two-channel switch scheme (Ch1/Ch2 per-channel config)
+# --------------------------------------------------------------------------- #
+_DEFAULTS_CH = {
+    "AWG556": {
+        "resource_address": "USB0::TEST::AWG556::INSTR",
+        "num_points": 1000, "sample_rate_MHz": 2500,
+        "Ch1": {"channel": "C1", "shape": "rise_gaussian", "carrier_freq_MHz": 143.4,
+                "pulse_width_us": 1.437, "steepness": 3.5, "amplitude_scale": 1.0,
+                "smooth_width_us": 0.0, "max_amplitude_vpp": 15, "trig_delay_us": 0.0},
+        "Ch2": {"channel": "C2", "shape": "fall_gaussian", "carrier_freq_MHz": 143.4,
+                "pulse_width_us": 1.463, "steepness": 3.5, "amplitude_scale": 1.0,
+                "smooth_width_us": 0.0, "max_amplitude_vpp": 15, "trig_delay_us": 0.0},
+    },
+}
+
+
+def test_channel_mode_arms_both_channels_ncyc():
+    seqs = [{}]                                  # single point, defaults only
+    AWGManager.setup("AWG556", FakeScanGroup(seqs), consts=_DEFAULTS_CH,
+                     connection_factory=FakeConn)
+    entry = AWGManager._state["AWG556"]
+    assert entry["mode"] == "channel"
+    assert set(entry["channels"]) == {"Ch1", "Ch2"}
+    assert entry["channels"]["Ch1"]["scpi_ch"] == "C1"
+    assert entry["channels"]["Ch2"]["scpi_ch"] == "C2"
+
+    conn = entry["connection"]
+    # both channels armed as single-cycle NCYC EXT bursts, amplitude set on each
+    modes = {(ch, mode, ncyc) for (ch, mode, ncyc, _dlay) in conn.bursts}
+    assert ("C1", "NCYC", 1) in modes and ("C2", "NCYC", 1) in modes
+    assert conn.output_enabled == 2                       # both outputs on
+    # C1 gets a rise_gaussian, C2 a fall_gaussian (different waveform bytes -> different WVDT)
+    c1_wvdt = [c for c in conn.sent if c.startswith(b"C1:")]
+    c2_wvdt = [c for c in conn.sent if c.startswith(b"C2:")]
+    assert c1_wvdt and c2_wvdt
+
+
+def test_channel_mode_per_channel_scan_and_recall():
+    # scan sweeps Ch2.pulse_width_us over 2 values; Ch1 fixed
+    seqs = [{"AWG": {"AWG556": {"Ch2": {"pulse_width_us": pw}}}} for pw in (1.463, 1.9)]
+    AWGManager.setup("AWG556", FakeScanGroup(seqs), consts=_DEFAULTS_CH,
+                     connection_factory=FakeConn)
+    ch2 = AWGManager._state["AWG556"]["channels"]["Ch2"]
+    assert len(ch2["cmd_map"]) == 2                       # two unique Ch2 waveforms
+    assert len(AWGManager._state["AWG556"]["channels"]["Ch1"]["cmd_map"]) == 1  # Ch1 unchanged
+
+    conn = AWGManager._state["AWG556"]["connection"]
+    n0 = len(conn.sent)
+    AWGManager.recall_for_seq({"AWG556": {"Ch2": {"pulse_width_us": 1.463}}})  # == setup default -> skip
+    assert len(conn.sent) == n0
+    AWGManager.recall_for_seq({"AWG556": {"Ch2": {"pulse_width_us": 1.9}}})    # switch Ch2 -> resend
+    assert len(conn.sent) == n0 + 1
+    assert conn.sent[-1].startswith(b"C2:")              # the resend targeted C2

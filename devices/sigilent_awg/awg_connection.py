@@ -76,9 +76,12 @@ class AWGConnection:
                     idn, self.firmware, self.arwv_recall)
         # DDS mode: FREQ in the WVDT command controls playback rate. Older fw (< 38R3) needs
         # SRATE MODE,DDS; 38R3 removed true-arb mode -> the command returns an execution error
-        # (DDS is the only/default mode), so only send it when it is valid.
+        # (DDS is the only/default mode), so only send it when it is valid. Set BOTH channels:
+        # the two-lobe-switch scheme drives C1 (fwd) + C2 (rev) on one box (harmless if only C1
+        # is used).
         if self.firmware is None or self.firmware < ARWV_MIN_FW:
-            self.dev.write("%s:SRATE MODE,DDS" % self.channel)
+            for ch in ("C1", "C2"):
+                self.dev.write("%s:SRATE MODE,DDS" % ch)
             self.dev.query("*OPC?")
         return idn
 
@@ -109,7 +112,7 @@ class AWGConnection:
         self.dev = None
         self._rm = None
 
-    def build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz, name="active"):
+    def build_waveform_cmd(self, binary_data, amplitude_vpp, freq_hz, name="active", channel=None):
         """Build a DDS-mode WVDT command (``bytes``) for ``binary_data``.
 
         Mirrors AWGConnection.m exactly: an IEEE-488.2 block header ``#<ndigits><nbytes>``
@@ -120,13 +123,16 @@ class AWGConnection:
         ``name`` is the SDG storage slot: ``"active"`` (the live slot -- the re-upload fallback
         path) or a unique stored name (``"wf_000"`` ... -- the ARWV recall path). ``ARWV NAME``
         restores the baked ``FREQ`` of the stored waveform, so width comes along with the recall.
+        ``channel`` targets a specific output (``"C1"``/``"C2"`` -- the two-channel switch scheme);
+        default ``self.channel`` keeps the single-channel byte output identical.
 
         Pure (no device access) -- unit-testable without hardware.
         """
+        ch = channel or self.channel
         num_bytes = len(binary_data)
         ieee_header = "#%d%d" % (len(str(num_bytes)), num_bytes)
         cmd_prefix = ("%s:WVDT WVNM,%s,WVTP,USER,AMPL,%g,OFST,0,FREQ,%g,WAVEDATA,%s"
-                      % (self.channel, name, amplitude_vpp, freq_hz, ieee_header))
+                      % (ch, name, amplitude_vpp, freq_hz, ieee_header))
         return cmd_prefix.encode("ascii") + bytes(binary_data)
 
     def send_waveform(self, cmd):
@@ -144,48 +150,64 @@ class AWGConnection:
         self.dev.write_raw(cmd)
         self.dev.query("*OPC?")
 
-    def set_arb_mode(self):
+    def set_arb_mode(self, channel=None):
         """Put the channel in arbitrary-waveform DDS output mode (before ARWV recall / gated burst)."""
-        self.dev.write("%s:BSWV WVTP,ARB" % self.channel)
-        self.dev.write("%s:ARWV MODE,DDS" % self.channel)
+        ch = channel or self.channel
+        self.dev.write("%s:BSWV WVTP,ARB" % ch)
+        self.dev.write("%s:ARWV MODE,DDS" % ch)
         self.dev.query("*OPC?")
 
-    def recall_by_name(self, name):
+    def recall_by_name(self, name, channel=None):
         """Switch the active output waveform to a STORED one by name (~ms; fw >= ARWV_MIN_FW).
 
         No re-upload -- ``ARWV NAME,<name>`` re-points the active waveform (and restores its baked
         ``FREQ``). Fire-and-forget (no ``*OPC?``); the same-session ``ARWV?`` readback may lag."""
-        self.dev.write("%s:ARWV NAME,%s" % (self.channel, name))
+        self.dev.write("%s:ARWV NAME,%s" % (channel or self.channel, name))
 
-    def set_amplitude(self, amp_vpp):
-        self.dev.write("%s:BSWV AMP,%g" % (self.channel, amp_vpp))
+    def set_amplitude(self, amp_vpp, channel=None):
+        ch = channel or self.channel
+        self.dev.write("%s:BSWV AMP,%g" % (ch, amp_vpp))
         self.dev.query("*OPC?")
-        self.dev.write("%s:BSWV OFST,0.0" % self.channel)
+        self.dev.write("%s:BSWV OFST,0.0" % ch)
         self.dev.query("*OPC?")
 
-    def configure_burst(self):
-        ch = self.channel
+    def configure_burst(self, channel=None, mode="GATE", ncyc=1, dlay=0.0):
+        """Arm an externally-triggered burst on ``channel``.
+
+        ``mode="GATE"`` (default, legacy single-channel STIRAP): output active while the trigger
+        gate is high. ``mode="NCYC"`` (two-channel switch scheme): fire exactly ``ncyc`` cycle(s)
+        per rising edge with per-channel trigger ``dlay`` (s) -- one short DDS arb per trigger, so
+        the 50 us gap lives OUTSIDE the arb (FPGA/switch controlled)."""
+        ch = channel or self.channel
         self.dev.write("%s:BTWV STATE,ON" % ch)
-        self.dev.write("%s:BTWV GATE_NCYC,GATE" % ch)
+        if str(mode).upper() == "NCYC":
+            self.dev.write("%s:BTWV GATE_NCYC,NCYC" % ch)
+            self.dev.write("%s:BTWV TIME,%d" % (ch, int(ncyc)))
+            self.dev.write("%s:BTWV DLAY,%g" % (ch, float(dlay)))
+        else:
+            self.dev.write("%s:BTWV GATE_NCYC,GATE" % ch)
         self.dev.write("%s:BTWV TRSR,EXT" % ch)
         self.dev.write("%s:BTWV EDGE,RISE" % ch)
         self.dev.write("%s:BTWV PLRT,POS" % ch)
         err = self.dev.query("SYST:ERR?").strip()
         if "no error" not in err.lower() and not err.startswith("0,"):
-            logger.warning("AWGConnection burst config: %s", err)
+            logger.warning("AWGConnection burst config (%s): %s", ch, err)
 
-    def set_frequency(self, freq_hz):
-        self.dev.write("%s:BSWV FRQ,%g" % (self.channel, freq_hz))
+    def set_frequency(self, freq_hz, channel=None):
+        self.dev.write("%s:BSWV FRQ,%g" % (channel or self.channel, freq_hz))
 
-    def enable_output(self):
-        self.dev.write("%s:OUTP ON" % self.channel)
+    def enable_output(self, channel=None):
+        self.dev.write("%s:OUTP ON" % (channel or self.channel))
         self.dev.query("*OPC?")
 
-    def disable_output(self):
+    def disable_output(self, channel=None):
         """Turn the channel output + burst OFF so the AWG is QUIET (called at scan end / cleanup).
 
         Without this the AWG is left armed gated -- and a statically-high gate makes it free-run a
-        continuous waveform train after the scan."""
-        self.dev.write("%s:BTWV STATE,OFF" % self.channel)
-        self.dev.write("%s:OUTP OFF" % self.channel)
+        continuous waveform train after the scan. ``channel=None`` turns off BOTH C1 and C2 (the
+        two-channel switch scheme arms both)."""
+        chans = (channel,) if channel else ("C1", "C2")
+        for ch in chans:
+            self.dev.write("%s:BTWV STATE,OFF" % ch)
+            self.dev.write("%s:OUTP OFF" % ch)
         self.dev.query("*OPC?")
