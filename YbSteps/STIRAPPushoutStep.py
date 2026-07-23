@@ -61,6 +61,10 @@ def STIRAPPushoutStep(s, g):
     Forward_Delay = g.STIRAPDelay(0.5)  # fwd delay (us)
     Reverse_Delay = g.STIRAPReverseDelay(0.5)  # rev delay (us)
     IfReverse = g.IfReverse(0)  # 0: no reverse STIRAP, 1: do reverse STIRAP
+    If_MW = g.IfMW(0)  # 1: fire the QICK microwave (TTLQickTrig) during the fwd->rev gap (spin
+                       # echo / Ramsey / Rabi on the Rydberg state). The armed program (run loop,
+                       # runp().QICK + g().QICK.*) fires on the edge and self-times; STIRAP_Gap must
+                       # be >= qick_program_duration. Only valid with IfReverse (excite -> MW -> de-excite).
     Amp_AOM616Divert = Consts().AOM616Divert.Amp()
     
     IfPump = g.IfPump(0)
@@ -156,15 +160,21 @@ def STIRAPPushoutStep(s, g):
     #s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
     #s.wait(0.1e-6)
 
-    # Microwave Rabi (QICK), gated for STIRAP_gap.
-    #s.add('TTLQickTrig', 1)
-    #s.wait(STIRAP_gap)
-    #s.add('TTLQickTrig', 0)
+    # (QICK microwave now fires inside the fwd->rev gap below, gated on If_MW.)
 
     if IfReverse:
         s.add('TTL556RydAWGChSwitch', SEL_C2)
         s.add('TTL308RydAWGChSwitch', SEL_C2)
-        s.wait(STIRAP_Gap)
+        # fwd->rev gap. When If_MW, pulse TTLQickTrig across it so the armed QICK program (spin
+        # echo / Ramsey / Rabi) plays on the Rydberg state between forward and reverse STIRAP; the
+        # board self-times, so STIRAP_Gap must be >= qick_program_duration. If_MW == 0 -> the bare
+        # wait, byte-identical to before.
+        if If_MW:
+            s.add('TTLQickTrig', 1)
+            s.wait(STIRAP_Gap)
+            s.add('TTLQickTrig', 0)
+        else:
+            s.wait(STIRAP_Gap)
         
         # Turn the tweezer off completely.
         #s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
