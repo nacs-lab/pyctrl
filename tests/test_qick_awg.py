@@ -288,43 +288,62 @@ def test_setup_deletes_all_before_upload():
 
 
 # --------------------------------------------------------------------------- #
-# manager: per-shot pulse picking
+# manager: per-shot ARM (arm_for_seq -- always re-arm; the board is one-shot)
 # --------------------------------------------------------------------------- #
-def test_recall_switches_on_change_and_skips_on_no_change():
+def test_arm_re_arms_every_shot_even_when_unchanged():
     client = FakeClient()
     progs = [_prog("a", 2.0), _prog("b", 2.1), _prog("c", 2.2)]
     FPGAAWGManager.setup(progs, client_factory=lambda: client)
-    # After setup: last_key = "a", started = ["prog000"].
-    n_started = len(client.started)
+    # After setup: last_key = "a", started = ["prog000"], stops = 0.
+    n_started, n_stops = len(client.started), client.stops
 
-    FPGAAWGManager.recall_for_seq("a")                 # unchanged -> skip
-    assert len(client.started) == n_started
+    FPGAAWGManager.arm_for_seq("a")                    # SAME program -> STILL stop+start (no skip)
+    assert client.started[-1] == "prog000"
+    assert len(client.started) == n_started + 1
+    assert client.stops == n_stops + 1
 
-    FPGAAWGManager.recall_for_seq("b")                 # switch -> stop + start prog001
+    FPGAAWGManager.arm_for_seq("b")                    # switch -> stop + start prog001
     assert client.started[-1] == "prog001"
+    assert client.stops == n_stops + 2
     assert FPGAAWGManager._state["last_key"] == "b"
 
-    FPGAAWGManager.recall_for_seq("b")                 # same -> skip
+    FPGAAWGManager.arm_for_seq("b")                    # same again -> STILL re-arm
     assert client.started[-1] == "prog001"
+    assert client.stops == n_stops + 3
 
-    FPGAAWGManager.recall_for_seq("c")                 # switch -> prog002
+    FPGAAWGManager.arm_for_seq("c")                    # switch -> prog002
     assert client.started[-1] == "prog002"
-    # Every switch was preceded by a stop_program (2 switches).
-    assert client.stops == 2
+    assert client.stops == n_stops + 4
+    # 4 arms -> 4 stop+start pairs.
+    assert len(client.started) == n_started + 4
 
 
-def test_recall_unknown_key_warns_and_does_not_switch():
+def test_arm_unknown_key_warns_and_does_not_arm():
     client = FakeClient()
     FPGAAWGManager.setup([_prog("a", 2.0)], client_factory=lambda: client)
-    started_before = len(client.started)
-    FPGAAWGManager.recall_for_seq("nope")              # never uploaded
+    started_before, stops_before = len(client.started), client.stops
+    FPGAAWGManager.arm_for_seq("nope")                 # never uploaded
     assert len(client.started) == started_before
+    assert client.stops == stops_before                # no stop either
     assert FPGAAWGManager._state["last_key"] == "a"    # unchanged
 
 
-def test_recall_is_noop_without_setup():
+def test_arm_is_noop_without_setup():
     FPGAAWGManager._state = {}
-    FPGAAWGManager.recall_for_seq("a")                 # must not raise
+    FPGAAWGManager.arm_for_seq("a")                    # must not raise
+
+
+def test_recall_for_seq_still_skips_on_no_change_deprecated():
+    # recall_for_seq is DEPRECATED (unsafe on one-shot firmware) but kept; its skip-on-unchanged
+    # behavior is preserved for a hypothetical future re-arming firmware. Not used by the run loop.
+    client = FakeClient()
+    progs = [_prog("a", 2.0), _prog("b", 2.1)]
+    FPGAAWGManager.setup(progs, client_factory=lambda: client)
+    n_started = len(client.started)
+    FPGAAWGManager.recall_for_seq("a")                 # unchanged -> skip
+    assert len(client.started) == n_started
+    FPGAAWGManager.recall_for_seq("b")                 # switch
+    assert client.started[-1] == "prog001"
 
 
 def test_cleanup_stops_disconnects_and_clears_state():

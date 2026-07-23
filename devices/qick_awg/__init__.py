@@ -18,13 +18,18 @@ length-prefixed protocol. Three pieces, ported from ``matlab_new/YbExptCtrl/qick
 from .fpga_awg_client import (DEFAULT_HOST, DEFAULT_PORT, FPGAABSClient,
                               FPGAAWGClient)
 from .fpga_awg_manager import FPGAAWGManager, QickProgram
+from .scan_programs import (build_programs, qick_enabled, resolve_params,
+                            seq_qick_key)
 from .simple_pulse import (Loop, compile_chn, loop, render_tokens,
                            simple_prog_cfg, simple_pulse_cfg)
+from .templates import (TEMPLATES, build_program, qick_program_duration)
 
 __all__ = [
     "FPGAABSClient", "FPGAAWGClient", "DEFAULT_HOST", "DEFAULT_PORT",
     "FPGAAWGManager", "QickProgram",
     "simple_pulse_cfg", "simple_prog_cfg", "compile_chn", "render_tokens", "loop", "Loop",
+    "TEMPLATES", "build_program", "qick_program_duration",
+    "qick_enabled", "resolve_params", "build_programs", "seq_qick_key",
 ]
 
 # Registry: create("qick_awg") -> an FPGAAWGClient (NEEDS-HARDWARE on connect()).

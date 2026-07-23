@@ -127,11 +127,39 @@ class FPGAAWGManager:
                     len(unique), len(programs))
 
     # --------------------------------------------------------------------- #
-    # phase 2: per-shot program pick
+    # phase 2: per-shot program arm
     # --------------------------------------------------------------------- #
     @classmethod
+    def arm_for_seq(cls, key):
+        """ARM this shot's program: ALWAYS ``stop_program`` + ``start_program`` (no unchanged-skip).
+
+        The board is ONE-SHOT -- ``start_program`` compiles + ``config_all`` + ``start_tproc``, the
+        tProc runs the program ``end()``-terminated once, fires on the TTL, and is then spent (the
+        server state stays ``"firing"`` and won't accept a new ``start`` until ``stop`` returns it to
+        ``"listening"``). So EVERY shot must re-arm, even when the program is unchanged: ``stop_program``
+        (state -> ``listening`` + ``reset_gens`` zeroes the outputs) then ``start_program``. This is the
+        per-shot primitive the run loop calls (``awg_runtime.make_qick_pre_cb``).
+        """
+        if not cls._state:
+            return
+        prog_name = cls._state["key_to_progname"].get(key)
+        if prog_name is None:
+            logger.warning("FPGAAWGManager: no uploaded program for key %r", key)
+            return
+        client = cls._state["client"]
+        client.stop_program()                       # -> listening + reset_gens (zero outputs)
+        client.start_program(prog_name)             # recompile + config_all + arm (fires on next TTL)
+        cls._state["last_key"] = key
+
+    @classmethod
     def recall_for_seq(cls, key):
-        """Switch the active QICK program to ``key``'s, or no-op when unchanged from last shot."""
+        """DEPRECATED for this board -- do NOT use per shot.
+
+        Its "no-op when key unchanged" optimization is UNSAFE on the current one-shot firmware: after a
+        shot's TTL fires the program it is spent, so skipping the re-arm leaves the next TTL doing
+        nothing. Use :meth:`arm_for_seq` (always re-arm). Kept only for a hypothetical future firmware
+        that re-arms itself (an outer trigger-wait loop), where switch-on-change would be valid.
+        """
         if not cls._state:
             return
         if key == cls._state["last_key"]:

@@ -116,6 +116,19 @@ def make_engine_run(server, camera, seq_config, log=None):
                 awg_runtime.setup(awg_names, scangroup)
             pre.append(awg_runtime.make_pre_cb(scangroup))
 
+        # --- QICK FPGA_AWG (RFSoC4x2 microwave): batch-upload all programs + arm per shot --------- #
+        # A scan opts in via runp().QICK and declares the microwave sequence via g().QICK.* (like the
+        # Siglent g().AWG.<name>.*). setup() batch-uploads one program per UNIQUE swept point ONCE and
+        # sets external-trigger mode; the per-shot pre_cb ARMS this point's program (stop+start EVERY
+        # shot -- the board is one-shot). cleanup() in the finally stops+disconnects. Done here (before
+        # the SLM lock, same as Siglent) so the slm lease stays fresh; non-QICK scans pay nothing. The
+        # program fires on TTLQickTrig = FPGA1/TTL14, pulsed by the step (RydbergPushoutStep).
+        qick_on = awg_runtime.qick_enabled(scangroup)
+        if qick_on:
+            with run_timing.setup_stage("qick_upload"):  # QICK program batch-upload (bucket B)
+                awg_runtime.qick_setup(scangroup)
+            pre.append(awg_runtime.make_qick_pre_cb(scangroup))
+
         # --- Scan-long SLM session ------------------------------------------------------------ #
         # Hold the slm HARDWARE lock + write the loading (WGS) phase for the WHOLE scan. This
         # applies to EVERY scan (default useScanLongSlmLock=1): any scan loads atoms into the SLM
@@ -300,6 +313,8 @@ def make_engine_run(server, camera, seq_config, log=None):
                     pass
             if awg_names:
                 awg_runtime.cleanup()
+            if qick_on:
+                awg_runtime.qick_cleanup()           # stop program + disconnect QICK board
             rearrange_runtime.clear_context()
             try:
                 import expConfig_helper
