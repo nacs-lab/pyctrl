@@ -26,6 +26,8 @@ Design inspired by the MATLAB original; no brassboard-seq code.
 import os
 import time
 
+import shot_time                      # per-shot wall clock (TEMPORARY: RP-N correlation)
+
 # Day-folder calibration root (mirrors RearrangeCommSeq.m). Overridable for portability/tests.
 _DATA_ROOT = os.environ.get(
     "YB_DATA_ROOT",
@@ -82,6 +84,18 @@ class ScanContext:
         # None / single-round -> the single-detector path below is used unchanged (ground truth).
         self.frame_patterns = list(frame_patterns) if frame_patterns else None
         self.log = log or (lambda _m: None)
+        # ---- probability-path diagnostics (the SLM server's prob_hungarian) --------------
+        # Whether THIS scan asked the server for the imaging-weighted Hungarian, and the beta
+        # it asked for (None -> the server's survival-calibrated (nsteps*1.5)^2 default). Set
+        # by rearrange_callbacks.pre_run from the per-shot setup extras; purely diagnostic on
+        # this side (the flag itself travels to the server inside setup_rearrangement).
+        self.prob_hungarian = False
+        self.prob_hungarian_beta = None
+        # Last per-round probability summary, keyed by the round's callback tag; see
+        # :meth:`note_probs`. Readable post-hoc from the runner log, and live from the context.
+        self.prob_diag = {}
+        self._prob_shots = {}           # tag -> shots seen (log throttle)
+        self._site_counts = {}          # pattern name -> registry site count (cached)
         # Cache of per-pattern detectors (built lazily on first use), keyed by pattern name. The
         # frame-0 detector is the ``_detector`` built below (server-grid-anchored when available);
         # additional per-round detectors are pure per-pattern-registry (server_grid_knm=None) so
@@ -119,8 +133,10 @@ class ScanContext:
     def detect_probs(self, img):
         """Detect atoms in ``img`` -> list of per-site posterior probabilities P(atom present) in
         [0,1] (same site order as :meth:`detect_bits`), or ``[]`` on a calibration mismatch. Sent to
-        the SLM server's rearrange call IN PLACE OF the bitstring; a missing/degenerate per-site fit
-        -> 0.0 so the server (which rounds at 0.5) drops uncertain sites."""
+        the SLM server's rearrange call IN PLACE OF the bitstring: the server rounds at 0.5 to get
+        the source bitstring and (with ``extras.prob_hungarian``) feeds the raw floats to the
+        assignment as ``site_probs``. A missing/degenerate per-site fit falls back to that site's
+        hard ``intensity > threshold`` cut, so ``round(probs) == bits()`` site-for-site."""
         return self._detector.probs(img)
 
     # ----------------------------------------------------------------------- #
@@ -152,6 +168,91 @@ class ScanContext:
     def detect_bits_for(self, pattern_name, img):
         """:meth:`detect_bits` against ``pattern_name``'s own registry grid (multi-round scan)."""
         return self.detector_for(pattern_name).bits(img)
+
+    # ----------------------------------------------------------------------- #
+    # probability-path diagnostics (prob_hungarian)
+    # ----------------------------------------------------------------------- #
+    def set_prob_hungarian(self, enabled, beta=None):
+        """Record whether this scan requested the server's imaging-weighted Hungarian (and its
+        beta), so :meth:`note_probs` can warn when the probabilities we post carry no confidence
+        information for it to act on. Called once per shot by ``rearrange_callbacks.pre_run``;
+        logs only on a CHANGE so the per-shot path stays quiet."""
+        want = bool(enabled)
+        b = None if beta is None else float(beta)
+        if want == self.prob_hungarian and b == self.prob_hungarian_beta:
+            return
+        self.prob_hungarian = want
+        self.prob_hungarian_beta = b
+        self.log("[rearrange_runtime] prob_hungarian=%s beta=%s (server default when None: "
+                 "(nsteps*1.5)^2)" % (want, "default" if b is None else b))
+
+    def pattern_site_count(self, pattern_name):
+        """Site count of ``pattern_name`` from the per-pattern registry record (cached), or None.
+        Used ONLY by the diagnostics below to say whether a round runs in atom SURPLUS -- the
+        only regime in which ``prob_hungarian`` can change the assignment (its ``-beta*log(p)``
+        term is a per-ROW constant, so a square/under-filled solve is unaffected)."""
+        if not pattern_name:
+            return None
+        if pattern_name in self._site_counts:
+            return self._site_counts[pattern_name]
+        n = None
+        try:
+            import pattern_grid
+            rec = pattern_grid.get_pattern_record(pattern_name)
+            knm = (rec or {}).get("knm")
+            if knm:
+                n = int(len(knm))
+        except Exception:  # noqa: BLE001 - registry absent -> no surplus hint, never fatal
+            n = None
+        self._site_counts[pattern_name] = n
+        return n
+
+    def note_probs(self, tag, pattern_name, probs, target_pattern=None, log_every=200):
+        """Summarise the per-site probabilities THIS round is about to post and stash them in
+        :attr:`prob_diag` (+ a throttled log line) so it is visible post-hoc that probs were sent
+        and whether they were informative.
+
+        The summary is what ``prob_hungarian`` actually consumes: the loaded sites' ``-log(p)``.
+        ``sum_neglog_p == 0`` means every loaded atom looked fully confident, so the server's
+        ``-beta*log(p)`` term is identically zero and the assignment is the plain distance-only
+        Hungarian no matter what beta is. ``surplus`` (loaded minus the NEXT pattern's site count)
+        is the other gate: with ``surplus <= 0`` every loaded atom is placed and the per-row
+        penalty cannot change the pairing.
+
+        Best-effort: any failure here is swallowed (a diagnostic must never fail a shot)."""
+        try:
+            d = _prob_summary(probs)
+        except Exception:  # noqa: BLE001
+            return None
+        d["tag"] = tag
+        d["pattern"] = pattern_name
+        n_targets = self.pattern_site_count(target_pattern)
+        d["n_targets"] = n_targets
+        d["surplus"] = (None if n_targets is None else int(d["n_loaded"]) - int(n_targets))
+        self.prob_diag[tag] = d
+        n = self._prob_shots.get(tag, 0) + 1
+        self._prob_shots[tag] = n
+        if n == 1 or (log_every and n % int(log_every) == 0):
+            self.log(
+                "[rearrange_runtime] %s probs[%s]: n=%d loaded=%d marginal=%d p_min_loaded=%.3f "
+                "sum_-log(p)=%.2f surplus=%s (shot %d)"
+                % (tag, pattern_name or "frame0", d["n"], d["n_loaded"], d["n_marginal"],
+                   d["p_min_loaded"], d["sum_neglog_p"],
+                   "?" if d["surplus"] is None else d["surplus"], n))
+        if n == 1 and self.prob_hungarian and not d["informative"]:
+            # Requested but toothless: the floats are hard 0/1 (no Gaussian fits, or every loaded
+            # site saturated), so the server's prob_hungarian_applied will be True while the cost
+            # offset is all-zero -- indistinguishable from OFF in the results. Say so loudly ONCE.
+            self.log("[rearrange_runtime] WARNING %s: prob_hungarian is ON but the posted probs "
+                     "carry NO confidence information (all 0/1) -- the -beta*log(p) term is "
+                     "identically zero for this round. Check that %s/threshold.mat has a "
+                     "gaussFitsStruct."
+                     % (tag, pattern_name or "the frame-0 pattern"))
+        if n == 1 and self.prob_hungarian and d["surplus"] is not None and d["surplus"] <= 0:
+            self.log("[rearrange_runtime] NOTE %s: no atom surplus (loaded %d <= targets %d) -- "
+                     "prob_hungarian cannot change the assignment this round (its penalty is a "
+                     "per-row constant)." % (tag, d["n_loaded"], n_targets))
+        return d
 
     # ----------------------------------------------------------------------- #
     # shot-error reporting (feeds the dashboard's "shots failing" banner)
@@ -289,6 +390,11 @@ def grab_one_frame(camera, timeout=0.2, sleep=time.sleep, clock=time.monotonic):
         sleep(0.001)
     if len(collected) != 1:
         return None, False, len(collected)
+    # Per-frame wall clock for the RP-N correlation campaign (TEMPORARY). This is the SINGLE
+    # funnel every rearrangement grab goes through (hand_over_slm / mid / finalize), so one stamp
+    # here times all of them -- a ~1 s rearrange shot's pre/post bracket is far too coarse for a
+    # 100 ms correlation window. Inert when no scan is active; never raises.
+    shot_time.stamp_frame()
     return collected[0], True, 1
 
 
@@ -378,6 +484,8 @@ class _Detector:
         self._W = None                 # scipy.sparse (M, H*W)
         self._thresholds = None        # (M,)
         self._gauss_params = None      # list[M] of (6,) [mu_e,s_e,A_e,mu_a,s_a,A_a] or None/site
+        self._gp_packed = None         # (M, 6) float view of _gauss_params (packed once)
+        self._gp_valid = None          # (M,) bool: posterior defined at this site
         self._img_shape = None         # (H, W)
         self._key = None               # cache identity of the built calibration
 
@@ -414,19 +522,22 @@ class _Detector:
         intensities + same site order as :meth:`bits`, so ``probs[i]`` lines up with the server's
         ``init_grid[i]``.
 
-        A site with a MISSING/degenerate Gaussian fit -> 0.0 (an uncertain site is treated as empty
-        -- the conservative choice; the SLM server rounds <0.5 to "no atom"). If the WHOLE
-        calibration lacks Gaussian fits (older threshold.mat with no gaussFitsStruct), falls back to
-        the hard ``intensity > threshold`` decision encoded as 1.0/0.0 so the scan still
-        rearranges instead of sending all-zeros."""
+        A site with a MISSING/degenerate Gaussian fit falls back to that site's hard
+        ``intensity > threshold`` decision (1.0/0.0), so rounding the floats at 0.5 -- which is
+        exactly how the SLM server derives the source bitstring -- reproduces :meth:`bits`
+        site-for-site. If the WHOLE calibration lacks usable Gaussian fits (older threshold.mat
+        with no gaussFitsStruct) every site takes that hard cut, so the scan still rearranges
+        instead of sending all-zeros -- but note the floats then carry NO confidence information
+        and ``prob_hungarian`` becomes a no-op (``-beta*log(1) == 0``)."""
         intensities = self._intensities(img)
         if intensities is None:
             return []
         import numpy as np
         gp = self._gauss_params
-        if gp is None or all(p is None for p in gp):
-            self._log("[rearrange_runtime] no Gaussian fits in calibration; probs fall back to "
-                      "hard intensity>threshold (1.0/0.0)")
+        if gp is None or self._gp_valid is None or not bool(self._gp_valid.any()):
+            self._log("[rearrange_runtime] no usable Gaussian fits in calibration; probs fall "
+                      "back to hard intensity>threshold (1.0/0.0) -- prob_hungarian will have "
+                      "NO effect (-beta*log(1) == 0)")
             logicals = intensities > self._thresholds
             return [1.0 if b else 0.0 for b in logicals]
         inten = np.asarray(intensities, dtype=float)
@@ -457,7 +568,15 @@ class _Detector:
                                   % (gain, cur, ref, int(loaded.sum())))
             except Exception as e:  # noqa: BLE001 - never break detection over the normalization
                 self._log("[rearrange_runtime] YB_NORM_PROBS skipped (%s)" % e)
-        post = _atom_posterior(inten, gp)
+        # Sites whose two-Gaussian fit is missing / degenerate have NO posterior. Fall back to
+        # this frame's hard cut there instead of 0.0: the SLM server builds the rearrangement
+        # bitstring by rounding these floats at 0.5, so a 0.0 at a site bits() calls '1' silently
+        # DROPS a real atom from the source set (and leaves a target unfilled). With the fallback,
+        # round(probs) == bits() site-for-site (cut on the SAME intensities the posterior saw, so
+        # the opt-in common-mode rescale above applies to both). No-op on every current production
+        # calibration (tri_3013_camfb / kagome_res_2198 / kagome_2078_camfb: 0 degenerate fits).
+        hard = (inten > np.asarray(self._thresholds, dtype=float)).astype(float)
+        post = _atom_posterior_packed(inten, self._gp_packed, self._gp_valid, fallback=hard)
         return [float(p) for p in post]
 
     def _ensure(self, img_shape):
@@ -671,10 +790,15 @@ class _Detector:
                       % (len(gauss_params), m))
             gauss_params = None
         self._gauss_params = gauss_params
+        # Pack the per-site fits ONCE here (not per shot): probs() then runs a single vector op
+        # instead of an M-iteration Python loop on the held-atom critical path.
+        self._gp_packed, self._gp_valid = _pack_gauss_params(gauss_params)
         self._img_shape = (H, W)
         self._key = key
-        self._log("[rearrange_runtime] detector built: source=%s M=%d imgSize=[%d %d] gaussFits=%s"
-                  % (key[0], m, H, W, "yes" if gauss_params is not None else "no"))
+        n_fit = int(self._gp_valid.sum()) if self._gp_valid is not None else 0
+        self._log("[rearrange_runtime] detector built: source=%s M=%d imgSize=[%d %d] "
+                  "gaussFits=%s (%d/%d sites with a usable posterior)"
+                  % (key[0], m, H, W, "yes" if gauss_params is not None else "no", n_fit, m))
 
     def _today_folder(self):
         return os.path.join(self._data_root, time.strftime("%Y%m%d"))
@@ -717,34 +841,134 @@ def _gauss_pdf(x, mu, sigma):
     return np.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi))
 
 
-def _atom_posterior(intensities, params_list):
-    """Vectorised per-site posterior ``P(atom present | intensity)`` under the per-site two-Gaussian
-    mixture ``params = [mu_e, s_e, A_e, mu_a, s_a, A_a]`` (empty peak first; fitted areas A_e/A_a are
-    the mixing weights, so the posterior folds in the site's loading rate).
+def _pack_gauss_params(params_list):
+    """``(packed (M,6) float, valid (M,) bool)`` from a list of per-site
+    ``[mu_e, s_e, A_e, mu_a, s_a, A_a]`` / ``None``, or ``(None, None)`` for an absent list.
 
-    Mirrors ``yb_analysis/detection/dynamical_threshold.py:atom_posterior`` -- reimplemented locally
-    (numpy only) so the engine-venv backend runtime takes NO yb_analysis import dependency. A site
-    whose params are missing (None) or degenerate (s_e<=0 / s_a<=0 / vanishing mixture density) ->
-    0.0 (uncertain -> treated as empty, the conservative choice for rearrangement)."""
+    A site is VALID only with six finite params, both sigmas > 0 and both mixture areas > 0 --
+    i.e. a posterior that is actually defined. Packed ONCE per calibration (in
+    :meth:`_Detector._build`) so the per-shot posterior is a pure vector op: the old per-site
+    Python loop cost ~10 ms per 3000-site frame ON THE HELD-ATOM CRITICAL PATH (measured
+    2026-07-27: 9.8 ms for 3013 sites, 7.0 ms for 2198), i.e. ~17 ms per two-round shot between
+    the image and ``rearrange()``."""
     import numpy as np
-    x = np.asarray(intensities, dtype=float).ravel()
-    out = np.zeros(x.shape[0], dtype=float)
+    if params_list is None:
+        return None, None
+    m = len(params_list)
+    packed = np.zeros((m, 6), dtype=float)
+    valid = np.zeros(m, dtype=bool)
     for i, params in enumerate(params_list):
         if params is None:
             continue
         p = np.asarray(params, dtype=float).ravel()
-        if p.size < 6:
+        if p.size < 6 or not np.all(np.isfinite(p[:6])):
             continue
-        mu_e, s_e, A_e, mu_a, s_a, A_a = p[0], p[1], p[2], p[3], p[4], p[5]
-        if not (s_e > 0 and s_a > 0):
+        if not (p[1] > 0 and p[4] > 0 and p[2] > 0 and p[5] > 0):
             continue
-        pe = A_e * _gauss_pdf(x[i], mu_e, s_e)
-        pa = A_a * _gauss_pdf(x[i], mu_a, s_a)
-        denom = pe + pa
-        if denom > 0:
-            out[i] = min(1.0, max(0.0, float(pa / denom)))
-        # denom == 0 (both peaks vanish at this intensity) -> leave 0.0
+        packed[i] = p[:6]
+        valid[i] = True
+    return packed, valid
+
+
+def _logistic(d):
+    """Numerically stable ``1 / (1 + exp(-d))`` (handles +-inf; no overflow warnings)."""
+    import numpy as np
+    d = np.clip(np.asarray(d, dtype=float), -700.0, 700.0)
+    out = np.empty(d.shape, dtype=float)
+    pos = d >= 0.0
+    out[pos] = 1.0 / (1.0 + np.exp(-d[pos]))
+    e = np.exp(d[~pos])
+    out[~pos] = e / (1.0 + e)
     return out
+
+
+def _atom_posterior_packed(intensities, packed, valid, fallback=None):
+    """Per-site ``P(atom present | intensity)`` from PRE-PACKED two-Gaussian params (see
+    :func:`_pack_gauss_params`). Vectorised and computed in LOG space:
+
+        p = sigmoid( log(A_a/A_e) + log(s_e/s_a)
+                     - (x-mu_a)^2/(2 s_a^2) + (x-mu_e)^2/(2 s_e^2) )
+
+    which is algebraically identical to ``A_a N_a / (A_e N_e + A_a N_a)`` but never underflows.
+    The direct-ratio form did: with the production fits (s_a ~ 0.9 ADU on the 2198 middle
+    pattern) BOTH densities vanish once the intensity sits ~40 sigma above the atom peak, the
+    ``0/0`` guard returned 0.0, and a BRIGHT site was reported as EMPTY -- an inverted answer for
+    exactly the sites we are most sure about (measured 2026-07-27: at ``mu_a + 40 ADU``,
+    2069/2198 sites collapsed to p=0.0). In log space those sites correctly return 1.0.
+
+    ``fallback`` (optional, length N) supplies the probability for sites whose posterior is
+    UNDEFINED (missing / degenerate fit). Pass the hard ``intensity > threshold`` decision so
+    ``round(probs) == bits()`` stays true site-for-site -- the SLM server DERIVES the bitstring by
+    rounding these floats at 0.5, so a site where the two disagree is silently added to or dropped
+    from the rearrangement source set. ``None`` -> 0.0 (the historical conservative default)."""
+    import numpy as np
+    x = np.asarray(intensities, dtype=float).ravel()
+    n = x.shape[0]
+    if fallback is None:
+        out = np.zeros(n, dtype=float)
+    else:
+        fb = np.asarray(fallback, dtype=float).ravel()
+        out = (np.clip(fb, 0.0, 1.0).astype(float) if fb.shape[0] == n
+               else np.zeros(n, dtype=float))
+    if packed is None or valid is None or n == 0:
+        return out
+    v = np.asarray(valid, dtype=bool).ravel()
+    if v.shape[0] != n:
+        return out
+    v = v & np.isfinite(x)
+    if not v.any():
+        return out
+    p = np.asarray(packed, dtype=float)[v]
+    xv = x[v]
+    mu_e, s_e, A_e = p[:, 0], p[:, 1], p[:, 2]
+    mu_a, s_a, A_a = p[:, 3], p[:, 4], p[:, 5]
+    d = (np.log(A_a) - np.log(A_e) + np.log(s_e) - np.log(s_a)
+         - 0.5 * ((xv - mu_a) / s_a) ** 2
+         + 0.5 * ((xv - mu_e) / s_e) ** 2)
+    out[v] = _logistic(d)
+    return out
+
+
+def _atom_posterior(intensities, params_list, fallback=None):
+    """Per-site posterior ``P(atom present | intensity)`` under the per-site two-Gaussian mixture
+    ``params = [mu_e, s_e, A_e, mu_a, s_a, A_a]`` (empty peak first; fitted areas A_e/A_a are the
+    mixing weights, so the posterior folds in the site's loading rate).
+
+    Mirrors ``yb_analysis/detection/dynamical_threshold.py:atom_posterior`` -- reimplemented
+    locally (numpy only) so the engine-venv backend runtime takes NO yb_analysis import
+    dependency. Convenience wrapper that packs ``params_list`` then delegates to
+    :func:`_atom_posterior_packed`; the live detector packs ONCE per calibration and calls that
+    directly. A site whose params are missing (None) or degenerate (s<=0 / A<=0) takes
+    ``fallback`` (default 0.0: uncertain -> treated as empty)."""
+    packed, valid = _pack_gauss_params(params_list)
+    return _atom_posterior_packed(intensities, packed, valid, fallback=fallback)
+
+
+def _prob_summary(probs):
+    """Compact summary of one round's posted per-site probabilities (see
+    :meth:`ScanContext.note_probs`). Pure function of the list -- no I/O.
+
+    ``sum_neglog_p`` is the exact quantity the SLM server's ``prob_hungarian`` turns into cost
+    (it adds ``-beta * log(p)`` to each LOADED row), so it is the single number that says whether
+    the probabilities can influence the assignment at all."""
+    import numpy as np
+    p = np.asarray(list(probs), dtype=float).ravel()
+    n = int(p.size)
+    loaded = p >= 0.5                       # the server rounds at 0.5 to build the bitstring
+    n_loaded = int(loaded.sum())
+    pl = p[loaded]
+    neglog = -np.log(np.clip(pl, 1e-12, 1.0)) if n_loaded else np.zeros(0)
+    return {
+        "n": n,
+        "n_loaded": n_loaded,
+        # loaded but not fully confident -- the population prob_hungarian can act on
+        "n_marginal": int(((pl >= 0.5) & (pl < 0.999)).sum()) if n_loaded else 0,
+        "p_min_loaded": float(pl.min()) if n_loaded else 0.0,
+        "sum_neglog_p": float(neglog.sum()),
+        "max_neglog_p": float(neglog.max()) if n_loaded else 0.0,
+        # False -> the floats are effectively a bitstring; -beta*log(p) is identically zero
+        "informative": bool(n_loaded and float(neglog.sum()) > 0.0),
+    }
 
 
 def _fspecial_gaussian(n, sigma):
