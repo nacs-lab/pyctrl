@@ -73,5 +73,8 @@ def GreenMOTStep(s, g):
         .add('Freq556RydbergMOTh', ramp_to(Freq_GreenMOT_CD))
         .add('Amp556RydbergMOTh', ramp_to(Amp_GreenMOT_CD)))
 
+
+    #s.add('AmpBlueMOT', 0.03)  # keep a tiny bit of blue MOT light on
+
     t_Hold = g.CoolDown.HoldTime(Consts().GreenMOT.CoolDown.HoldTime)
     s.wait(t_Hold)

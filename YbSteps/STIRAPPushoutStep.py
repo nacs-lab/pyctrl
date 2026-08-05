@@ -36,7 +36,7 @@ def STIRAPPushoutStep(s, g):
 
     Amp_SLM = g.SLMAOMAmp(Consts().SLM.AOM.Amp)
     Amp_Pushout369 = g.Amp369(0)
-    Time_Pushout369 = g.Time369(0)   # auto-ionization 369 pulse width (was hardcoded 2us)
+    Time_ionization = g.TimeIonization(0)   # auto-ionization 369 pulse width (was hardcoded 2us)
     
     # Full AWG playback window (s) per channel -- SHAPE-dependent, NOT always 3*pw. The gate must
     # stay high for the whole waveform: 3*pw for the half-Gaussian, but only pw for the cubic/
@@ -60,6 +60,9 @@ def STIRAPPushoutStep(s, g):
                                  pad_time_us=s.C.AWG.AWG308.Ch2.pad_time_us(0)) * 1e-6
     Forward_Delay = g.STIRAPDelay(0.5)  # fwd delay (us)
     Reverse_Delay = g.STIRAPReverseDelay(0.5)  # rev delay (us)
+    
+    Forward_PadTime = g.STIRAPPadTime(0.0)  # fwd pad time (us)
+    
     IfReverse = g.IfReverse(0)  # 0: no reverse STIRAP, 1: do reverse STIRAP
     If_MW = g.IfMW(0)  # 1: fire the QICK microwave (TTLQickTrig) during the fwd->rev gap (spin
                        # echo / Ramsey / Rabi on the Rydberg state). The armed program (run loop,
@@ -109,6 +112,7 @@ def STIRAPPushoutStep(s, g):
     # Wait until the coil current settles.
     s.wait(50e-3)
 
+    
     # Change trap depth for Rydberg.
     V_RydTrap = g.VRydTrap(0.4)
     s.add_step(1e-3).add('VSLMservo', ramp_to(V_RydTrap))
@@ -116,19 +120,20 @@ def STIRAPPushoutStep(s, g):
 
     # Pre-lock the 308 cavity.
     s.add('AmpAOM616', 0)
-    s.wait(3e-6)
+    s.wait(2e-6)
     
     # Preset the DDS value for pump
     #s.add('Freq556RydbergMOTh', Freq_Pump556).add('Amp556RydbergMOTh', Amp_Pump556)
     #s.add('AmpAOM308', 0.4)
     
     # Turn the tweezer off completely. 2026-07-20: ENABLED for trap-off forward-STIRAP
-    # optimization (removes trap light shift on the Rydberg transition during the pulse).
-    #s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
-    #s.wait(3e-6)
+    s.add('TTLSampleAndHold', 0)
+    s.wait(1e-6)
+    #s.add('AmpSLM', 0)
+
 
     # --- AWG STIRAP pulse (308 gate then 556 gate, overlapped via STIRAP.delay) ---
-    if Forward_Delay > 0:
+    if Forward_Delay > 0:        
         s.add('TTL308RydAWG', 1)
         s.add('TTL308RydAWG', 0)
         
@@ -137,9 +142,16 @@ def STIRAPPushoutStep(s, g):
         s.add('TTL556RydAWG', 1)
         s.add('TTL556RydAWG', 0)
         
+        s.wait(Forward_PadTime - Forward_Delay)  # Wait until the 556 pulse finishes before switching to Ch2. Fired 308 @ t0, 556 @
+        s.add('AmpSLM', 0)
+        
         # Wait until BOTH forward pulses finish before switching to Ch2. Fired 308 @ t0, 556 @
         # t0+FD; from the 556 gate the 308 tail has (Total308Ch1 - FD) left, the 556 has Total556Ch1.
-        s.wait(max(Total556Ch1, Total308Ch1 - Forward_Delay))
+        #s.wait(max(Total556Ch1, Total308Ch1 -  Forward_Delay))
+        s.wait(max(Total556Ch1, Total308Ch1 -  Forward_Delay) - (Forward_PadTime - Forward_Delay)+ 2e-6)
+        #s.wait(Total556Ch1 - (Forward_PadTime - Forward_Delay))
+        
+        
     else:
         s.add('TTL556RydAWG', 1)
         s.add('TTL556RydAWG', 0)
@@ -152,13 +164,18 @@ def STIRAPPushoutStep(s, g):
         # Fired 556 @ t0, 308 @ t0-FD (FD<=0 here); from the 308 gate the 556 tail has
         # (Total556Ch1 + FD) left, the 308 has Total308Ch1.
         s.wait(max(Total308Ch1, Total556Ch1 + Forward_Delay))
-    
+        
     
     # --- forward STIRAP complete ---
     
+    #s.add_step(10e-6).add('AmpSLM', ramp_to(Amp_SLM))
+    
     # Turn the trap back on. 2026-07-20: ENABLED to pair with the trap-off block above.
-    #s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
-    #s.wait(0.1e-6)
+    s.add('AmpSLM', Amp_SLM) #.add('TTLSampleAndHold', 1)
+    #s.wait(2e-6)
+    #s.add('TTLSampleAndHold', 1)
+    #s.wait(1e-6)
+    #s.add_step(2e-6).add('AmpSLM', ramp_to(Amp_SLM))
 
     # (QICK microwave now fires inside the fwd->rev gap below, gated on If_MW.)
 
@@ -179,6 +196,7 @@ def STIRAPPushoutStep(s, g):
         # Turn the tweezer off completely.
         #s.add('TTLSampleAndHold', 0).add('AmpSLM', 0)
         #s.wait(0.5e-6)
+        s.add('AmpSLM', 0)
 
         
         if Reverse_Delay > 0:
@@ -221,25 +239,34 @@ def STIRAPPushoutStep(s, g):
         #s.add('Amp556RydbergMOTh', 0)
         #s.add('AmpAOM308', 0)
         
-        
+    s.wait(1.5e-6)  # wait for the trap to turn back on before ionization
     # Back to the original trap depth: turn the trap back on.
-    s.add('AmpSLM', Amp_SLM).add('TTLSampleAndHold', 1)
+    s.add('AmpSLM', Amp_SLM)
+    s.wait(3e-6)
+    s.add('TTLSampleAndHold', 1)
     
     # auto-ionization (369 pulse width from Pushout.Time369; 0 -> zero-width pulse, no 369)
     # s.add('TTL369Switch', 1)
     
     # Electrode ionization: apply the Rydberg bias field for ionization. Trigger is the pulse
-    s.wait(0.1e-6)
-    s.add('TTLScopeTrig', 1)
-    (s.add_step(Time_Pushout369)
-        .add('VElectrode1', +Vx + Vy - Vz)
-        .add('VElectrode2', 0 + Vy - Vz)
-        .add('VElectrode3', 0 + Vy + Vz)
-        .add('VElectrode4', -Vx + Vy + Vz)
-        .add('VElectrode5', 0 - Vy - Vz)
-        .add('VElectrode6', -Vx - Vy - Vz)
-        .add('VElectrode7', +Vx - Vy + Vz)
-        .add('VElectrode8', 0 - Vy + Vz))
+    if IonizationViaDAC:
+        s.wait(0.1e-6)
+        s.add('TTLScopeTrig', 1)
+        (s.add_step(Time_ionization)
+            .add('VElectrode1', +Vx + Vy - Vz)
+            .add('VElectrode2', 0 + Vy - Vz)
+            .add('VElectrode3', 0 + Vy + Vz)
+            .add('VElectrode4', -Vx + Vy + Vz)
+            .add('VElectrode5', 0 - Vy - Vz)
+            .add('VElectrode6', -Vx - Vy - Vz)
+            .add('VElectrode7', +Vx - Vy + Vz)
+            .add('VElectrode8', 0 - Vy + Vz))
+    else:
+        s.wait(0.1e-6)
+        s.add('TTLScopeTrig', 1)
+        s.addStep(Time_ionization).add('TTLIonizationSwitch5to8', 1)
+        s.add('TTLIonizationSwitch5to8', 0)
+        
 
     # s.wait(Time_Pushout369)
     # s.add('TTL369Switch', 0)

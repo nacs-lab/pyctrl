@@ -39,12 +39,12 @@ def BlueMOTStep(s, g):
     s.add('VBiasCoilY', V_BiasCoilY)
     s.add('VBiasCoilZ', V_BiasCoilZ)
     
-    # Set the 399 imaging parameters for the 399 Img1/Img2 PID lock
+    #Set the 399 imaging parameters for the 399 Img1/Img2 PID lock
     Freq_Resonance399 = Consts().Resonance399Freq
     Freq_Imag399Detuning = Consts().Imag399.FreqDetuning
     Freq_Imag399 = Freq_Resonance399 + Freq_Imag399Detuning
     
-    # Turn Imaging beam on for 399 Img1/Img2 PID lock
+    #Turn Imaging beam on for 399 Img1/Img2 PID lock
     (s.add('FreqAbsImag', Freq_Imag399)
         .add('Freq399Imag2', Freq_Imag399)
         .add('AmpAbsImag', 1) 

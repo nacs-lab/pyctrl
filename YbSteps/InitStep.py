@@ -34,6 +34,7 @@ def InitStep(s, g):
     VSLMservo = g.VSLMServo(Consts().Init.VSLMServo)
 
     Amp_AOM616Divert = Consts().AOM616Divert.Amp()
+    V_IonizationSet5to8 = g.VIonizationSet5to8(Consts().Init.VIonizationSet5to8)
     
     # s.wait(10e-6)
     (s.add_step(10e-6)
@@ -53,6 +54,7 @@ def InitStep(s, g):
         .add('VBiasCoilX', 0)
         .add('VBiasCoilY', 0)
         .add('VBiasCoilZ', 0)
+        .add('VIonizationSet5to8', V_IonizationSet5to8)
         .add('TTLThorCamTrig', 0)
         .add('TTLOrcaTrig', 0)
         .add('TTL556RydbergShutter', 0)
