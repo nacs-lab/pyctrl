@@ -58,6 +58,17 @@ def stashed(n_frames):
     return [_STASH.get(i) for i in range(n_frames)]
 
 
+def stash_frame(frame_idx, img):
+    """Record camera frame ``frame_idx`` for the failing-shot display re-publish.
+
+    The public entry point for a seq that grabs its frames with its OWN round callback (e.g.
+    Rearrange3DFocusWalkCommSeq, whose rounds post a COMPOSED bit vector) instead of
+    :func:`rearrange_round` -- so such a seq still participates in the display re-publish
+    without reaching into the module-private stash."""
+    if img is not None:
+        _STASH[int(frame_idx)] = img
+
+
 # =========================================================================== #
 # pre_run -- locks + sticky per-shot setup (reg_before_start)
 # =========================================================================== #
@@ -134,16 +145,22 @@ def pre_run(s1, *, flags=("rearrange_img1_ok",), lock_desc="rearrange compute",
     # Per-shot setup_rearrangement from rearrange_kwargs (the SCANNED params); NO reset_params
     # so everything else stays sticky from the initial (dequeue-time) setup call. The scalar
     # folds (extras.z<N> -> zernike_coeffs, extras.distortion_z<N> -> distortion_zernike,
-    # extras.step_x/y/z -> step_size) let a scan sweep SCALAR axes for the server's
-    # list-valued knobs (a list-valued swept axis breaks the lab-side scan grid/curve); each
-    # is a no-op when its keys are absent, and an explicit list already present always wins.
+    # extras.step_r/step_theta_deg -> step_x/step_y, extras.step_x/y/z -> step_size) let a scan
+    # sweep SCALAR axes for the server's list-valued knobs (a list-valued swept axis breaks the
+    # lab-side scan grid/curve); each is a no-op when its keys are absent, and an explicit list
+    # already present always wins.
     args = rearrange_runtime.collect_kwargs(s1.C.rearrange_kwargs)
     args = rearrange_runtime.translate_zernike_zN(args)
     args = _fold_distortion_zernike(args)
+    args = _fold_step_polar(args)       # step_r/step_theta_deg -> step_x/step_y (BEFORE the xyz fold)
     args = _fold_step_xyz(args)
     if force_n_rounds is not None:
         _ensure_extra(args, "n_rounds", int(force_n_rounds))
     args.setdefault("client_scan_id", str(ctx.scan_id))
+    # Mirror the scan's imaging-weighted-Hungarian request onto the context so the per-round
+    # probability diagnostics can say whether the floats we post can actually bite. The flag
+    # itself travels to the server INSIDE these extras (nothing extra is sent).
+    _note_prob_hungarian(ctx, args)
     try:
         c.setup_rearrangement(**args)
     except Exception as err:  # noqa: BLE001
@@ -214,6 +231,12 @@ def rearrange_round(s1, frame_idx, *, ok_flag, tag, prior_flag=None,
     if not probs:
         return                          # calibration mismatch -> don't rearrange on a stale grid
 
+    # Post-hoc visibility of the probability path (prob_hungarian): summarise what this round
+    # posts -- how many sites are loaded, how many are MARGINAL, and the total -log(p) the
+    # server turns into cost -- plus the surplus against the NEXT frame's pattern (the only
+    # regime where the -beta*log(p) term can change the assignment). Throttled + best-effort.
+    _note_probs(ctx, tag, frame_idx, probs, use_frame_pattern)
+
     if min_load:
         n_at = sum(1 for p in probs if p > 0.5)
         if n_at < int(min_load):
@@ -277,7 +300,8 @@ def verify_frame(s1, frame_idx, *, ok_flag, prior_flags, tag="verify_frame",
 # finalize -- final frame + shot publication + teardown (reg_after_end)
 # =========================================================================== #
 def finalize(s1, *, round_flags, final_frame_idx, tag="post_run",
-             update=True, use_frame_pattern=False, record_ok=False, grab_timeout=0.1):
+             update=True, use_frame_pattern=False, record_ok=False, grab_timeout=0.1,
+             bits_fn=None):
     """Grab the FINAL frame (frame ``final_frame_idx``, 0-based) and publish the shot; release
     the compute lock and keepalive the scan-long slm lock.
 
@@ -297,6 +321,11 @@ def finalize(s1, *, round_flags, final_frame_idx, tag="post_run",
             (``detect_bits_for``) instead of the frame-0 detector (``detect_bits``).
         record_ok: call ``ctx.record_ok()`` on a fully-published shot (clears the dashboard
             "shots failing" banner). The single-round seq records at its rearrange instead.
+        bits_fn: optional ``bits -> bits`` map applied to the final frame's detected bitstring
+            before ``update_rearrange``. For a seq whose lab-side detection covers only PART of
+            the server's init_grid (Rearrange3DFocusWalkCommSeq detects one axial layer of a
+            2-layer 3-D grid, so it must pad the other layer's sites with '0'). ``None`` ->
+            the bits are posted exactly as detected (every pre-existing caller).
     """
     ctx = rearrange_runtime.context()
     if ctx is None:
@@ -339,6 +368,8 @@ def finalize(s1, *, round_flags, final_frame_idx, tag="post_run",
         if update and ctx.client is not None:
             bits = (ctx.detect_bits_for(_frame_pattern(ctx, final_frame_idx), img)
                     if use_frame_pattern else ctx.detect_bits(img))
+            if bits and bits_fn is not None:
+                bits = bits_fn(bits)
             if bits:
                 try:
                     ctx.client.update_rearrange(
@@ -378,9 +409,13 @@ def _do_rearrange_round(ctx, s1, img, probs, tag, ok_flag, record_ok=False):
     # shot); the live signal we gate on is the rearrange() result.
     _safe(ctx.server, "stage_frame", img, ctx.scan_id, _seq_id(s1))
     try:
-        # Per-site presence PROBABILITIES (floats in [0,1]) in place of the hard bitstring.
-        # The SLM server rounds them to 0/1 for now but the floats let it drop low-confidence
-        # sites in future.
+        # Per-site presence PROBABILITIES (floats in [0,1]) in place of the hard bitstring, one
+        # per site of THIS round's init grid, in that grid's order. The server rounds them at
+        # 0.5 to build the bitstring (the source set) AND -- when the scan asked for
+        # ``extras.prob_hungarian`` -- forwards the raw floats to the protocol as ``site_probs``,
+        # where they add ``-beta*log(p)`` to each loaded row of the assignment cost. That term is
+        # a per-ROW constant, so it only changes the pairing when atoms are in SURPLUS
+        # (n_loaded > n_targets); see the ctx.note_probs summary logged above.
         r = c.rearrange(probs, **runid)
         if isinstance(r, dict) and r.get("handoff_idle"):
             ctx.log("[%s] seq %d: server idle; cancelling shot, waiting 1 s"
@@ -442,6 +477,40 @@ def _fold_distortion_zernike(args):
     return args
 
 
+def _fold_step_polar(args):
+    """Fold scalar ``extras.step_r`` + ``extras.step_theta_deg`` into the scalar
+    ``extras.step_x`` / ``step_y`` that :func:`_fold_step_xyz` then folds to the
+    ``step_size`` 3-vector.
+
+    Lets a 2-D scan sweep the LATERAL MOVE IN POLAR FORM -- distance on one axis,
+    direction on the other -- which is how a 2-D movement-capability map is
+    naturally parametrized (and how it is analysed: a native ``[n_r x n_theta]``
+    grid). Sweeping ``step_x``/``step_y`` directly cannot express it, because a
+    direction requires TWO co-varying scalars, and a list-valued ``step_size``
+    axis breaks the lab-side N-D scan grid (see :func:`_fold_step_xyz`).
+
+    ``step_x = r * cos(theta)``, ``step_y = r * sin(theta)``, theta in DEGREES
+    measured from the +x axis. Runs BEFORE :func:`_fold_step_xyz` in the per-shot
+    chain, so the derived components still become ``step_size``. Both keys are
+    consumed (popped). An explicit ``step_x``/``step_y``/``step_size`` already
+    present wins (``setdefault``), and the fold is a no-op when ``step_r`` is
+    absent -- a bare ``step_theta_deg`` (no radius) is meaningless, so it is
+    dropped rather than silently treated as r=0."""
+    extras = args.get("extras") if isinstance(args, dict) else None
+    if not isinstance(extras, dict):
+        return args
+    if "step_r" not in extras:
+        extras.pop("step_theta_deg", None)
+        return args
+    import math as _math
+    r = float(extras.pop("step_r"))
+    theta = float(extras.pop("step_theta_deg", 0.0))
+    rad = _math.radians(theta)
+    extras.setdefault("step_x", r * _math.cos(rad))
+    extras.setdefault("step_y", r * _math.sin(rad))
+    return args
+
+
 def _fold_step_xyz(args):
     """Fold scalar ``extras.step_x`` / ``step_y`` / ``step_z`` into the 3-vector
     ``extras.step_size`` = ``[x, y, z]`` the pingponggrating xyz dispatcher reads.
@@ -472,6 +541,39 @@ def _fold_step_xyz(args):
 # =========================================================================== #
 # helpers
 # =========================================================================== #
+def _note_prob_hungarian(ctx, args):
+    """Copy ``extras.prob_hungarian`` / ``extras.prob_hungarian_beta`` from this shot's
+    setup_rearrangement kwargs onto the scan context (diagnostics only -- the values themselves
+    still travel to the server inside ``args``). Best-effort: never fails a shot."""
+    fn = getattr(ctx, "set_prob_hungarian", None)
+    if fn is None:
+        return
+    extras = args.get("extras") if isinstance(args, dict) else None
+    if not isinstance(extras, dict):
+        return
+    try:
+        beta = extras.get("prob_hungarian_beta")
+        fn(bool(extras.get("prob_hungarian", False)),
+           None if beta is None else float(beta))
+    except Exception:  # noqa: BLE001 - a diagnostic must never break the shot
+        pass
+
+
+def _note_probs(ctx, tag, frame_idx, probs, use_frame_pattern):
+    """Hand this round's posted probabilities to ``ctx.note_probs`` for the throttled summary.
+    The TARGET of round ``frame_idx`` is the pattern of the NEXT camera frame (round 1 moves the
+    loading array into the middle array, imaged as frame 1), so that is what the surplus test
+    compares against. Best-effort + version-tolerant (an older context has no note_probs)."""
+    fn = getattr(ctx, "note_probs", None)
+    if fn is None:
+        return
+    try:
+        pat = _frame_pattern(ctx, frame_idx) if use_frame_pattern else ctx.pattern_name
+        fn(tag, pat, probs, target_pattern=_frame_pattern(ctx, frame_idx + 1))
+    except Exception:  # noqa: BLE001 - a diagnostic must never break the shot
+        pass
+
+
 def _frame_pattern(ctx, idx):
     """The pattern NAME to detect camera frame ``idx`` against (0=loading, ..., last=final),
     from ``ctx.frame_patterns`` when the scan declared it; else None so the detector uses the
