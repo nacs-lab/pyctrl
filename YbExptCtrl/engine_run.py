@@ -225,6 +225,18 @@ def make_engine_run(server, camera, seq_config, log=None):
                         camera, server, num_images, scan_id, seq_config, async_=async_save))
             except Exception:  # noqa: BLE001 - camera arm failure must not crash the job pre-run
                 armed = False
+        # --- Per-shot wall-clock stamping (TEMPORARY: RP-N correlation campaign) ----------- #
+        # Appended UNCONDITIONALLY, so rearrangement scans are covered too: they take the
+        # seq_owns_frames branch above (no default capture post_cb) but still get pre_cb/post_cb.
+        # Appended LAST so the "pre" stamp sits closest to run_real (after the awg/slm pre_cbs)
+        # and the "post" stamp lands after the capture cb has the frames. Rearrangement's
+        # per-frame times come from rearrange_runtime.grab_one_frame -> shot_time.stamp_frame().
+        # Wholly best-effort; disable with YB_SHOT_TIME=0.
+        import shot_time
+        shot_time_session = shot_time.begin(scan_id, log=log)
+        if shot_time_session is not None:
+            pre.append(shot_time.make_pre_cb(shot_time_session, seq_config))
+            post.append(shot_time.make_post_cb(shot_time_session, seq_config))
         # --- Sequence auto-dump (SeqPlotter), gated by the dashboard toggle ---------------- #
         # When runtime_state's "save sequence dumps" flag is ON, write one flattened .seq per
         # UNIQUE compiled sequence into <scan_dir>/sequence/ + a manifest.json that the dashboard
@@ -300,6 +312,11 @@ def make_engine_run(server, camera, seq_config, log=None):
                 try:
                     globals_session.finalize()                   # write globals.json
                 except Exception:  # noqa: BLE001 - globals finalize never fails the run
+                    pass
+            if shot_time_session is not None:
+                try:
+                    shot_time.end(shot_time_session)             # close shot_time.csv
+                except Exception:  # noqa: BLE001 - never fails the run
                     pass
             if armed:
                 try:
