@@ -66,9 +66,20 @@ def RearrangeRnRHeatCommSeq(s):
     # First Imag399.
     s.add_step(Imag399Step, s.C.Imag399)
 
-    # Pre-motion cooling: the SAME group as the baseline RNR scan's pre-release cooling, so the
-    # atoms enter the rearrangement motion in the same prepared cold state the baseline measures.
-    s.add_step(Cool556hXStep, s.C.Cool556)
+    # Pre-motion cooling. Reads its OWN group ``s.C.PreMotionCool``; UNSET it falls back to
+    # Consts().Cool556 (pattern-overlaid) exactly like s.C.Cool556 would, so the default build is
+    # byte-identical to before -- the atoms still enter the motion in the same prepared cold state
+    # the baseline RNR scan measures.
+    #
+    # Why it needs its own group (2026-07-31): the release-recapture fit brackets the temperature
+    # between "the motion loss is energy-BLIND" (survivors still thermal) and "the loss is pure
+    # EVAPORATION" (survivors truncated, parent much hotter) -- a factor ~2 at the above-cliff
+    # points. The two are told apart by how the motion loss responds to the INITIAL temperature:
+    # evaporation over a barrier is steeply sensitive to it, an impulsive mechanical ejection is
+    # nearly blind to it. That needs the pre-motion cooling spoiled on purpose -- and bseq1 uses
+    # s.C.Cool556 TWICE (once before img1, once here), so touching the shared group would also
+    # degrade img1 detection and confound the very survival being measured.
+    s.add_step(Cool556hXStep, s.C.PreMotionCool)
 
     # Leave the cooling light on a little during rearrangement (default OFF: RearrCoolAmp 0).
     Freq_Cool556Detuning = s.C.rearrange_kwargs.extras.RearrCoolDet(0.13 * 1e6)

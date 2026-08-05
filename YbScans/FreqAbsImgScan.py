@@ -66,6 +66,8 @@ def build():
     g().BlueMOT.LoadingTime = 1                     # default 0.6 s; longer load for the diagnostic
     g().GreenMOT.CoolDown.FreqDetuning = 0.25e6     # default 0.35e6
     g().GreenMOT.CoolDown.HoldTime = 10e-3 
+    
+    #g().GreenMOT.PowerBroaden.Amp = 0.6
 
     # ---- swept param: AbsImag.Freq ---------------------------------------
     # (300:2:330)*1e6 -- 16 pts @ 2 MHz, brackets the 399 absorption resonance
@@ -114,7 +116,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit FreqAbsImgScan to the pyctrl backend.")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=3,
+    ap.add_argument("--reps", type=int, default=10,
                     help="passes over the sweep (0 = forever); default 3 for a short A/B run")
     args = ap.parse_args()
     FreqAbsImgScan(url=args.url, reps=args.reps)

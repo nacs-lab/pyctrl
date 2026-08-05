@@ -1,23 +1,36 @@
-"""SLMRearrangementScan.py -- pyctrl port of ``matlab_new/YbScans/SLMRearrangementScan.m``.
+"""SLMRearrangementScan.py -- THE PRODUCTION SLM-rearrangement scan (settled 2026-07-28 campaign).
 
-Builds the SLM-rearrangement ScanGroup and submits it to the RUNNING pyctrl backend over ZMQ.
-Like the other YbScans ports, this only BUILDS the ScanGroup + sends the descriptor JSON; the
-backend (run loop) does the per-shot rearrangement.
+SETTLED PROTOCOL: SINGLE-ROUND ``tri_3013_camfb`` -> ``kagome_2078_camfb`` with ``rearrange2``,
+nsteps 40 @ 0.696 ms/frame (27.8 ms transit), linear scheduling, WARM-STARTED phase-locked WGS
+transit frames (pad 2048 x 3 iters), prob-Hungarian assignment with beta 300, matched defocus -4,
+and the recalibrated 399 imaging chain (PID setpoints 0.95/0.95, frame-0 DDS amps 0.23).
 
-Two variants, dispatched on ``N_ROUNDS`` (the single source of truth, mirroring the MATLAB scan):
-  * N_ROUNDS == 1 -> RearrangeCommSeq   (img1 -> rearrange -> img2; NumImages = 2). Two patterns:
-                     LOADING (initial) + FINAL (target).
-  * N_ROUNDS >= 2 -> RearrangeCommSeq2  (img1 -> rearrange -> img2 -> rearrange -> img3;
-                     NumImages = 3). THREE patterns: LOADING + MIDDLE + FINAL, imaged in each,
-                     with a rearrangement right after the first two images.
+ACHIEVED (gated median fill of the 2078-site kagome, gate = initial load > 72% of 3013 = 2169
+atoms): **0.9832 - 0.9844** (~35 median holes), best shots ~0.993. The campaign ceiling is
+imaging-fidelity-limited, not transit-limited: nsteps and prob_hungarian_beta are both saturated
+(see the sweeps below), and the residual holes track the ~24% common-mode shot-to-shot 399
+brightness wobble (yb_skills/memory/open-imaging-common-mode-shot-wobble.md).
+
+Provenance: Notion lab notebook, 2026 > July > "07/28" campaign page. Sweeps that fixed each value
+live in ``YbScans/RearrangeDiagnostics/WarmWGSKagomeStepSweep.py`` -- run THAT (not this file) to
+re-sweep nsteps / beta / per-frame 399 amps / per-frame 399 pulse length; this file is the pinned
+operating point.
+
+Two variants, dispatched on ``N_ROUNDS`` (the single source of truth):
+  * N_ROUNDS == 1 (DEFAULT, the settled protocol) -> RearrangeCommSeq (img1 -> rearrange -> img2;
+                   NumImages = 2). Two patterns: LOADING (initial) + FINAL (target).
+  * N_ROUNDS >= 2 -> RearrangeCommSeq2 (img1 -> rearrange -> img2 -> rearrange -> img3;
+                   NumImages = 3). THREE patterns: LOADING + MIDDLE + FINAL, imaged in each, with a
+                   rearrangement right after the first two images. Kept working (env YB_N_ROUNDS=2)
+                   but superseded -- single-round beats the 2-round 3013->2198->2078 route.
 
 Pattern-write policy (both variants): the LOADING (initial) phase is written once at scan start by
 the scan-long SlmScanSession (and re-written if the ``slm`` lock is lost). The MIDDLE / FINAL
 patterns are ASSUMED already on the SLM -- produced by the rearrange() calls -- so the middle and
 final images just cool + image as fast as possible (no phase re-write). Each image is DETECTED with
 its OWN per-pattern registry grid + thresholds (via imagePatternsJson + rearrange_kwargs.extras.
-{initial,middle,final}_pattern), so the three patterns may be genuinely different arrays / spot
-counts -- provided the lab detection agrees with what the SLM server scores that round.
+{initial,middle,final}_pattern), so the patterns may be genuinely different arrays / spot counts --
+provided the lab detection agrees with what the SLM server scores that round.
 
 What the backend does (see engine_run.py / slm_runtime.py + RearrangeCommSeq / RearrangeCommSeq2):
   * AT DEQUEUE -- grab the scan-long ``slm`` lock, write the loading phase, push the initial
@@ -25,6 +38,10 @@ What the backend does (see engine_run.py / slm_runtime.py + RearrangeCommSeq / R
   * PER SHOT   -- grab the ``compute`` lock, push setup_rearrangement (swept params, sticky),
     reload_rearrange, then per round: detect bits/probs from that round's image (its own pattern),
     rearrange(), store the image; the final image runs update_rearrange; release compute; keepalive.
+
+ANALYSIS: gate on "initial load > 72% of 3013" (= 2169 atoms, >= 91 spare over the 2078 targets)
+and report the GATED MEDIAN fill + median hole count. Ungated medians mix in shots that could not
+possibly fill the target and understate performance.
 
 Run it:
     cd pyctrl
@@ -40,29 +57,25 @@ import argparse
 import json
 import os
 import sys
-import numpy as np
 
 
 # --------------------------- PATTERN SELECTION (edit me) ---------------------------- #
 # LOADING (initial) / MIDDLE / FINAL SLM patterns, resolved to a server-side phase + baked Zernike
-# by _pattern_cfg below (port of ybLoadingPatternCfg.m). MIDDLE is only used when N_ROUNDS >= 2. For
-# a plain rearrangement leave them equal; set them apart to rearrange FROM one pattern THROUGH a
-# middle INTO another. The rearrangement MODEL (warmup_kwargs.model_filename) must match the family.
-# INIT_PATTERN = "33x33_feedback11"
-# MIDDLE_PATTERN = "33x33_feedback11"
-# TARGET_PATTERN = "33x33_feedback11"
+# by _pattern_cfg below (port of ybLoadingPatternCfg.m). MIDDLE is only used when N_ROUNDS >= 2.
 INIT_PATTERN = "3013_tri"
 MIDDLE_PATTERN = "2198_kagome_res"
 TARGET_PATTERN = "2078_kagome"
 
-# Rounds of rearrangement. 1 -> single-round (RearrangeCommSeq, 2 images). 2 -> two-round
-# (RearrangeCommSeq2, 3 images: LOADING/MIDDLE/FINAL). This is the single source of truth; NumImages
-# and the seq are both derived from it.
-N_ROUNDS = int(os.environ.get("YB_N_ROUNDS", "2"))   # override for a 1-round 3013->2078 test (YB_N_ROUNDS=1)
+# Rounds of rearrangement. 1 (DEFAULT, settled) -> single-round RearrangeCommSeq, 2 images,
+# 3013 -> 2078. 2 -> two-round RearrangeCommSeq2, 3 images, 3013 -> 2198 -> 2078 (kept working,
+# superseded). Single source of truth: NumImages and the seq are both derived from it.
+N_ROUNDS = int(os.environ.get("YB_N_ROUNDS", "1"))
 # ------------------------------------------------------------------------------------ #
 
+# Harmless under warm WGS (the WarmWGSProducer solves each transit frame instead of running the
+# CNN), but still forwarded: the server needs a model_filename to complete its warmup handshake.
 MODEL_FILENAME = "SLMnet/checkpoints/sinc_3x3_experiment/models/direct_flat/direct_flat_best.pth"
-# MODEL_FILENAME = "SLMnet/checkpoints/sinc_3x3_experiment/models/ampctrl_flat/ampctrl_flat_best.pth"
+
 
 def _pattern_cfg(name):
     """Port of ybLoadingPatternCfg.m: pattern name -> {phase_path, baked_zernike, legacy}."""
@@ -71,7 +84,7 @@ def _pattern_cfg(name):
         "3013_tri": ("phase/tri_3013_camfb.pt", [0, 0, 0, 0, 0]),
         "2078_kagome": ("phase/kagome_2078_camfb.pt", [0, 0, 0, 0, 0]),
         "2198_kagome_res": ("phase/kagome_res_2198.pt", [0, 0, 0, 0, 0]),
-        
+
         "47x47_feedbackwarm4": ("phase/47x47_feedbackwarm4.pt", [0, 0, 0, 0, 0]),
         "2x15x15_xyoffset_5um": ("phase/2x15x15_xyoffset_5um.pt", [0, 0, 0, 0, -0.75]),
         "47x47_uniform": ("phase/47x47_uniform.pt", [0, 0, 0, 0, 0]),
@@ -79,7 +92,7 @@ def _pattern_cfg(name):
         "3270_z4eq4":    ("phase/3270_z4eq4.pt",    [0, 0, 0, 0, -4]),
         # NAME-IMPLIED (confirm the baked Zernike before trusting)
         "33x33_feedback9": ("phase/33x33_feedback9.pt", [0, 0, 0, 0, 0]),
-        "33x33_feedback11": ("phase/33x33_feedback11.pt", [0, 0, 0, 0, 0]),  # 2026-07-10 fb9 depth-reflattened (post optics move); production successor
+        "33x33_feedback11": ("phase/33x33_feedback11.pt", [0, 0, 0, 0, 0]),
         "11x11withzernike-4":   ("phase/11x11withzernike-4.pt",   [0, 0, 0, 0, -4]),
         "10x10_z4eq8":          ("phase/10x10_z4eq8.pt",          [0, 0, 0, 0, -8]),
         "15x15_z4eq8":          ("phase/15x15_z4eq8.pt",          [0, 0, 0, 0, -8]),
@@ -118,8 +131,8 @@ def _pattern_item(name, cfg):
 def _image_patterns_json(n_rounds, init_cfg, middle_cfg, target_cfg):
     """Per-frame detection declaration. Single-round: [LOADING, FINAL]. Two-round:
     [LOADING, MIDDLE, FINAL]. Each frame is detected against its own per-pattern registry grid, so
-    the three arrays may differ in spot count / order (as long as the lab agrees with the server for
-    the round it feeds). Explicit imagePatternsJson wins over the runner's 2-frame auto-synthesis
+    the arrays may differ in spot count / order (as long as the lab agrees with the server for the
+    round it feeds). Explicit imagePatternsJson wins over the runner's 2-frame auto-synthesis
     (which does not know about a MIDDLE pattern)."""
     items = [_pattern_item(_registry_name(init_cfg), init_cfg)]
     if n_rounds >= 2:
@@ -180,135 +193,109 @@ def build():
     rp.warmup_kwargs.compile_fullgraph = True
     rp.warmup_kwargs.cuda_graph = True
     rp.warmup_kwargs.derive_threshold = 0.35
-    
-    # ---- OFF-PLANE SPHERICAL (Z12) NULL SWEEP (pingponggrating, depth mode) -------------
-    # Measure the corrective primary-spherical coefficient (ANSI Z12, PV rad) model-free via
-    # a depth-mode z-asymmetry null. Sim nailed the SIGN + MECHANISM (the objective's off-plane
-    # spherical makes +z survive better than -z) but NOT the magnitude -- "amp 8" was an
-    # illustrative unnormalized term, not Z12-PV-rad -- so measure it the same way as fill/center:
-    # a null sweep. In depth mode the Z4 defocus is made pistonless (no_depth_piston, fill frac
-    # PINNED at the measured f=0.65 centred on the beam) so the ONLY residual left to null is the
-    # spherical. Adding a corrective Z12 on the TRANSIT frames cancels the system spherical; the
-    # asymmetry A(C12)=surv(+z)-surv(-z) crosses ZERO at the correction (there +z and -z coincide
-    # and both sit higher = deeper z-reach). We do it at a FIXED |step| in the regime where the
-    # asymmetry is largest (best contrast), sweeping C12 in both z-directions.
-    #   dim 1: step_size = {+|s|, -|s|} for |s| in {3.5, 4.0} rad PV Z4  => 4 SIGNED values (the
-    #          two z-directions x two |step|). Scalar => pure depth. Split by |step| in analysis:
-    #          A(C12; |s|) = surv(+|s|) - surv(-|s|), one zero-crossing per |step|. BONUS: if the
-    #          null C12 DRIFTS between |s|=3.5 and 4.0 the spherical is defocus-dependent (-> move
-    #          to a d-scaled Z12); if it holds, a single C12 correction suffices.
-    #   dim 2: distortion_z12 = linspace(-8, 4, 25) PV rad -- scalar fold (rearrange_callbacks
-    #          _fold_distortion_zernike) -> distortion_zernike = [0]*12 + [C12]; a LIST-valued
-    #          swept axis would break the lab-side live curve. reverse_zernike LEFT DEFAULT (True):
-    #          +C12 outward, -C12 on the return leg (matches the +z/-z transit the asymmetry probes).
-    #   => 4 x 25 = 100 points.
-    # RUN 1 (id 2483, C12 in [-4,4]x17): asymmetry unambiguous but the |step|=4.0 +z branch peaked
-    # AT the C12=-4 edge (still climbing) -> its optimum sits BELOW -4, unbracketed. Zero-crossings
-    # were |s|=3.5 -> C12~+0.37, |s|=4.0 -> C12~-1.66 (large drift => defocus-dependent spherical).
-    # RUN 2 extends C12 to -8 to bracket the |step|=4.0 negative tail (0.5 spacing kept).
-    # STEP_ABS = [3.5, 4.0]                                                       # |step| (PV rad Z4)
-    # step_signed = [s for a in STEP_ABS for s in (a, -a)]                        # [+3.5,-3.5,+4.0,-4.0]
-    # g().rearrange_kwargs.step_size.scan(1, step_signed)                        # +z / -z x |step|
-    # g().rearrange_kwargs.extras.depth = True
-    # g().rearrange_kwargs.extras.no_depth_piston = True
-    # g().rearrange_kwargs.extras.piston = 0                                     # piston stays 0 throughout
-    # # Fill frac / center PINNED at the measured beam (from the earlier fill/center null sweeps),
-    # # so the pistonless Z4 subtracts the right beam-weighted mean and the ONLY residual is Z12.
-    # g().rearrange_kwargs.extras.depth_fill_frac = 0.65                         # measured (pinned)
-    # g().rearrange_kwargs.extras.depth_fill_center = [-0.0689, 0.0118]          # normalized [cx, cy]
-    # # dim 2: corrective primary spherical, scalar C12 -> distortion_zernike[12] per shot.
-    # g().rearrange_kwargs.extras.distortion_z12.scan(2, np.linspace(-8.0, 4.0, 25))
-    # g().rearrange_kwargs.nsteps = 50
-    # g().rearrange_kwargs.step_period_ms = 0.696  # pinned (period = 1 ms)
-    # g().rearrange_kwargs.protocol = "pingponggrating"
 
     # ---- rearrange_kwargs (g(); per-shot setup, sweepable) -----------------------------
-    # ss = [1, 2, 2.5, 2.75, 3, 3.25, 3.5, 3.75, 4, 4.25, 4.5]
-    # g().rearrange_kwargs.step_size.scan(1, [0] + ss + list(-1 * np.array(ss)))   # sweep (timing-vs-step_size)])
-    # g().rearrange_kwargs.extras.depth = True
-    g().rearrange_kwargs.extras.prob_hungarian = True
-    if os.environ.get("YB_NSTEPS_SWEEP"):     # e.g. "10,20,...,100" -> sweep axis 1
-        _ns = [int(x) for x in os.environ["YB_NSTEPS_SWEEP"].split(",")]
-        g().rearrange_kwargs.nsteps.scan(1, _ns)
-    else:
-        g().rearrange_kwargs.nsteps = 50   # 2026-07-19 fixed (nsteps plateau ~94% by 20)
-    g().rearrange_kwargs.step_period_ms = 0.696#.scan(2, 0.696 * np.array([1, 2, 3, 4, 5, 6, 7, 8]))  # sweep (timing-vs-step_period_ms)
     g().rearrange_kwargs.protocol = "rearrange2"
-    
+    # nsteps 40 @ step_period_ms 0.696 = 27.8 ms transit. SATURATED: the warm-WGS nsteps sweep
+    # plateaus from ~30 upward (WarmWGSKagomeStepSweep.py); 40 sits on the plateau with margin.
+    # With dynamic=False (linear scheduling) each atom advances L_i / nsteps per frame, so nsteps
+    # IS the per-frame step-size axis -- re-sweep it there, not here.
+    if os.environ.get("YB_NSTEPS_SWEEP"):     # e.g. "10,20,...,100" -> sweep axis 1
+        _ns = [int(x) for x in os.environ["YB_NSTEPS_SWEEP"].split(",") if x.strip()]
+        if len(_ns) == 1:
+            g().rearrange_kwargs.nsteps = _ns[0]   # .scan(dim, [x]) would ship a 1-elem LIST
+        else:
+            g().rearrange_kwargs.nsteps.scan(1, _ns)
+    else:
+        g().rearrange_kwargs.nsteps = 40
+    g().rearrange_kwargs.step_period_ms = 0.696
+    g().rearrange_kwargs.extras.dynamic = False    # linear = validated operating point
     g().rearrange_kwargs.extras.overdrive = False
-    g().rearrange_kwargs.extras.dynamic = False#.scan(2, [False, True])
-    # g().rearrange_kwargs.extras.max_step_size = 0.75
-    # g().rearrange_kwargs.extras.target_clamp.scan(2, [0.0, 0.15, 0.25, 1.0])
-    # g().rearrange_kwargs.extras.mover_boost = 2.0
-    # g().rearrange_kwargs.extras.block_max_size = 256
-    # g().rearrange_kwargs.extras.pattern = "every-other"
-
-    # g().rearrange_kwargs.extras.kagome_crop = 0.88
-    # g().rearrange_kwargs.extras.model_bookend_pre = False   # default: no full-grid model bookend
-    # g().rearrange_kwargs.extras.model_bookend_post = False
-    # g().rearrange_kwargs.extras.hold_ms = 50
     g().rearrange_kwargs.extras.ifEnhanced = True
-    # g().rearrange_kwargs.extras.precompute = True #.scan(1, [True, False])
-    # g().rearrange_kwargs.extras.precompute_host = True   # host-resident precompute / pre-pin
-    # g().rearrange_kwargs.extras.hw_sequence = False
-    # g().rearrange_kwargs.extras.flip_immediate = False   # pinned False -- True wedges SLM DMA (bug-rearr-slm-write-dma-stall)
-    # 2026-07-19 DEFOCUS override (env YB_DEFOCUS): sweep the whole focal plane -- loading_defocus,
-    # rearrange model z4, AND the middle write (server applies loading_zernike to it) ALL move together
-    # so the loaded atoms + rearrange transit frames + middle bookend stay co-planar (no transit mismatch).
-    # 2026-07-19: matched-defocus sweep (z4+loading_defocus+middle together) on the live 2-round
-    # rearrange -> -4 WINS: loading 71.8% (vs -5's 70.0), CV 11% (vs 16-19%, much more stable),
-    # rearrange eff 0.964, 2-round final fill 0.940 (vs -5's 0.899). Was -5.
+
+    # WARM-STARTED PHASE-LOCKED WGS transit frames (server extras, deployed 2026-07-27). Instead
+    # of the SLMnet CNN (amplitude-blind, learned per-spot phase contract), frame k is SOLVED with
+    # ``wgs_iters`` phase-locked WGS iterations at ``wgs_pad`` FFT pad, SEEDED from frame k-1's SLM
+    # phase: exact spot positions, exact per-spot phase contract, faithful amplitude control.
+    # Cost ~0.55-0.9 ms/frame at 2048 x 3 (pad 1024 is ~0.25 ms/frame but loses ~7% pattern power).
+    # Measured EQUIVALENT to the model frames in final fill -- adopted for the exact contract.
+    g().rearrange_kwargs.extras.wgs_warm = True
+    g().rearrange_kwargs.extras.wgs_pad = 2048
+    g().rearrange_kwargs.extras.wgs_iters = 3
+
+    # PROB-HUNGARIAN assignment: bias the assignment toward high-confidence loaded sites (only
+    # matters under atom surplus, i.e. ~2170-2470 loaded vs 2078 targets -- this scan's regime).
+    # NEW SERVER CONVENTION (2026-07-29): the probability term is ``beta * nsteps * log(p_i)`` per
+    # loaded row (Bayes-consistent -- per-frame loss scales the log-likelihood tradeoff by nsteps).
+    # The SERVER DEFAULT beta = 2 gives a multiplier 2*nsteps = 80 at nsteps 40, which is BELOW the
+    # measured saturation knee (total multiplier ~1e3, scans 20260728_195710 / 20260728_200808) --
+    # an UNSET beta therefore runs SUB-PLATEAU. So the key is ALWAYS emitted. beta = 300 maps to
+    # the old-convention 12000 at nsteps 40 (12000 / 40), i.e. the saturated plateau the 07-28
+    # campaign pinned.
+    g().rearrange_kwargs.extras.prob_hungarian = True
+    g().rearrange_kwargs.extras.prob_hungarian_beta = 300
+
+    # 2026-07-19 matched-defocus sweep (rearrange model z4 + loading_defocus + the 2-round middle
+    # write ALL move together, so loaded atoms + transit frames + bookends stay co-planar): -4 WINS
+    # -- loading 71.8% (vs -5's 70.0), CV 11% (vs 16-19%), rearrange eff 0.964. Env YB_DEFOCUS.
     _DEFOCUS = float(os.environ.get("YB_DEFOCUS", "-4"))
     g().rearrange_kwargs.extras.z4 = _DEFOCUS       # MATCH rp.loading_defocus (same focal plane)
+
     # Per-bseq cooling/imaging overlay (expConfig ByPattern) + per-frame detection pattern:
     # RearrangeCommSeq(2) tags each bseq's image with the pattern below, so each resolves
-    # cooling/imaging/VSLMServo from ByPattern[that pattern] AND detects with that pattern's registry
-    # grid+thresholds. Single-round uses initial_pattern (img1) + final_pattern (img2); two-round
-    # adds middle_pattern (img2), with final_pattern on img3.
-    # REGISTRY names (phase basenames -- see _registry_name), not the table aliases: ByPattern +
-    # per-frame detection both key off these.
+    # cooling/imaging/VSLMServo from ByPattern[that pattern] AND detects with that pattern's
+    # registry grid + thresholds. Single-round uses initial_pattern (img1) + final_pattern (img2);
+    # two-round adds middle_pattern (img2), with final_pattern on img3.
+    # REGISTRY names (phase basenames -- see _registry_name), not the table aliases.
     g().rearrange_kwargs.extras.initial_pattern = _registry_name(init_cfg)
     if n_rounds >= 2:
         g().rearrange_kwargs.extras.middle_pattern = _registry_name(middle_cfg)
     g().rearrange_kwargs.extras.final_pattern = _registry_name(target_cfg)
 
-    # 2026-07-19 in-sequence 3013 tuning overrides (env), applied to the FIRST array's load+image so
-    # the optimization runs on the REAL thermalized 2-round sequence:
-    #   YB_IMG1PID / YB_IMG2PID -> BlueMOT.Img1/Img2PIDSet (399 imaging power for the initial image)
-    #   YB_BLUELAC_DET (MHz) / YB_BLUELAC_AMP -> LAC.BlueLAC.{FreqDetuning,Amp} (enhanced loading)
-    if os.environ.get("YB_IMG1PID"):
-        g().BlueMOT.Img1PIDSet = float(os.environ["YB_IMG1PID"])
-    if os.environ.get("YB_IMG2PID"):
-        g().BlueMOT.Img2PIDSet = float(os.environ["YB_IMG2PID"])
+    # ---- IMAGING-POWER POLICY (settled 2026-07-28) -------------------------------------
+    # ONE PID setpoint for ALL images. The 399 imaging-power PID is engaged ONCE in the ROOT
+    # BlueMOTStep -- at BlueMOT.Img1/Img2PIDSet -- and then HELD for the rest of the shot (PIDMode
+    # TTL back to 0), so img2 (and img3 when 2-round) are taken at that SAME held voltage. The
+    # middle/final patterns' own ByPattern Img1/Img2PIDSet are INERT here and are kept equal to the
+    # initial pattern's in expConfig on purpose. Do NOT try to relock mid-shot (integrator reset /
+    # dark-PD rail collapses the counts -- gotcha-imaging-pid-held-multiround-rearrange; the opt-in
+    # relock lives only in RearrangeCommSeq2Dev).
+    #
+    # SETPOINTS 0.95 / 0.95 -- the PID-RECALIBRATION route, chosen by an in-scan A/B (20260728_223454)
+    # that beat the old pinned 0.5/0.5 by +16 filled sites. Raising the shared setpoint raises the
+    # optical flux on EVERY image; the FINAL (2078) image keeps its ByPattern DDS amps at 1/1 and so
+    # POCKETS the full 2.58x photon gain -> larger per-site histogram separation / higher d' -> fewer
+    # false-EMPTY mis-reads on the metric-defining frame. Do NOT re-pin 0.5.
+    #
+    # FRAME-0 AMPS 0.23 -- with the setpoint up 2.58x, frame 0 (tri_3013_camfb) must be brought BACK
+    # DOWN to production flux or its 399 pulse over-heats the atoms that still have to survive
+    # rearrangement. extras.InitImgAmp1/2 are the frame-0-ONLY DDS-amp knobs RearrangeCommSeq applies
+    # to img1's Imag399 step (a plain g().Imag399.Amp1 would hit BOTH bseqs). 0.23 re-matches the
+    # 0.5-at-0.5-setpoint flux, from the amp ladder 20260728_222904. AOM knee (2026-07-16, R212):
+    # amps 0.5-1.0 are optically FLAT, only <= 0.5 attenuates; DDS amp -> optical power is NONLINEAR,
+    # so this value is MEASURED, never computed as a ratio.
+    #
+    # Env overrides (in-sequence tuning on the REAL thermalized sequence) take precedence. NOTE
+    # YB_IMG1PID/YB_IMG2PID are read only by the root BlueMOTStep, so they set the SHARED held
+    # imaging power of ALL images (a g() override beats ByPattern in every bseq, but only the root
+    # bseq engages the lock).
+    g().BlueMOT.Img1PIDSet = float(os.environ.get("YB_IMG1PID", "0.95"))
+    g().BlueMOT.Img2PIDSet = float(os.environ.get("YB_IMG2PID", "0.95"))
+    g().rearrange_kwargs.extras.InitImgAmp1 = 0.23
+    g().rearrange_kwargs.extras.InitImgAmp2 = 0.23
+
+    # Enhanced-loading (blue LAC) in-sequence tuning hooks; unset -> expConfig defaults.
     if os.environ.get("YB_BLUELAC_DET"):
         g().LAC.BlueLAC.FreqDetuning = float(os.environ["YB_BLUELAC_DET"]) * 1e6
     if os.environ.get("YB_BLUELAC_AMP"):
         g().LAC.BlueLAC.Amp = float(os.environ["YB_BLUELAC_AMP"])
 
-    # ---- non-rearrangement scan settings ----------------------------------------------
-    # MOT/loading: 2026-06-05 loading-rate optimization (copied from YbScans/LACScan.py
-    # Phase-8 g() block; expConfig.py deliberately left untouched). ~1.9x faster cycle at
-    # the same ~0.58 single-atom peak loading rate.
-    # g().BlueMOT.LoadingTime = 0.23                    # was 0.5
-    # g().BlueMOT.FreqDetuning = -44e6                  # was -40e6 (saturation knee moved left)
-    # g().BlueMOT.Amp = 0.6
-    # g().GreenMOT.BiasCoilCurrent.X = 0.040            # was 0.039
-    # g().GreenMOT.BiasCoilCurrent.Y = 0.268            # was 0.27
-    # g().GreenMOT.BiasCoilCurrent.Z = 0.18
-    # g().GreenMOT.PowerBroaden.HandoverTime = 0.015    # was 0.030
-    # g().GreenMOT.CoolDown.FreqDetuning = 0.35e6
-    # g().GreenMOT.CoolDown.Amp = 0.25                  # was 0.20
-    # g().GreenMOT.CoolDown.HoldTime = 0.12             # was 0.2
-    # g().GreenMOT.CoolDown.RampdownTime = 0.05
-    # g().LAC.BlueLAC.FreqDetuning = -3.8e6             # LAC kept at config default
-    # g().LAC.BlueLAC.Amp = 0.17                        # LAC kept at config default
-
-    # ---- run params (runp) ------------------------------------------------------------
+    # ---- run params (runp; loading/cooling stay at expConfig defaults) -----------------
     rp.NumPerGroup = 100000
-    # Loading defocus (ANSI z4, rad) added to the base loading phase on the SLM write at scan
-    # start (SlmScanSession). MATCHED to rearrange_kwargs.extras.z4 (the rearrange MODEL z4) so the
-    # rearrangement model frames sit at the SAME focal plane as the loaded atoms (no transit defocus
-    # mismatch). 33x33_uniform has no baked Zernike, so -5 is absolute.
+    # Loading defocus (ANSI z4, rad) added to the base loading phase on the SLM write at scan start
+    # (SlmScanSession). MATCHED to rearrange_kwargs.extras.z4 (the rearrange MODEL z4) so the
+    # rearrangement model/WGS frames sit at the SAME focal plane as the loaded atoms (no transit
+    # defocus mismatch). tri_3013_camfb has no baked Zernike, so -4 is absolute.
     rp.loading_defocus = _DEFOCUS                 # matched to rearrange z4 (YB_DEFOCUS)
     rp.NumImages = n_rounds + 1                  # img1 + one frame per round
     rp.Scramble = 1

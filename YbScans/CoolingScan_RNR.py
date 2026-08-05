@@ -64,8 +64,11 @@ def _runp(g):
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
-    # g.runp().loading_phase = "phase/33x33_uniform.pt"   # server-side WGS phase path
-    # g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    # 2026-08-03: pinned to the LIVE production array. Without this the scan falls back to the
+    # expConfig SLM.Loading default (33x33_uniform) -- the wrong array AND the wrong per-pattern
+    # detection thresholds, which silently corrupts the recapture survival this scan optimizes.
+    g.runp().loading_phase = "phase/33x33_feedback11.pt"   # server-side WGS phase path
+    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
 
 
 def build(beam="h", fdet=DEF_FDET, famp=DEF_AMP, x_pin=DEF_X_PIN, h_pin=DEF_H_PIN,
