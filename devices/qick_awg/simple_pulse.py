@@ -32,15 +32,22 @@ def simple_pulse_cfg(name, freq, gain, length, phase=0.0, style="const", mode="o
     Args:
         name: pulse name (server-side key).
         freq: carrier frequency (MHz, as the MATLAB passed it).
-        gain: amplitude / DAC gain.
+        gain: amplitude / DAC gain -- an INTEGER register value (coerced here).
         length: pulse length in **ns** (the MATLAB ``dur``).
         phase: phase in **degrees** (the MATLAB converts rad->deg before calling).
+
+    ``gain`` is the DAC gain register, which the board writes RAW via ``safe_regwi`` (no int cast)
+    then packs into the binary program with bit-shifts. A FLOAT gain -> ``float << int`` ->
+    "unsupported operand type(s) for <<: 'float' and 'int'" at start_program time. The ScanGroup
+    delivers numeric params as floats (``3000`` -> ``3000.0``), so coerce gain to int here (the one
+    choke point every pulse passes through). ``freq``/``phase`` stay float -- the board's
+    ``freq2reg``/``deg2reg`` convert them; ``length`` stays float ns (converted to cycles).
     """
     return {
         "name": name,
         "style": style,
         "freq": freq,
-        "gain": gain,
+        "gain": int(round(gain)),
         "phase": phase,
         "length": length,
         "mode": mode,

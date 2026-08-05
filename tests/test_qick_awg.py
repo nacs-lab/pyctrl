@@ -201,6 +201,14 @@ def test_simple_pulse_cfg_fields():
     }
 
 
+def test_simple_pulse_cfg_gain_coerced_to_int():
+    # The ScanGroup delivers numeric params as floats; the board writes gain RAW via safe_regwi and
+    # bit-shifts it, so a float gain -> "float << int" at start_program. gain must be an int.
+    cfg = simple_pulse_cfg("d", freq=2.4, gain=3000.0, length=104.0)
+    assert cfg["gain"] == 3000 and isinstance(cfg["gain"], int)
+    assert simple_pulse_cfg("d", freq=2.4, gain=-2500.7, length=104.0)["gain"] == -2501
+
+
 def test_compile_chn_single_channel_with_loop():
     # Mirrors RamseySeq: {'Pi2', loop(10,[Wait]), 'Pi', loop(10,[Wait]), 'Pi2_Phase'}
     ch = compile_chn([["Pi2", loop(10, ["Wait"]), "Pi", loop(10, ["Wait"]), "Pi2_Phase"]])
