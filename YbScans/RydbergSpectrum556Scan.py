@@ -84,10 +84,14 @@ def build(field_G=0):
     # Widened 0.5 -> 1.5 MHz half-width 2026-06-12: the +/-0.5 MHz window showed NO dip at 30 G
     # (scan 20260612102118, flat ~0.92-0.96), so the line drifted >0.5 MHz out of the old window;
     # the wider window + stronger push (run with --amp 0.6) re-locates it. Narrow back once found.
-    COARSE_HALF_MHZ, COARSE_STEP_MHZ = 0.75, 0.05
+    # 2026-08-03 (user directive): the 30 G window is 143.0-144.0 MHz -- centre 143.5, half 0.5,
+    # step 0.03 (34 pts @ 30 kHz). The measured dip sits at 143.527 MHz (scan 20260803102712,
+    # FWHM 154 kHz, R^2 0.987), i.e. mid-window with ~5 pts across the FWHM. Was centre 143.4 /
+    # half 0.75 / step 0.05 (142.65-144.15, 31 pts @ 50 kHz).
+    COARSE_HALF_MHZ, COARSE_STEP_MHZ = 0.50, 0.03
     FINE_HALF_MHZ, FINE_STEP_MHZ = 0.50, 0.02
 
-    center_mhz = 143.4 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G
+    center_mhz = 143.5 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G
     half_mhz, step_mhz = (FINE_HALF_MHZ, FINE_STEP_MHZ) if field_G == 0 \
         else (COARSE_HALF_MHZ, COARSE_STEP_MHZ)
 
@@ -97,6 +101,16 @@ def build(field_G=0):
     # Push-out amp scales LINEARLY with field: weaker push at low field, stronger at high
     # field -- 0.2 @ 0 G -> 0.4 @ 30 G, i.e. amp = 0.2 + (0.4 - 0.2) * field_G / 30.
     # (Pure linear: extrapolates for field > 30 G; the `amp=` arg still overrides this.)
+    # 2026-08-01 (user directive): the whole 30 G set -- this scan, Revival616Scan,
+    # 556AutlerTownesScan -- runs on ONE 556 push amp. was 0.1, 0.15 (the docstring
+    # above had claimed 0.2/0.4 since well before that, so quoted amps predating 08-01 are 0.15).
+    # 0-G value left at its measured 0.1 -- only the 30 G end is pinned by the directive.
+    # 2026-08-03 (user directive): 0.4 @ 30 G is TOO HIGH -- back to 0.15, which is also what
+    # every run on/before 08-01 actually pushed. Keep all three 30 G scans on this one amp: the
+    # chain feeds this scan's dip centre into Revival616Scan (--green-freq-mhz) and the revival
+    # peak into 556AutlerTownesScan (--eom616), so a mismatched push amp saturates differently
+    # and the fed-forward centre is wrong. 0.15 @ 30 G, 1 ms gave a deep clean dip (survival
+    # 0.27-0.97, R^2 0.987) on 20260803102712.
     AMP_AT_0G, AMP_AT_30G = 0.1, 0.15
     g().Pushout.Green.Amp = AMP_AT_0G + (AMP_AT_30G - AMP_AT_0G) * field_G / 30.0
     g().Pushout.Time = 1e-3
@@ -160,6 +174,7 @@ if __name__ == "__main__":
     ap.add_argument("--field", type=float, default=30,
                     help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 0)")
     ap.add_argument("--amp", type=float, default=None,
-                    help="override Pushout.Green.Amp (else field-default 0.15@20G / 0.22 else)")
+                    help="override Pushout.Green.Amp (else field-scaled 0.1 @ 0 G -> 0.4 @ 30 G; "
+                         "Revival616Scan and 556AutlerTownesScan use the SAME 30 G amp)")
     args = ap.parse_args()
     RydbergSpectrum556Scan(url=args.url, reps=args.reps, field_G=args.field, amp=args.amp)

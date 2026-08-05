@@ -47,7 +47,7 @@ scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so 
 from RydbergPushoutSurvivalSeq import RydbergPushoutSurvivalSeq
 
 
-def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
+def build(field_G=30, green_amp=0.15, ryd308_amp=0.4, green_freq_mhz=None):
     """ScanGroup for the 30 G 616-revival sweep (seq = ``RydbergPushoutSurvivalSeq``).
 
     Fixes ``Pushout.Green.Freq`` on the field-shifted 556 resonance and sweeps
@@ -66,7 +66,7 @@ def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
     # 556 push-out resonance (MHz): mirrors RydbergSpectrum556Scan's calibration (2026-06-10 fit).
     # RES0_MHZ = 107.8049
     # ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
-    res556_mhz = 143.524 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz (model)
+    res556_mhz = 143.5368 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz (model)
     if green_freq_mhz is not None:
         res556_mhz = float(green_freq_mhz)   # explicit override: the located dip after drift
 
@@ -75,7 +75,10 @@ def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
     # 2026-07-22: revival back near ~234 MHz (mj-1 pi regime); bracket 220-250 @ 1 MHz (31 pts).
     # (2026-07-21 sigma-pol test used 260-300 @ 1 MHz for the ~282 MHz sigma regime; the historical
     # mj-1 pi revival is ~234, comment note "210,1,260 = mj-1 pi revival ~234".)
-    EOM_LO_MHZ, EOM_STEP_MHZ, EOM_HI_MHZ = 275, 0.2, 290
+    # 2026-07-23: back to the mj-1 pi revival window (556 on the 30 G line; revival peak ~234 MHz).
+    # 210-260 @ 1 MHz = 51 pts (daily-scan runbook). The 275-290 sigma-regime window (~282 MHz) is the
+    # 07-21 sigma-pol test; DO NOT use it for mj-1 operation.
+    EOM_LO_MHZ, EOM_STEP_MHZ, EOM_HI_MHZ = 210, 1, 260
 
     g = ScanGroup()
 
@@ -86,7 +89,12 @@ def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
 
     # ---- 556 push-out fixed ON the 30 G resonance (RydbergPushoutStep: 556 Rydberg beam) ----
     g().Pushout.Green.Freq = res556_mhz * 1e6   # 143.184 MHz @ 30 G
-    g().Pushout.Green.Amp = green_amp           # 30 G push amp (RydbergSpectrum556Scan used 0.4)
+    # 2026-08-03 (user directive): 0.4 @ 30 G is TOO HIGH -> 0.15 (also what every run on/before
+    # 08-01 actually pushed). Kept in lockstep with RydbergSpectrum556Scan's AMP_AT_30G.
+    # 30 G push amp: MUST match RydbergSpectrum556Scan (0.15 @ 30 G) -- this scan's 556 sits on the
+    # dip THAT scan located, so a different push amp saturates/broadens differently and the
+    # fed-forward center is off (2026-08-01 user directive; was 0.15 until then).
+    g().Pushout.Green.Amp = green_amp
 
     # ---- 308 + ionization (RydbergPushoutStep fires AmpAOM308 = Pushout.Ryd308.Amp) ----
     g().Pushout.Ryd308.Amp = ryd308_amp         # max 0.4
@@ -113,7 +121,7 @@ def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None):
     return g
 
 
-def Revival616Scan(url=None, reps=3, field_G=30, green_amp=0.2, ryd308_amp=0.4,
+def Revival616Scan(url=None, reps=3, field_G=30, green_amp=0.15, ryd308_amp=0.4,
                    green_freq_mhz=None):
     """Build + submit the 30 G 616-revival scan. Returns the queued descriptor id."""
     from yb_start_scan import ybStartScan
@@ -143,7 +151,9 @@ if __name__ == "__main__":
     ap.add_argument("--field", dest="field_G", type=float, default=None,
                     help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 30)")
     ap.add_argument("--556-amp", dest="green_amp", type=float, default=0.15,
-                    help="556 Rydberg push-out amp (default 0.15, the 30 G value)")
+                    help="556 Rydberg push-out amp (default 0.15 = the 30 G value used by "
+                         "RydbergSpectrum556Scan and 556AutlerTownesScan; keep the whole 30 G "
+                         "set on ONE amp so the fed-forward centers are comparable)")
     ap.add_argument("--308-amp", dest="ryd308_amp", type=float, default=None,
                     help="308 pulse amp, max 0.4 (default 0.4)")
     ap.add_argument("--green-freq-mhz", dest="green_freq_mhz", type=float, default=None,

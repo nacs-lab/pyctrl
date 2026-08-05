@@ -78,6 +78,7 @@ def _channel_alias():
     a["TTLTrig"] = "FPGA1/TTL3"
     a["TTL369Switch"] = "FPGA1/TTL44" # Unconnected be careful!!!
     a["TTL308RydAWGChSwitch"] = "FPGA1/TTL53"
+    a["TTLIonizationSwitch5to8"] = "FPGA1/TTL48"
     
     # ---- DDS channels (FPGA1) -- Name/FREQ and Name/AMP, no prefix ----
     a["Freq556RydbergMOTh"] = "FPGA1/DDS0/FREQ"
@@ -114,7 +115,7 @@ def _channel_alias():
     # ---- NI DAQ voltages (Dev1) ----
     a["VMOTCoil"] = "Dev1/0"
     a["VBiasCoilY"] = "Dev1/1"
-    a["TestChannel"] = "Dev1/2"
+    a["VIonizationSet5to8"] = "Dev1/2"
     a["VBiasCoilX"] = "Dev1/3"
     a["VBiasCoilZ"] = "Dev1/4"
     a["VRydCoil"] = "Dev1/6"
@@ -147,7 +148,7 @@ def _consts():
     c["Orca"] = {"ROI": [1000, 100, 2100, 2100], "ExposureTime": 0.050004}
 
     # 556nm resonance (calibrate daily by spectroscopy; 3P1 mj=0 near-magic)
-    c["Resonance556mj0Freq"] = 107.9618e6  # fit 2026-07-23 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.955, FWHM 60.8 kHz, 213 shots, scan 20260723100140, 33x33_feedback11); +4.4 kHz vs prior. was 107.9574e6 (07-22, 33x33_feedback11); 107.9501e6 (07-21, 33x33_feedback11); 107.9611e6 (07-20, 33x33_feedback11); 107.9253e6 (07-16, 33x33_feedback11); 107.9284e6 (07-14, 33x33_feedback11); 107.9054e6 (07-13, 33x33_feedback11); 107.8861e6 (07-05, 33x33_feedback9); 107.8762e6 (07-03); 107.8560e6 (07-02); 107.8448e6 (06-30); 107.8499e6 (06-29); 107.8478e6 (06-28, NEW LUT); 107.8389e6 (06-26); 107.8199e6 (06-23, 33x33_feedback9); 107.7753e6 (06-12, 47x47_uniform); 107.7673e6 (06-11); 107.7677e6 (06-10); 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
+    c["Resonance556mj0Freq"] = 108.0283e6  # fit 2026-08-05 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.960, FWHM 45.1 kHz, 214 shots, scan 20260805174955, 33x33_feedback11, loading 0.60); +11.5 kHz vs 08-04 -- above the usual few-kHz daily drift, flagged to user; mj0-mj1 splitting 2.7232 MHz (mj1 105.3051 MHz, FWHM 304 kHz, R^2=0.950, scan 20260805175514). 399 scan SKIPPED by user request. USER RAISED THE 556 RYDBERG PUSH-OUT BEAM POWER ~7x mid-session -> the whole 30 G set was re-amped from 0.15 to 0.10: amp 0.057 was far too weak (dip only 0.98->0.94, R^2 0.846, scan 20260805175959) and 0.10 reproduced the 08-03 line shape (dip 0.26-0.97, FWHM 150.2 kHz vs 154 kHz, center 143.5280 MHz vs 143.5267, scan 20260805180401) -- user approved 0.10. NOTE the ~7x is on the DEDICATED Rydberg-h path only (RydbergPushoutStep opens TTL556RydbergShutter + closes all 556 MOT shutters, driving Amp556RydbergMOTh alone), NOT the zero-field PushoutStep path (MOT shutters open, Amp556MOTX + Amp556RydbergMOTh together), which is why the mj=0/mj=1 scans at Amp 0.10 were unaffected (FWHM 45/304 kHz, both normal). 616 revival peak 233.9624 MHz (R^2 0.990, survival 0.28-0.97, scan 20260805180757) but FWHM 18.5 MHz vs the 07-20 reference ~4.5 MHz = power-broadened by the stronger 556 push. was 108.0168e6 (08-04: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.953, FWHM 57.4 kHz, 219 shots, scan 20260804124801, 33x33_feedback11, loading 0.59); +5.8 kHz vs 08-03, within the usual daily drift; mj0-mj1 splitting 2.721 MHz (mj1 105.2959 MHz, FWHM 347 kHz, R^2=0.976, scan 20260804125248). 616 EXCLUDED by user request -> no 616-revival and no 556 Autler-Townes scan today (AT needs the revival peak as --eom616); 616 also read -242 MHz off / unlocked. SECOND CONSECUTIVE DAY of the same 399 outage: MCC USB DAC offline again at pre-flight (/health devices.dac=false, 399 lock engaged=true but dac_online=false, V frozen 6.1041, det +4678 MHz); DAC replugged, lock self-re-acquired to det 0.44 MHz / V 6.62, loading 0.54-0.59. Recurring 2 days running -> suspect a degrading DAC USB connection, not a one-off. was 108.0110e6 (08-03: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.961, FWHM 49.1 kHz, 246 shots, scan 20260803101205, 33x33_feedback11, loading 0.57); +1.4 kHz vs 08-01, within linewidth; mj0-mj1 splitting 2.694 MHz (mj1 105.3172 MHz, FWHM 311 kHz, scan 20260803101739). Ran after a 399 outage: the MCC USB DAC driving the 399 wavemeter-PID piezo went offline overnight, its output collapsed and 399 parked +4.64 GHz off -> zero loading (0.005) + blank Orca frames (max 395 ADU); DAC replugged 10:10, lock re-acquired at V 6.24 / det +-3 MHz, loading back to 0.59. was 108.0096e6 (08-01: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.950, FWHM 52.1 kHz, 202 shots, scan 20260801092042, 33x33_feedback11, loading 0.59); +11.8 kHz vs 07-30 -- above the usual few-kHz daily drift, flagged to user; mj0-mj1 splitting 2.720 MHz (mj1 105.2893 MHz, scan 20260801092459). was 107.9978e6 (07-30: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.968, FWHM 47.6 kHz, 208 shots, scan 20260730140307, 33x33_feedback11, loading 0.61); +16.1 kHz vs 07-29 -- above the usual few-kHz daily drift, flagged to user; mj0-mj1 splitting 2.679 MHz (mj1 105.3184 MHz, scan 20260730140731). was 107.9817e6 (07-29: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.959, FWHM 42.5 kHz, 236 shots, scan 20260729113144, 33x33_feedback11, loading 0.42); +1.7 kHz vs 07-28, within linewidth; first 200-shot run scan 20260729112300 gave 107.9883 MHz R^2=0.933, redone per auto-reps rule. was 107.9800e6 (07-28: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.955, FWHM 60.0 kHz, 246 shots, scan 20260728105509, 33x33_feedback11, loading 0.58); -2.0 kHz vs 07-27, within linewidth. was 107.9820e6 (07-27 REDO (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.964, FWHM 45.9 kHz, 208 shots, scan 20260727132532, 33x33_feedback11); -3.9 kHz vs the 12:07 fit, within linewidth. was 107.9859e6 (07-27 12:07, R^2=0.968, 460 shots, scan 20260727120744); 107.9618e6 (07-23, 33x33_feedback11); 107.9574e6 (07-22, 33x33_feedback11); 107.9501e6 (07-21, 33x33_feedback11); 107.9611e6 (07-20, 33x33_feedback11); 107.9253e6 (07-16, 33x33_feedback11); 107.9284e6 (07-14, 33x33_feedback11); 107.9054e6 (07-13, 33x33_feedback11); 107.8861e6 (07-05, 33x33_feedback9); 107.8762e6 (07-03); 107.8560e6 (07-02); 107.8448e6 (06-30); 107.8499e6 (06-29); 107.8478e6 (06-28, NEW LUT); 107.8389e6 (06-26); 107.8199e6 (06-23, 33x33_feedback9); 107.7753e6 (06-12, 47x47_uniform); 107.7673e6 (06-11); 107.7677e6 (06-10); 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
     c["Resonance399Freq"] = 310e6              # not magic; changes with trap depth
 
     # Init: 2D MOT & Zeeman, electric fields, SLM servo
@@ -157,6 +158,7 @@ def _consts():
         "EOM616": {"Freq": 252.07e6, "FreqOld": 252.07e6},
         "Electrodes": {"Vx": -0.0175, "Vy": 0.0006, "Vz": 0.0092},  # 2026-07-16 full DC-Stark E-field re-null (new 616/308 line ~234 MHz; revival relocated from the old 282). Sequential Vx->Vy->Vz, each fit after the prior nulled; all parabola vertices INTERIOR, min-Stark centers agree 234.26/234.23/234.31 MHz. Vx -0.042->-0.0175 (20260716162632, R2=0.9999, a=1.816 MHz/V^2); Vy 0.0066->0.0006 (20260716171645, R2=0.9997, a=1215); Vz 0.0059->0.0092 (20260716173232, R2=0.9992, a=877). Scramble MUST be OFF for the 616-EOM sweep (random EOM jumps unlock 616). [prior 06-28: Vx -0.042/Vy 0.0066/Vz 0.0059; old min-Stark ~282.08 MHz]
         "VSLMServo": 3.7,                        # 112 sites at 6A at 30dB
+        "VIonizationSet5to8": 4 # DC Ionization voltage for electrodes 5-8 (V) 
     }
 
     # BlueMOT
@@ -185,7 +187,7 @@ def _consts():
         # Y~0.281; moved Y 0.268->0.280 to null the vertical gradient (corrY
         # -0.18@0.268 -> ~-0.05@0.280) at ~98% of peak load. X re-checked at the same
         # time (scan 20260621_172015): 0.039 still the 0.038-0.040 viable-window center.
-        "BiasCoilCurrent": {"Ryd": 0, "X": 0.0388, "Y": 0.265, "Z": 0.18},
+        "BiasCoilCurrent": {"Ryd": 0, "X": 0.035, "Y": 0.265, "Z": 0.17},
         # fast-loading opt 2026-06-05: HandoverTime was 30e-3
         "PowerBroaden": {"HandoverTime": 15e-3, "FreqDetuning": 0.7e6, "Amp": 0.8},
         # fast-loading opt 2026-06-05: HoldTime was 200e-3, Amp was 0.2
@@ -296,7 +298,7 @@ def _consts():
     }
 
     # 616 AOM diverted/idle amplitude (RydbergPushoutStep restores this after pushout)
-    c["AOM616Divert"] = {"Amp": 0.12}
+    c["AOM616Divert"] = {"Amp": 0.15}
 
     # SLM trap modulation
     c["SLMTrapModulation"] = {
@@ -397,16 +399,16 @@ def _consts():
     # step then drops the matching +DLAY from its post-gate wait. Set to 0 to disable (leave the
     # step's hand-added DLAY doing the accounting instead). Per-scan override: runp().TTLManagers.
     c["TTLManagers"] = {
-        "TTL556RydAWG": {"on_delay": 1.5e-6, "off_delay": 0.0, "skip_time": 0.0,
+        "TTL556RydAWG": {"on_delay": 0e-6, "off_delay": 0.0, "skip_time": 0.0,
                          "min_time": 0.1e-6, "off_val": False},   # = AWG556 trig_delay_us
-        "TTL308RydAWG": {"on_delay": 1.5e-6, "off_delay": 0.0, "skip_time": 0.0,
+        "TTL308RydAWG": {"on_delay": 0e-6, "off_delay": 0.0, "skip_time": 0.0,
                          "min_time": 0.1e-6, "off_val": False},   # = AWG308 trig_delay_us
         'TTL556RydAWGSwitch': {"on_delay": 1.05e-6, "off_delay": 1.05e-6, "skip_time": 0.0,
                          "min_time": 0, "off_val": False},   # = AWG556 trig_delay_us
         'TTL308RydAWGSwitch': {"on_delay": 0.85e-6, "off_delay": 0.85e-6, "skip_time": 0.0,
                          "min_time": 0, "off_val": False},   # = AWG308 trig_delay_us
-        #'TTLSampleAndHold': {"on_delay": 4e-6, "off_delay": 0, "skip_time": 0.0,
-        #                 "min_time": 0, "off_val": False},
+        'TTLQickTrig': {"on_delay": 0e-6, "off_delay": 0e-6, "skip_time": 0.0,
+                    "min_time": 0, "off_val": False},   # = AWG308 trig_delay_us
     }
 
     # 60 Hz AC-line trigger. When enabled, the FPGA waits for an edge on a TTL INPUT line at the
@@ -429,7 +431,14 @@ def _consts():
     c["LineTrigger"] = {
         "Enable": False,
         "Device": "FPGA1",
-        "Channel": 0,                          # trigger-input MUX index (WaitTrigger `chn:8`). 0 = TTL in 0 = TTL channel 24 (where the 60Hz is wired), 1 = TTL 52 / bd0-24, 2 = SMA04(FMC 1 la32p), 3 = SMA00 (FMC1 clock0p), clock SMA10 (FMC2 clock0p), TTLout24 SMA13 (FMC2 clock1n), TTLout52 SMA12 (FMC2 clock1pn)
+        "Channel": 0,                          # trigger-input MUX index (WaitTrigger `chn:8`). 
+        # 0 = TTL in 0 = TTL channel 24 (where the 60Hz is wired), 
+        # 1 = TTL 52 / bd0-24
+        # 2 = SMA12 (FMC2 clock1p)
+        # 3 = SMA00 (FMC1 clock0p)
+        # clock SMA10 (FMC2 clock0p)
+        # TTLout24 SMA13 (FMC2 clock1n)
+        # TTLout52 SMA04 (FMC 1 la32p)
         "Raise": True,                         # True = rising edge, False = falling edge
         "Timeout": 0.02,                       # seconds (~one 60 Hz period + margin)
     }
@@ -534,6 +543,14 @@ def _consts():
             # underpowered (d' 3.4 med, fid 0.980 -> corrupted loading counts). 0.5 = d' 4.67 med / 5.49
             # mean, fid 0.997 med (matches 33x33-level). 0.7/0.9 add brightness but median d'/fid plateau
             # + more img1 heating. Adopted 0.5/0.5. scans id 2804-2807 (_04xxxx).
+            # 2026-07-27 SHARED-SETPOINT POLICY (2-round rearrange, RearrangeCommSeq2): the 399
+            # imaging PID is engaged ONCE in the ROOT BlueMOTStep -- i.e. at THIS (the loading /
+            # initial) pattern's setpoints -- and then HELD for the whole shot, so these two values
+            # are the imaging power of ALL THREE images (3013 / 2198 / 2078). The mid/final
+            # patterns' own Img1/Img2PIDSet are inert in that context and are kept EQUAL to these
+            # on purpose (no misleading value, no mid-shot relock -- a relock drifts/rails, see
+            # gotcha-imaging-pid-held-multiround-rearrange). Per-image brightness differences must
+            # come from the DDS amps (Imag399.Amp1/Amp2) below, which do not drift within a shot.
             "BlueMOT": {"Img1PIDSet": 0.5, "Img2PIDSet": 0.5, "LoadingTime": 1.0},  # LoadingTime 1.0 s per user 2026-07-15
             "Imag399": {
                 # 2026-07-18: ND filters ADDED to the imaging path -> PIDSet is the light knob again
@@ -541,6 +558,9 @@ def _consts():
                 # gotcha-stale-dds-amps-pid-imaging). Re-optimizing Img1/Img2PIDSet at 100 ms.
                 # [prev 2026-07-16 workaround: amps 0.14/0.08 -- servo railed, DDS amps were the only
                 #  light knob; superseded by the ND filters.]
+                # 2026-07-27: in a MULTI-ROUND rearrange these amps are the ONLY per-image light knob
+                # (the PID is held at the root/loading setpoint). AOM knee: 0.5-1.0 is optically FLAT,
+                # only <= 0.5 actually attenuates. 1 = full held power for the img1 (loading) frame.
                 "Amp1": 1, "Amp2": 1,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
@@ -596,8 +616,21 @@ def _consts():
             # 2026-07-16 PID 2-D (Img1 0.40-1.00 x Img2 0.10-0.40, 0-pushout 50 ms): survival falls
             # with power on BOTH axes (heating cliff), pooled fidelity flat -> low corner optimal;
             # kept 3013's 0.40/0.10. Loading 0.68 (CV 0.05) after ~5 min thermalization. scan _011122.
-            "BlueMOT": {"Img1PIDSet": 0.4, "Img2PIDSet": 0.4, "LoadingTime": 1.0},
+            # 2026-07-27 UNIFIED to the SHARED 2-round setpoint 0.5/0.5 (was 0.4/0.4): as the FINAL
+            # pattern of RearrangeCommSeq2 this entry's PIDSet is INERT -- the 399 PID locks once in
+            # the root BlueMOTStep at the LOADING pattern (tri_3013_camfb, 0.5/0.5) and HOLDS, so
+            # img3 is taken at 0.5/0.5 no matter what is written here
+            # (gotcha-imaging-pid-held-multiround-rearrange). Keeping 0.4/0.4 only pretended img3 ran
+            # dimmer. It DOES still apply when 2078 is the ROOT/loading pattern of a standalone scan;
+            # 0.4/0.4 was that scan's 07-18 optimum and sits on the same power plateau (see above), so
+            # 0.5 is within the flat region. Per-image brightness now via Imag399.Amp1/Amp2 below.
+            "BlueMOT": {"Img1PIDSet": 0.5, "Img2PIDSet": 0.5, "LoadingTime": 1.0},
             "Imag399": {
+                # 2026-07-27 EXPLICIT (was inherited base 1/1): with the PID held at the loading
+                # pattern's setpoint these DDS amps are the ONLY per-image light knob for the img3
+                # (final) frame -- dial them, never the PIDSet above. AOM knee: 0.5-1.0 is optically
+                # FLAT, only <= 0.5 actually attenuates (07-16 R212).
+                "Amp1": 1, "Amp2": 1,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     # 2026-07-16 imaging-cooling re-opt on kagome_2078_camfb (deeper traps than 3013
@@ -648,6 +681,13 @@ def _consts():
             # (X 0.15/0.26~prior 0.15/0.27, h 0.15/0.22 unchanged; r8/r9 id 2771/2772) -> cooling NOT
             # the lever. Fidelity clears 99.5%; survival ~0.987 vs 0.99 = trap-depth-limited, not imaging.
             # [prev 0.25/0.10 (servo-floor workaround era).]
+            # 2026-07-27: as the MIDDLE pattern of RearrangeCommSeq2 this PIDSet is INERT (the PID
+            # locks once in the root BlueMOTStep at the LOADING pattern and HOLDS -- img2 runs at
+            # tri_3013_camfb's 0.5/0.5). It is DELIBERATELY EQUAL to that shared setpoint so nothing
+            # here is misleading; it still applies when 2198 is the ROOT pattern of a standalone
+            # scan. Keep it in sync with tri_3013_camfb.BlueMOT.Img1/Img2PIDSet; change per-image
+            # brightness with Imag399.Amp1/Amp2 below, never with this
+            # (gotcha-imaging-pid-held-multiround-rearrange).
             "BlueMOT": {"Img1PIDSet": 0.5, "Img2PIDSet": 0.5, "LoadingTime": 1.0},
             "Imag399": {
                 # 2026-07-16 evening DELIBERATE post-servo light-down (WITH the 100 ms exposure
@@ -660,6 +700,9 @@ def _consts():
                 # violated the amps=1 PID convention (gotcha-stale-dds-amps-pid-imaging).
                 # 2026-07-18: ND filters ADDED to the imaging path -> PIDSet regulates again, amps
                 # reverted to 1; re-optimizing Img1/Img2PIDSet at 100 ms. [prev workaround 0.175/0.14.]
+                # 2026-07-27: in the 2-round rearrange (held PID) these are the ONLY per-image light
+                # knob for the img2 (middle) frame. AOM knee: 0.5-1.0 optically FLAT, only <= 0.5
+                # attenuates (07-16 R212).
                 "Amp1": 1, "Amp2": 1,
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
@@ -726,90 +769,7 @@ def _consts():
                 "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
             },
         },
-        # feedback9 (2026-06-22): CLEAN final flatten = feedback6 flattened by its OWN combined-40rep map,
-        # NO corner/near-DC boosts (those perturb the bulk speckle -> feedback8 bulk degraded to 3.99%).
-        # This is the UNIFORM production array: split-half true depth CV 2.45% < 2.5% for ~1061 spots
-        # (gentle, phase change 0.010 rad). The 7 optical-worst (3 near-DC + 4 extreme corners, r>0.94)
-        # left natural -- they are under-illuminated by the corner optics and need realignment to load at
-        # uniform depth (boosting fits them but breaks uniformity). Phase phase/33x33_feedback9.pt.
-        "33x33_feedback9": {
-            "Orca": {"ExposureTime": 0.035},  # 2026-07-08 kept 35 ms; after a bench beam-2 (399) power cut the imaging went separation-limited at the OLD amps (d' ~3), but higher Amp1+Amp2 recover separation without lengthening exposure (trap depth confirmed full ~413 uK via mj=1 dip scan 20260708210345). (Briefly ran 50 ms r526/r527 to diagnose; reverted -- 50 ms is GLOBAL via runner sync_camera_exposure.)
-            "Init": {"VSLMServo": 1.9},
-            
-            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
-            "Imag399": {
-                # 2026-07-01 re-baseline AFTER the two-beam 399 realignment (which RESTORED the 06-29
-                #     power ceiling; dose/amp shifted ~1.6x so the old amps are void). Amp scan r400-r401
-                #     (0 pushout): joint plateau Amp1 0.56 / Amp2 0.33 (heating turnover ~0.64). Cooling
-                #     X + h both re-confirmed head-to-head (100-shot single-point pairs): X(0.158,0.267)
-                #     kept vs fitted candidate (0.174,0.283) -- no gain; h(0.14,0.24) kept vs (0.14,0.195)
-                #     -- no gain. Final 260-shot characterization: surv 0.9893 +/- 0.0003 (runs 0.986-0.991),
-                #     per-site fid median 0.9928 / d' 4.17, spatially FLAT (<=0.13%/array) -- fid below the
-                #     0.995 target; remaining lever = exposure 35->50 ms (not taken). NOTE mid-campaign the
-                #     r400 DIM amp cells poisoned the threshold accumulator -> store refit + verify (see
-                #     memory bug-threshold-dim-scan-contamination); numbers above are post-fix.
-                # 2026-07-05 DAILY-CAL AMP RE-OPT (399 dose drifted UP ~2x again since 07-03/04: at the
-                #     old 0.23/0.22 the daily-cal scans read surv 0.970 / fid med 0.9867 / d' 3.91; the
-                #     r510 map put 0.23/0.22 at surv 0.75, deep past the heating cliff). Amp scans r510
-                #     (7x5, 0.11-0.47 x 0.10-0.34) + r511 (low-Amp1 extension 0.05-0.17) -> interior
-                #     plateau optimum Amp1 0.11 / Amp2 0.22. 100-shot single-point confirm (scan
-                #     20260705_115052, 0 pushout, 35 ms): surv 0.9881 +/- 0.0004, per-site fid median
-                #     0.9971, d' 4.88, matching the 07-04 baseline. Amp1 0.23 -> 0.11, Amp2 kept 0.22;
-                #     cooling untouched (X 0.16e6/0.26, h 0.16e6/0.14).
-                # 2026-07-03/04 RE-OPT (399 power drifted UP again since 07-01 -> the 07-01 amps 0.56/0.33
-                #     over-dose/heat now; whole amp optimum dropped ~2.4x, the classic hardware-drift tell).
-                #     Amp scan r1/r2 (0 pushout) -> plateau, Amp2>0.22 turns over -> Amp1 0.23 / Amp2 0.22.
-                #     Cooling: 1s locate + 0-pushout confirm + X-amp push 0.26/0.29/0.32 -> X amp 0.267->0.26
-                #     optimal (0.29/0.32 heat); h locate peak det 0.16/amp 0.14 (broad/flat) -> h 0.14e6/0.24
-                #     -> 0.16e6/0.14 (what the confirm ran). 100-shot 0-pushout confirm (scan
-                #     20260703185438, at 35 ms ByPattern exposure): real survival 0.952 -> 0.988 (~40 SEM),
-                #     per-site fid median 0.990 -> 0.996, d' 3.87 -> 4.90, spatially flat. 2D amp map r6
-                #     (20260704001324) confirmed the plateau. X det 0.158->0.16 (grid step, within noise).
-                # --- prior 2026-07-01 re-baseline AFTER two-beam realignment: Amp1 0.56/Amp2 0.33,
-                #     X(0.158,0.267) h(0.14,0.24); surv 0.9893, fid med 0.9928 / d' 4.17. Superseded by
-                #     the 07-03/04 399 power drift + re-opt above.
-                # --- prior 2026-06-29 DEGRADED interim (399 power drift): Amp1 1/Amp2 0.18, h(0.14,0.14),
-                #     fid 0.986 / surv 0.957; superseded by the realignment + this re-baseline.
-                # --- prior 2026-06-28 RECAL (post beam-1 fix): Amp1 0.24->0.52, Amp2 0.26->0.24; X(0.16,0.24),
-                #     h(0.12,0.18); r10 confirm fid med 0.9934 / surv 0.986 / d' 4.17, flat.
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
 
-        # 2026-07-10: feedback9b re-optimization family. The optical path was MOVED, which drifted the
-        # atom-plane trap-depth CV of 33x33_feedback9 back UP to 7.05% (edge-hot radial bowl + fresh
-        # speckle; f0 re-measured 107.8947 MHz). Re-flattening by amplitude scaling (speckle-preserving),
-        # warm-started from the deployed fb9 each round. Entry = EXACT COPY of 33x33_feedback9 (same
-        # VSLMServo / LAC / imaging+cooling -- depth-only campaign, cooling/imaging already optimized).
-        # Phase phase/33x33_feedback9b_r1.pt. Per-round r<N> reuses this same overlay.
-        "33x33_feedback9b_r1": {
-            "Orca": {"ExposureTime": 0.035},
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
-            "Imag399": {
-                # EXACT structural copy of 33x33_feedback9: top-level Amp1/Amp2 inherit base (=1, power
-                # is set via VIMG1/2Set); only the 556 cooling-during-imaging is overlaid.
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
         # 2026-07-10: 33x33_feedback11 = PRODUCTION successor to feedback10 (one more amp-scale round r4,
         # measured with a DENSE mj=1 sweep 104.8-105.7/0.05). Measured CV 1.54% (1065/1068 sites -- dense
         # sweep recovered the marginal edge sites feedback10's coarse sweep dropped); split-half TRUE CV
@@ -817,7 +777,7 @@ def _consts():
         # -- amp-scale actuator exhausted, Dphi flat 0.007 rad, transfer +0.27). IS the r4 keeper phase
         # (identical .pt, sha df7dde588a54). Overlay = EXACT COPY of 33x33_feedback9. See CAMPAIGN_STATE_fb9b.md.
         "33x33_feedback11": {
-            "Orca": {"ExposureTime": 0.050},  # 2026-07-16 25->50 ms (imaging fidelity low @ 25 ms; longer collect for separation). Re-optimizing PID setpoints + Cool556 X/h at 50 ms. sync_camera_exposure drives the live camera from here. (was 0.025 @ 07-14; 35 ms opt W 1.0/0.35, 25 ms opt W 1.3/0.25.)
+            "Orca": {"ExposureTime": 0.050},  # 2026-07-29 30 ms TRIAL RUN AND REVERTED -- 50 ms KEPT. Tried 50->30 ms to cut the per-shot 399 heating budget (at 50 ms both power maps were FLAT: PIDSet r60 and DDS-amp r64 = power-saturated). 30 ms LOST decisively: the amp map stopped being flat and rose monotonically toward full power (= photon-STARVED, not saturated), and at the matched 1.0/1.0 cell / same cooling / same det -5: fid 0.9949 vs 0.9992, surv 0.9899 vs 0.9937, d' 4.74 vs ~6.4 (30 ms r66 data_20260729_175910 vs 50 ms r64 data_20260729_173122). The BEST 30 ms cell (fid 0.9954, d' 4.31) still lost to a typical 50 ms cell. Lesson: the 50 ms flatness was the GOOD regime -- saturated = all the photons we need; shortening left saturation and cost Gaussian separation without buying survival. (was 0.025 @ 07-14; 35 ms opt W 1.0/0.35, 25 ms opt W 1.3/0.25.)
             "Init": {"VSLMServo": 1.9},
             "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
             # 2026-07-14 imaging optimization (399 now PID-servoed via Img1/Img2PIDSet;
@@ -852,13 +812,46 @@ def _consts():
             # (det-0.18 column best, low-amp safe). 100-shot VERIFY (data_20260718_120029): fidelity
             # 0.9980, d' 4.32, survival 0.9909, load 0.59 -- at parity with the pre-ND 50 ms baseline
             # (fid 0.9981/d' 4.14/surv 0.9922). DDS Imag399.Amp1/Amp2 stay at base=1 (PID scheme).
-            "BlueMOT": {"Img1PIDSet": 2.0, "Img2PIDSet": 1.0},  # ND recal 2026-07-18 (was 0.8/0.15 pre-ND @50ms)
+            "BlueMOT": {"Img1PIDSet": 0.8, "Img2PIDSet": 1.0},  # ND recal 2026-07-18 (was 0.8/0.15 pre-ND @50ms)
             "Imag399": {
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.25},  # ND recal 2026-07-18 (was 0.14e6/0.24)
-                    "h": {"FreqDetuning": 0.18e6, "Amp": 0.18},  # ND recal 2026-07-18 (was 0.14e6/0.20)
+                    # 2026-07-29 imaging re-optimization at 50 ms / det -5 (PIDSet 2.0/1.0, DDS amps 1/1).
+                    # BOTH power axes came back FLAT above their low-edge cliffs -- PIDSet 5x5 (r60,
+                    # data_20260729_170938: fid .9991-.9996, surv .992-.996, d' 6.1-6.4) and DDS amp 6x6
+                    # (r64, data_20260729_173122: flat above 0.32, only amp1=0.15 collapses) -- i.e. imaging
+                    # is POWER-SATURATED and cooling/depth-limited, so only the cooling moved. X from r61
+                    # (data_20260729_171415, fit 0.178/0.260 vs argmax 0.19/0.23); h from r62
+                    # (data_20260729_172113, fit 0.192/0.201 vs argmax 0.16/0.19; amp raised since the whole
+                    # amp<=0.13 region is clearly worse). 100-shot verify data_20260729_172735: per-site
+                    # fidelity median 0.99997, d' median 6.82, survival 0.9941+-0.0003, load 0.588, 99.8% of
+                    # sites at fidelity >=0.995. Detuning kept at -5 MHz: a matched det -3 pass (r73,
+                    # data_20260729_182850) was ALSO power-saturated and tied within noise (fid 0.9993,
+                    # d' 6.80, surv 0.9962) -- detuning is not the limiter. Residual low sites 624/625
+                    # (surv 0.52/0.53 at d' 2.6) are SHALLOW TRAPS (SLM/depth), not a cooling problem.
+                    # 2026-08-03 imaging re-optimization after the 399 DAC outage moved the laser
+                    # frequency (see Imag399.FreqDetuning below). Rounds r543/r544 detuning ->
+                    # r545 power -> r547 cool X -> r548/r549 cool h, all at 0 pushout.
+                    # X: survival collapses toward HIGH X detuning at the new imaging frequency
+                    # (r547 data_20260803_155659: 0.9947 at 0.16/0.23 vs 0.9882 at the 07-29 0.19/0.23,
+                    # and only 0.8915 at 0.25/0.17) while fidelity stays flat -> the move is free.
+                    # h: r548 (data_20260803_160055) put both best cells at det 0.22; the 100-shot
+                    # head-to-head r549 (data_20260803_160508) had amp 0.20 vs 0.23 statistically tied
+                    # on survival (0.9941 +-0.0004 vs 0.9940 +-0.0003), so amp 0.20 was taken on its
+                    # slightly better per-site d' (5.69 vs 5.48) and fidelity (0.99969 vs 0.99954).
+                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.23},  # imaging re-opt 2026-08-03 (was 0.19e6/0.23)
+                    "h": {"FreqDetuning": 0.22e6, "Amp": 0.20},  # imaging re-opt 2026-08-03 (was 0.19e6/0.22)
                 },
+                # 2026-08-03: +2.0 MHz, NOT the base -5e6. The 399 wavemeter-PID DAC dropped overnight,
+                # the laser parked +4.64 GHz off and was re-acquired mid-morning -- it came back on a
+                # slightly different frequency, so the AOM offset that puts the imaging on resonance
+                # moved by ~7 MHz. Symptom: per-site d' 4.47 all morning vs 6.82 on 07-29, which floored
+                # every STIRAP number of the day. r543 (data_20260803_154335, -9..-1) was monotone toward
+                # less-negative detuning and railed at the edge; r544 (data_20260803_154659, -2..+4)
+                # found the interior optimum -- d' 6.18 at +2.0 vs 4.57 at the in-use -5, with fidelity
+                # and survival both turning over by +2.5..+4. Re-verify this after any further 399
+                # frequency work; it tracks the laser, not the atom.
+                "FreqDetuning": -5e6, #2e6
             },
             "Cool556": {
                 "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
@@ -878,77 +871,6 @@ def _consts():
         # production. Amplitude-scaling depth re-flatten restored CV 7.05% (post-move) -> 2.22% (split-half
         # true ~1.5%) in 3 rounds. Overlay = EXACT COPY of 33x33_feedback9 (depth-only campaign; cooling/
         # imaging unchanged, already optimized). Phase phase/33x33_feedback10.pt. See CAMPAIGN_STATE_fb9b.md.
-        "33x33_feedback10": {
-            "Orca": {"ExposureTime": 0.035},
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
-            "Imag399": {
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # 33x33_feedback9b round 4 (warm from r3, push for <2%). Same overlay (exact copy of 33x33_feedback9).
-        "33x33_feedback9b_r4": {
-            "Orca": {"ExposureTime": 0.035},
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
-            "Imag399": {
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # 33x33_feedback9b round 3 (warm from r2). Same overlay (exact copy of 33x33_feedback9).
-        "33x33_feedback9b_r3": {
-            "Orca": {"ExposureTime": 0.035},
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
-            "Imag399": {
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
-        # 33x33_feedback9b round 2 (warm from r1). Same overlay (exact copy of 33x33_feedback9).
-        "33x33_feedback9b_r2": {
-            "Orca": {"ExposureTime": 0.035},
-            "Init": {"VSLMServo": 1.9},
-            "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
-            "Imag399": {
-                "Cool556": {
-                    "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                },
-            },
-            "Cool556": {
-                "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
-                "X": {"FreqDetuning": 0.16e6, "Amp": 0.14},
-                "h": {"FreqDetuning": 0.16e6, "Amp": 0.12},
-            },
-        },
 
         # 2026-07-07: new array with 14.5um spacing for Rydberg
         "23x23_14p5um": {

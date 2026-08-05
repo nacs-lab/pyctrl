@@ -35,12 +35,18 @@ scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so 
 from PushoutSurvival399Seq import PushoutSurvival399Seq
 
 
-def build():
+def build(amp2=None, time_s=None):
     """The Spectrum399Scan ScanGroup (single group, 1-D Pushout.Blue.Freq sweep).
 
     Mirrors Spectrum399Scan.m's active ``AbsImg beam probing mj=0`` block; the byte-affecting
     params only (the dbstack scanname/scanfilename metadata is dropped -- it never enters the
     serialized bytes). ``runp`` drives the live run (NumImages=2) but never the per-seq bytes.
+
+    ``amp2`` / ``time_s`` override the push-out strength (defaults 0.5 / 10 ms) -- for when the
+    dip goes flat and you need to test whether the 399 beam-2 push is simply too weak. 2026-08-03:
+    the standard 0.5 / 10 ms returned a DEAD FLAT spectrum (survival 0.96-0.99 over 275-359 MHz,
+    R^2 -0.185, scan 20260803102204) two days after the same settings gave a clean 0.99 -> 0.877
+    dip at 313.79 MHz (20260801093505) -- i.e. a push-power regression, not a statistics problem.
     """
     from scan_group import ScanGroup
     from scan_export import matlab_colon
@@ -48,12 +54,14 @@ def build():
     g = ScanGroup()
 
     # ---- fixed push-out params (Pushout399Step reads these) ----------------
-    g().Pushout.Blue.Amp2 = 0.5   # 0.2 for AbsImg; 0.015 for MOT-beam probing mj=1
-    g().Pushout.Time = 10e-3
+    # 0.2 for AbsImg; 0.015 for MOT-beam probing mj=1. NOTE the imaging 399 is PID-servoed with
+    # the DDS amps at base 1, so a 0.5 push amp is a WEAKER 399 dose than a normal image.
+    g().Pushout.Blue.Amp2 = 0.5 if amp2 is None else float(amp2)
+    g().Pushout.Time = 10e-3 if time_s is None else float(time_s)
 
     # ---- swept param: Pushout.Blue.Freq ------------------------------------
-    # (220:3:360)*1e6 -- 47 pts @ 3 MHz, the AbsImg-beam mj=0 probing window.
-    freqs = [v * 1e6 for v in matlab_colon(220, 3, 360)]   # 47 pts, integer-valued => exact
+    # (275:3:360)*1e6 -- 29 pts @ 3 MHz, the AbsImg-beam mj=0 probing window.
+    freqs = [v * 1e6 for v in matlab_colon(275, 3, 360)]   # 29 pts, integer-valued => exact
     g().Pushout.Blue.Freq.scan(1, freqs)
 
     # ---- run params (runp); no byte effect, drive the live run ------------
@@ -73,18 +81,20 @@ def build():
     return g
 
 
-def Spectrum399Scan(url=None, reps=3):
+def Spectrum399Scan(url=None, reps=3, amp2=None, time_s=None):
     """Build + submit the 399 spectrum scan. Returns the queued descriptor id."""
     from yb_start_scan import ybStartScan
 
-    g = build()
+    g = build(amp2=amp2, time_s=time_s)
     opts = {}
     if reps is not None:
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
     did = ybStartScan(PushoutSurvival399Seq, g, url=url, label="Spectrum399Scan", **opts)
-    print("submitted Spectrum399Scan -> descriptor id %s (url=%s, reps=%s, 47 freq pts)"
-          % (did, url or "default", reps))
+    print("submitted Spectrum399Scan -> descriptor id %s (url=%s, reps=%s, %d freq pts, "
+          "Blue.Amp2 %.3f / %.1f ms)"
+          % (did, url or "default", reps, g.nseq(),
+             g().Pushout.Blue.Amp2(), g().Pushout.Time() * 1e3))
     return did
 
 
@@ -94,5 +104,10 @@ if __name__ == "__main__":
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
     ap.add_argument("--reps", type=int, default=3,
                     help="passes over the sweep (0 = forever); default 3 for a short A/B run")
+    ap.add_argument("--amp2", type=float, default=None,
+                    help="override Pushout.Blue.Amp2, the 399 beam-2 push amp (default 0.5). "
+                         "Raise it when the dip goes flat -- the push is weaker than a normal image")
+    ap.add_argument("--time", dest="time_s", type=float, default=None,
+                    help="override Pushout.Time in seconds (default 0.010)")
     args = ap.parse_args()
-    Spectrum399Scan(url=args.url, reps=args.reps)
+    Spectrum399Scan(url=args.url, reps=args.reps, amp2=args.amp2, time_s=args.time_s)

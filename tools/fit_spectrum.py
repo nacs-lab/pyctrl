@@ -65,6 +65,9 @@ def main():
                          "name (e.g. 'stable') or a .npy path (bool[nSites] or int indices). "
                          "Omit to use the scan PATTERN's configured mask (if any); pass "
                          "'full' to force the whole array even when the pattern has one.")
+    ap.add_argument("--recache", action="store_true",
+                    help="rebuild analysis_payload.json instead of reusing it (needed when the "
+                         "cache was pinned mid-run and holds only the first few shots)")
     args = ap.parse_args()
 
     import numpy as np
@@ -76,7 +79,7 @@ def main():
     _sm_arg = False if (args.site_mask or "").lower() == "full" else args.site_mask
     d = analyze_scan(sid, include_per_site=False, include_diag_aggregate=False,
                      include_per_iteration=False, sync_slm_diag=False,
-                     site_mask=_sm_arg)
+                     site_mask=_sm_arg, force_recache=args.recache)
     if d.get("site_mask_error"):
         print("WARNING site_mask: %s (fell back to full array)" % d["site_mask_error"])
     elif d.get("site_mask_active"):

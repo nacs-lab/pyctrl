@@ -50,8 +50,8 @@ def build(field_G=30, eom616_freq=236.5e6, ryd308_amp=0.4, green_amp=None,
 
     Sweeps ``Pushout.Green.Freq`` (the 556 probe) over a wide window centred on the field-shifted
     resonance, with the 308 coupling laser on resonance (``Init.EOM616.Freq``) at max AOM amp
-    (``Pushout.Ryd308.Amp``). ``green_amp=None`` uses the field-scaled push amp (0.2 @ 0 G ->
-    0.5 @ 30 G), matching ``RydbergSpectrum556Scan``.
+    (``Pushout.Ryd308.Amp``). ``green_amp=None`` uses the field-scaled push amp (0.1 @ 0 G ->
+    0.4 @ 30 G), matching ``RydbergSpectrum556Scan`` and ``Revival616Scan``.
     """
     from scan_group import ScanGroup
     from scan_export import matlab_colon
@@ -67,9 +67,14 @@ def build(field_G=30, eom616_freq=236.5e6, ryd308_amp=0.4, green_amp=None,
     g = ScanGroup()
 
     # ---- high-field push-out params (RydbergPushoutStep reads these) -------
-    # 556 probe push amp: field-scaled (0.2 @ 0 G -> 0.5 @ 30 G) unless overridden. A weaker probe
-    # resolves the AT doublet better; raise/lower with --amp if the two dips smear or don't push.
-    AMP_AT_0G, AMP_AT_30G = 0.2, 0.15
+    # 556 probe push amp: field-scaled (0.1 @ 0 G -> 0.4 @ 30 G) unless overridden. The 30 G value
+    # MUST match RydbergSpectrum556Scan / Revival616Scan -- the whole 30 G set runs on ONE amp so
+    # the fed-forward centers (30 G dip -> revival -> this scan) are comparable (2026-08-01 user
+    # directive; was 0.15 until then, which put the AT doublet center -335 kHz off the 0.4-push dip).
+    # A weaker probe resolves the doublet better -- use --amp for a deliberate one-off, not silently.
+    # 2026-08-03 (user directive): 0.4 @ 30 G is TOO HIGH -> 0.15 (also what every run on/before
+    # 08-01 actually pushed). Kept in lockstep with RydbergSpectrum556Scan / Revival616Scan.
+    AMP_AT_0G, AMP_AT_30G = 0.1, 0.15
     if green_amp is None:
         green_amp = AMP_AT_0G + (AMP_AT_30G - AMP_AT_0G) * field_G / 30.0
     g().Pushout.Green.Amp = green_amp
@@ -132,8 +137,9 @@ if __name__ == "__main__":
                          "revival peak, scan 20260702134131; was 282.52e6 pre-2026-07-02)")
     ap.add_argument("--ryd308-amp", type=float, default=0.4,
                     help="308 coupling AOM amp, max 0.4 (default 0.4)")
-    ap.add_argument("--amp", type=float, default=0.15,
-                    help="override the 556 probe push amp (else field-scaled 0.5 @ 30 G)")
+    ap.add_argument("--amp", type=float, default=None,
+                    help="override the 556 probe push amp (else field-scaled 0.4 @ 30 G, matching "
+                         "RydbergSpectrum556Scan / Revival616Scan)")
     ap.add_argument("--half", type=float, default=1.5,
                     help="556 window half-width in MHz (default 3.0; widen if the doublet is clipped)")
     ap.add_argument("--step", type=float, default=0.1,
