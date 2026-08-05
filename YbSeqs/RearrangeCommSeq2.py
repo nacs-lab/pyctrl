@@ -30,7 +30,10 @@ a failing shot (grab-and-drain) so a straggler can't shift img1/img2/img3 by one
 A failed round re-publishes the captured frames under the FAILING sentinel for LIVE DISPLAY ONLY.
 
 The BUILD path is unchanged from the byte port (steps/branches/pattern tags); only the deferred
-callbacks -- which ``serialize()`` never runs -- carry the runtime logic.
+callbacks -- which ``serialize()`` never runs -- carry the runtime logic. The one later addition
+is the OPT-IN per-frame 399 imaging-amp override (``extras.MidImgAmp1/2`` / ``FinImgAmp1/2``,
+2026-07-27) documented in the policy block below -- absent, the build is byte-identical to the
+port; that is pinned by ``tests/test_rearrange_imaging_amps.py``.
 """
 
 from BlueLACStep import BlueLACStep
@@ -38,6 +41,7 @@ from BlueMOTStep import BlueMOTStep
 from consts import Consts
 from Cool556hXStep import Cool556hXStep
 from GreenMOTStep import GreenMOTStep
+from Imag399AmpStep import Imag399AmpStep
 from Imag399Step import Imag399Step
 from InitStep import InitStep
 from LACStep import LACStep
@@ -45,6 +49,63 @@ from SLMStep import SLMStep
 
 import rearrange_callbacks
 from seq_capability import seq_capabilities
+
+
+# --------------------------------------------------------------------------- #
+# Per-frame 399 imaging brightness (IMAGING-POWER POLICY, 2026-07-27)
+#
+# The 399 imaging-power PID locks ONCE at the ROOT BlueMOTStep (the LOADING pattern's
+# BlueMOT.Img1/Img2PIDSet) and HOLDS for the whole shot -- there is no time to re-PID
+# mid-shot and a relock rails the integrator
+# (yb_skills/memory/gotcha-imaging-pid-held-multiround-rearrange.md). So img2 (MIDDLE) and
+# img3 (FINAL) are taken at the loading pattern's held optical power, and their ONLY
+# brightness knob is the DDS amps of each frame's imaging beams.
+#
+# ByPattern[<pattern>].Imag399.Amp1/Amp2 already give a per-frame STATIC value (each bseq is
+# tagged with its own pattern, so each Imag399 step resolves its own overlay). What it cannot
+# do is be SWEPT: a scan-level ``g().Imag399.Amp1`` override wins over ByPattern in EVERY
+# bseq (precedence base < ByPattern < scan g(), lib/expConfig_helper.py:79-94), so it would
+# move all three frames together. These optional extras are the per-frame swept knob:
+#
+#     rearrange_kwargs.extras.MidImgAmp1 / MidImgAmp2   -> img2 (middle) only
+#     rearrange_kwargs.extras.FinImgAmp1 / FinImgAmp2   -> img3 (final) only
+#
+# and they compose ON TOP of ByPattern: absent -> the frame's own ByPattern/base Amp1/Amp2 is
+# used and the build is BYTE-IDENTICAL to the pre-knob seq (same callback, same provenance
+# name); present -> that literal value replaces this frame's amp only. Names/semantics match
+# RearrangeCommSeq2Dev's, so one analysis script covers both. img1 (LOADING) has no such knob
+# on purpose -- it is the frame the PID is locked for; move it with BlueMOT.Img1/Img2PIDSet
+# (which shifts ALL THREE frames, since it is the single held setpoint).
+#
+# AOM knee: amps 0.5-1.0 are optically FLAT, only <= 0.5 attenuates (2026-07-16 R212).
+# --------------------------------------------------------------------------- #
+def _extras_num(s, name, default):
+    """``rearrange_kwargs.extras.<name>`` as a float; ``default`` when absent/unresolvable.
+
+    Byte-inert: DynProps persists the default into ``s.C`` on a miss (lib/dyn_props.py:188)
+    but no pulse is emitted from it, so serialize() is unaffected."""
+    try:
+        return float(getattr(s.C.rearrange_kwargs.extras, name)(default))
+    except Exception:  # noqa: BLE001 - absent/odd extras -> default
+        return float(default)
+
+
+def _img_amps(s, n1, n2):
+    """The (Amp1, Amp2) override for ONE image, or ``None`` when the scan set NEITHER extra.
+
+    ``None`` is the load-bearing default: it routes the build back through the untouched
+    ``Imag399Step`` call, so a scan that does not use this knob is byte-identical to before."""
+    a1 = _extras_num(s, n1, -1.0)
+    a2 = _extras_num(s, n2, -1.0)
+    return None if (a1 < 0 and a2 < 0) else (a1, a2)
+
+
+def _add_imag399(sb, g, amps):
+    """Add this bseq's Imag399: the EXACT pre-existing ``Imag399Step`` call when ``amps`` is
+    None, else the amp-overridable twin (identical body, ``a1``/``a2`` replacing g.Amp1/2)."""
+    if amps is None:
+        return sb.add_step(Imag399Step, g)
+    return sb.add_step(Imag399AmpStep, g, amps[0], amps[1])
 
 
 @seq_capabilities(owns_frames=True)   # grabs + stores its own frames mid-sequence (the handoffs)
@@ -118,8 +179,10 @@ def RearrangeCommSeq2(s):
     # as RearrangeSTIRAPSeq's verify bseq).
     s2.add('VMOTCoil', 0)
 
-    # Second Imag399 (img2, MIDDLE pattern).
-    s2.add_step(Imag399Step, s.C.Imag399)
+    # Second Imag399 (img2, MIDDLE pattern). Brightness = ByPattern[middle].Imag399.Amp1/Amp2
+    # at the root-held PID power, optionally overridden per-frame (and swept) by
+    # extras.MidImgAmp1/MidImgAmp2 -- see the policy block at the top of this file.
+    _add_imag399(s2, s.C.Imag399, _img_amps(s, "MidImgAmp1", "MidImgAmp2"))
 
     # Round 2: second SLM-rearrangement basic sequence. Imaged at the FINAL pattern.
     s3 = s.new_basic_seq()
@@ -140,8 +203,9 @@ def RearrangeCommSeq2(s):
     # of its own, but the explicit second update time keeps this bseq >= 2 samples regardless.
     s3.add('VMOTCoil', 0)
 
-    # Third Imag399 (img3, FINAL pattern).
-    s3.add_step(Imag399Step, s.C.Imag399)
+    # Third Imag399 (img3, FINAL pattern). Same per-frame amp knob as img2, via
+    # extras.FinImgAmp1/FinImgAmp2.
+    _add_imag399(s3, s.C.Imag399, _img_amps(s, "FinImgAmp1", "FinImgAmp2"))
 
     # Initialisation again (shut down for safety).
     s3.add_step(InitStep, s.C.Init)
