@@ -77,6 +77,8 @@ def STIRAPPushoutStep(s, g):
     Time_Pump = g.PumpTime(0)
     Freq_EOM616 = s.C.Init.EOM616.Freq(Consts().Init.EOM616.Freq) # For init value
     
+    IonizationViaDAC = g.IonizationViaDAC(0)
+    
     STIRAP_Gap = g.STIRAPGap(0.5)  # fwd->rev hold (us), SHARED by both beams
     SEL_C1, SEL_C2 = 0, 1  # For the channel switch 
 
@@ -111,7 +113,6 @@ def STIRAPPushoutStep(s, g):
 
     # Wait until the coil current settles.
     s.wait(50e-3)
-
     
     # Change trap depth for Rydberg.
     V_RydTrap = g.VRydTrap(0.4)
@@ -171,7 +172,8 @@ def STIRAPPushoutStep(s, g):
     #s.add_step(10e-6).add('AmpSLM', ramp_to(Amp_SLM))
     
     # Turn the trap back on. 2026-07-20: ENABLED to pair with the trap-off block above.
-    s.add('AmpSLM', Amp_SLM) #.add('TTLSampleAndHold', 1)
+    #### s.add('AmpSLM', Amp_SLM) #.add('TTLSampleAndHold', 1)
+    
     #s.wait(2e-6)
     #s.add('TTLSampleAndHold', 1)
     #s.wait(1e-6)
@@ -252,6 +254,7 @@ def STIRAPPushoutStep(s, g):
     if IonizationViaDAC:
         s.wait(0.1e-6)
         s.add('TTLScopeTrig', 1)
+        
         (s.add_step(Time_ionization)
             .add('VElectrode1', +Vx + Vy - Vz)
             .add('VElectrode2', 0 + Vy - Vz)
@@ -261,28 +264,29 @@ def STIRAPPushoutStep(s, g):
             .add('VElectrode6', -Vx - Vy - Vz)
             .add('VElectrode7', +Vx - Vy + Vz)
             .add('VElectrode8', 0 - Vy + Vz))
+        
+        s.add('TTLScopeTrig', 0)
+        
+        # Restore the electrode value to zero fileld
+        (s.add('VElectrode1', +Vx_init + Vy_init - Vz_init)
+            .add('VElectrode2', 0 + Vy_init - Vz_init)
+            .add('VElectrode3', 0 + Vy_init + Vz_init)
+            .add('VElectrode4', -Vx_init + Vy_init + Vz_init)
+            .add('VElectrode5', 0 - Vy_init - Vz_init)
+            .add('VElectrode6', -Vx_init - Vy_init - Vz_init)
+            .add('VElectrode7', +Vx_init - Vy_init + Vz_init)
+            .add('VElectrode8', 0 - Vy_init + Vz_init))
     else:
         s.wait(0.1e-6)
         s.add('TTLScopeTrig', 1)
-        s.addStep(Time_ionization).add('TTLIonizationSwitch5to8', 1)
+        s.wait(0.1e-6)
+        # s.add_step(Time_ionization).add('TTLIonizationSwitch5to8', 1)
         s.add('TTLIonizationSwitch5to8', 0)
-        
+        s.add('TTLScopeTrig', 0)
 
     # s.wait(Time_Pushout369)
     # s.add('TTL369Switch', 0)
     
-    # Restore the electrode value to zero fileld
-    s.add('TTLScopeTrig', 0)
-    (s.add('VElectrode1', +Vx_init + Vy_init - Vz_init)
-        .add('VElectrode2', 0 + Vy_init - Vz_init)
-        .add('VElectrode3', 0 + Vy_init + Vz_init)
-        .add('VElectrode4', -Vx_init + Vy_init + Vz_init)
-        .add('VElectrode5', 0 - Vy_init - Vz_init)
-        .add('VElectrode6', -Vx_init - Vy_init - Vz_init)
-        .add('VElectrode7', +Vx_init - Vy_init + Vz_init)
-        .add('VElectrode8', 0 - Vy_init + Vz_init))
-    
-
     s.add('AmpAbsImag', 0)
     s.add('AmpBlueMOT', 0)
 
@@ -291,16 +295,22 @@ def STIRAPPushoutStep(s, g):
 
     s.add('AmpAOM308', 0)
     s.add('AmpAOM616', Amp_AOM616Divert)
-    s.add_step(Time_Pump).add("FreqEOM616", ramp_to(Freq_EOM616))
+    
+    # s.add_step(Time_Pump).add("FreqEOM616", ramp_to(Freq_EOM616))
 
     # s.add('TTL369Shutter', 0)
     # s.add('Amp369', 0)
-
+    
     # Ramp the tweezer up and wait.
     s.add_step(1e-3).add('VSLMservo', ramp_to(Consts().Init.VSLMServo))
-
-    # Switch the AOMs back from AWG to DDS, zero the coil.
+    
+    # Turn on the 556 MOTa shutter, close the 556 rydberg shutter.
+    s.add('TTL556RydbergShutter', 0)
+    s.add('TTL556MOTaShutter', 1)
+    
+    # Switch the AOMs back from AWG to DDS
     s.add('TTL556RydAWGSwitch', 0)
     s.add('TTL308RydAWGSwitch', 0)
+    # zero the coil and wait for it to settle
     s.add('VRydCoil', 0)
     s.wait(50e-3)

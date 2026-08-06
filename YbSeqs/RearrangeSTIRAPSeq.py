@@ -50,9 +50,11 @@ from Imag399Step import Imag399Step
 from InitStep import InitStep
 from LACStep import LACStep
 from ramp_to import ramp_to
+from RearrangeCool556hXStep import RearrangeCool556hXStep
 from runtime_state import register_eom616_persistence
 from SLMStep import SLMStep
 from STIRAPPushoutStep import STIRAPPushoutStep
+from ReleaseRecaptureStep import ReleaseRecaptureStep
 
 import rearrange_callbacks
 from seq_capability import seq_capabilities
@@ -155,8 +157,21 @@ def RearrangeSTIRAPSeq(s):
         science = s2
 
     # ---- science block (mirrors PushoutSurvivalAWGSeq: Cool556 -> STIRAP -> Imag399) ---- #
-    science.add_step(Cool556Step, s.C.Cool556)
-    science.add_step(STIRAPPushoutStep, s.C.Pushout)
+    # 2026-08-06: the recool now has its OWN config block (RearrangeCool556) so it can be optimized
+    # independently of the RNR-tuned Cool556. History: this was Cool556Step (both beams driven from the
+    # top-level Cool556.FreqDetuning/Amp = 0.14 MHz / 0.08) -> Cool556hXStep (per-beam X/h = 0.12 MHz /
+    # 0.14), which lifted mid->final survival 0.341 -> 0.514 (20260805_231444 vs 20260806_000351, every
+    # gap point +6..+11 sigma). RearrangeCool556 is seeded to those same per-beam values, so this swap
+    # is behaviour-neutral on 33x33_feedback11 and only adds the scan axis.
+    science.add_step(RearrangeCool556hXStep, s.C.RearrangeCool556)
+    # 2026-08-06 A/B: RNR in place of the STIRAP push-out, to test whether the RNR-level survival
+    # (0.94 at ~13 us trap-off) is reachable on the REARRANGED array. Nothing here sets the Ryd coil
+    # or ramps VSLMservo, so the release happens at the SLMStep depth (Init.VSLMServo) exactly as in
+    # ReleaseRecaptureSeq -- that is the point of the comparison. Config namespace must be
+    # ReleaseRecapture (a typo silently yields Time = 0, i.e. no release at all, and the swept axis
+    # never reaches the step).
+    science.add_step(ReleaseRecaptureStep, s.C.ReleaseRecapture)
+    #science.add_step(STIRAPPushoutStep, s.C.Pushout)
 
     # Final Imag399 (the survival frame: img3 with verify, img2 without).
     science.add_step(Imag399Step, s.C.Imag399)

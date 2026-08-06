@@ -67,7 +67,9 @@ def InitStep(s, g):
         .add('TTL369Switch', 0)
         .add('TTL556RydAWGSwitch', 0)
         .add('TTL308RydAWGSwitch', 0)
-        .add('TTLSampleAndHold', 1))
+        .add('TTLSampleAndHold', 1)
+        .add('TTLIonizationSwitch5to8', 0)
+    )
 
     (s.add_step(1e-3)
         .add('VElectrode1', +Vx + Vy - Vz)

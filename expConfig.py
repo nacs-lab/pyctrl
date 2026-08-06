@@ -158,7 +158,7 @@ def _consts():
         "EOM616": {"Freq": 252.07e6, "FreqOld": 252.07e6},
         "Electrodes": {"Vx": -0.0175, "Vy": 0.0006, "Vz": 0.0092},  # 2026-07-16 full DC-Stark E-field re-null (new 616/308 line ~234 MHz; revival relocated from the old 282). Sequential Vx->Vy->Vz, each fit after the prior nulled; all parabola vertices INTERIOR, min-Stark centers agree 234.26/234.23/234.31 MHz. Vx -0.042->-0.0175 (20260716162632, R2=0.9999, a=1.816 MHz/V^2); Vy 0.0066->0.0006 (20260716171645, R2=0.9997, a=1215); Vz 0.0059->0.0092 (20260716173232, R2=0.9992, a=877). Scramble MUST be OFF for the 616-EOM sweep (random EOM jumps unlock 616). [prior 06-28: Vx -0.042/Vy 0.0066/Vz 0.0059; old min-Stark ~282.08 MHz]
         "VSLMServo": 3.7,                        # 112 sites at 6A at 30dB
-        "VIonizationSet5to8": 4 # DC Ionization voltage for electrodes 5-8 (V) 
+        "VIonizationSet5to8": 0 # DC Ionization voltage for electrodes 5-8 (V) must < 5V
     }
 
     # BlueMOT
@@ -281,6 +281,23 @@ def _consts():
         "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
         # RNR cooling opt 2026-06-05 (CoolingScan_RNR, release-recapture 50us, interleaved X<->h
         # joint converged, survival 0.28->0.31): was X {0.11e6, 0.16}, h {0.11e6, 0.14}
+        "X": {"FreqDetuning": 0.135e6, "Amp": 0.13},
+        "h": {"FreqDetuning": 0.13e6, "Amp": 0.12},
+    }
+
+    # RearrangeCool556 -- the post-rearrangement recool that precedes STIRAPPushoutStep
+    # (RearrangeCool556hXStep). Same channels/shape as Cool556hXStep but its OWN block, so the
+    # STIRAP recool can be optimized independently of the RNR release-recapture Cool556 above.
+    # 2026-08-05/06: the STIRAP science block used to recool via Cool556Step, which drives BOTH beams
+    # from the top-level Cool556.FreqDetuning/Amp (0.14 MHz / 0.08) instead of the per-beam X/h
+    # sub-blocks the 07-20 RNR campaign optimized. Switching to the per-beam values lifted mid->final
+    # survival 0.341 -> 0.514 (20260805_231444 vs 20260806_000351; every gap point +6..+11 sigma),
+    # identifying the recool as the dominant limiter. Seeded from the base Cool556 X/h so behaviour is
+    # unchanged where no overlay exists; the STIRAP atoms arrive hotter than the RNR ones (SLM
+    # transport with RearrCoolAmp = 0, plus two 399 exposures before the pushout), so expect this to
+    # want a longer/stronger recool than Cool556 -- that is what the scan knobs are for.
+    c["RearrangeCool556"] = {
+        "Time": 5e-3,
         "X": {"FreqDetuning": 0.135e6, "Amp": 0.13},
         "h": {"FreqDetuning": 0.13e6, "Amp": 0.12},
     }
@@ -851,7 +868,28 @@ def _consts():
                 # found the interior optimum -- d' 6.18 at +2.0 vs 4.57 at the in-use -5, with fidelity
                 # and survival both turning over by +2.5..+4. Re-verify this after any further 399
                 # frequency work; it tracks the laser, not the atom.
-                "FreqDetuning": -5e6, #2e6
+                # 2026-08-05: -5e6 -> +10e6. The 08-03 note above was never committed (the value stayed
+                # at -5), and the imaging was still running there: this morning's warm-up read pooled
+                # d' 4.04. A -8..+5 MHz sweep (r601, data_20260805_182144) rose monotonically to the +5
+                # edge (d' 3.96 at -5 -> 5.94 at +5, fidelity 0.9911 -> 0.9994); extending to +4..+14
+                # (r602, data_20260805_182344) found the plateau: d' flattens ~6.3-6.5 above +6 and
+                # dist saturates ~10-11 ADU. A 30-rep/pt dense confirm of +8/+10/+12 (r603,
+                # data_20260805_182534) gave d' 5.95/6.23/6.25 with survival 0.972/0.975/0.976, so +10
+                # was taken as mid-plateau (safer against drift than the +12 edge). 100-shot verify at
+                # the adopted W (r615, data_20260805_204416): fidelity 0.9995, d' 6.22, survival 0.9946,
+                # load 0.571; per-site over 200 combined shots (r613/r614/r615) fidelity median 0.99995,
+                # d' median 6.82, survival mean 0.9946, 99.7% of sites >=0.995, spatially FLAT (survival
+                # gradient 0.0000/-0.0004 across the array). Nothing else moved: the PIDSet map inside
+                # the VALID Img1PIDSet range 0.2-0.8 (r610, data_20260805_202513) was a plateau above
+                # Img1 ~0.7 with the in-use 0.8/1.0 already in it; the Cool556.X map (r611,
+                # data_20260805_202926) put its argmax at (0.16,0.24) but a 50-shot head-to-head vs the
+                # in-use (0.16,0.23) tied exactly (survival 0.9944 vs 0.9943, d' 6.13 vs 6.33 -- r614 vs
+                # r613), so X was KEPT; the Cool556.h map (r612, data_20260805_203529) was flat across
+                # the whole grid (survival 0.988-0.996), so h was KEPT. Residual low sites are the
+                # chronic shallow traps 624/625/591 (survival 0.36/0.37/0.65 at d' 2.5/1.8/3.7 = SLM
+                # depth, not cooling). Confirms the 08-03 lesson: this tracks the 399 laser -- re-scan
+                # the detuning after ANY 399 frequency excursion, and don't trust a stale value.
+                "FreqDetuning": 10e6,  # imaging re-opt 2026-08-05 (was -5e6; the 08-03 +2e6 finding was never committed)
             },
             "Cool556": {
                 "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
@@ -864,6 +902,19 @@ def _consts():
                 # amp 0.12-0.18 flat within SEM. Notion 07/20.
                 "X": {"FreqDetuning": 0.12e6, "Amp": 0.14},  # RNR re-opt 2026-07-20 (was 0.16e6/0.14)
                 "h": {"FreqDetuning": 0.12e6, "Amp": 0.14},  # RNR re-opt 2026-07-20 (was 0.16e6/0.12)
+            },
+            # Post-rearrangement recool before STIRAPPushoutStep (RearrangeCool556hXStep). Seeded to
+            # the Cool556 X/h values ABOVE, which is exactly what the 2026-08-06 A/B ran
+            # (20260806_000351: mid->final 0.514 vs 0.341 with the old top-level Cool556Step values),
+            # so this overlay reproduces that measurement bit-for-bit. Now scannable on its own axis
+            # via RearrangeSTIRAPScan.py -- the STIRAP atoms arrive hotter than the RNR ones (SLM
+            # transport at RearrCoolAmp = 0 + two 399 exposures), so a longer/stronger recool than the
+            # RNR-tuned numbers is the open hypothesis for the residual (0.783 at 13.5 us total
+            # trap-off vs RNR's 0.943 at 13 us).
+            "RearrangeCool556": {
+                "Time": 5e-3,
+                "X": {"FreqDetuning": 0.12e6, "Amp": 0.14},
+                "h": {"FreqDetuning": 0.12e6, "Amp": 0.14},
             },
         },
         # 2026-07-10: 33x33_feedback10 = PRODUCTION successor to 33x33_feedback9 after the optical-path

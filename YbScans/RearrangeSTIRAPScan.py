@@ -282,7 +282,7 @@ def build():
     g().AWG.AWG308.Ch2.carrier_freq_MHz = 200
     g().AWG.AWG308.Ch2.pulse_width_us = 4.7  # 2026-08-03 width map REDO after the timing fix, dim 2 (INDEPENDENT of the 556 Ch2 width). Prior: FIXED at the 7us ceiling -- the pre-fix asymmetric map railed here (pw308=7 best in every 556 row). Cannot extend further (hardware ceiling). (per user: pulse_width_us must NOT exceed 7). Monotonic 2->7 (0.735 -> 0.834 return), so it rails here. (per user -- pulse_width_us must NOT exceed 7). Both width rounds railed here: pw308=7 beat every shorter value (2->7 monotonic, 0.735 -> 0.834 return). The >7 cells scanned in _110200 are INVALID, do not use them.
     g().AWG.AWG308.Ch2.max_amplitude_vpp = 8
-    g().AWG.AWG308.Ch2.amplitude_scale = 0.95
+    g().AWG.AWG308.Ch2.amplitude_scale = 0#0.95
 
 
     g.runp().AWGs = ["AWG556", "AWG308"]
@@ -311,8 +311,34 @@ def build():
     # EOM616_MHZ = [round(233.0 + 0.1 * k, 4) for k in range(23)]     # 233.0 .. 235.2 MHz
     # g().Init.EOM616.Freq.scan(1, [f * 1e6 for f in EOM616_MHZ])
     g().Init.EOM616.Freq = 234.2e6   # PAIR w/ Ch1 143.5 (offset +90.7, round 5 confirmed; degenerate line runs +1:+1)
-    g().Pushout.VRydTrap = 2 #.scan(1, np.linspace(0, 1, 20))  # NOTE: trap-off block in STIRAPPushoutStep zeroes AmpSLM during the pulse -> this only sets the pre-ramp depth
+    g().Pushout.VRydTrap = 1.9 #.scan(1, np.linspace(0, 1, 20))  # NOTE: trap-off block in STIRAPPushoutStep zeroes AmpSLM during the pulse -> this only sets the pre-ramp depth
     g().Pushout.BiasCoilCurrent.Ryd = 30
+
+    # ---- post-rearrangement recool (RearrangeCool556hXStep, runs immediately before the pushout) ----
+    # Own config block (RearrangeCool556) so it is decoupled from the RNR-tuned Cool556. Defaults come
+    # from the ByPattern overlay (33x33_feedback11: Time 5 ms, X/h det 0.12 MHz, amp 0.14) -- leave these
+    # commented to run the overlay values; uncomment a pin to override, or a .scan() to sweep.
+    #
+    # WHY this is the interesting axis (2026-08-06): the recool was the dominant survival limiter.
+    # Cool556Step (both beams @ top-level 0.14 MHz / 0.08) -> Cool556hXStep (per-beam 0.12 MHz / 0.14)
+    # lifted mid->final 0.341 -> 0.514, uniformly across all gaps (+6..+11 sigma each), i.e. a better
+    # initial TEMPERATURE rather than a changed loss rate. A residual remains: at matched total trap-off
+    # (~13 us) STIRAP sits at 0.783 vs RNR's 0.943, and the decay is still ~3x faster (tau 13.6 vs 42 us).
+    # The STIRAP atoms arrive hotter than the RNR ones -- SLM transport with RearrCoolAmp = 0, plus two
+    # 399 exposures (img1 + mid) before the pushout -- so the open hypothesis is that 5 ms at the
+    # RNR-tuned amplitude does not fully re-thermalize them. Time is the first knob to try (monotonic
+    # expectation: survival climbs then plateaus when the recool saturates); amp/det second.
+    #
+    # g().RearrangeCool556.Time = 5e-3
+    # g().RearrangeCool556.Time.scan(1, np.array([1, 2, 3, 5, 8, 12, 20, 30]) * 1e-3)   # recool-duration sweep
+    # g().RearrangeCool556.X.FreqDetuning = 0.12e6
+    # g().RearrangeCool556.X.Amp = 0.14
+    # g().RearrangeCool556.h.FreqDetuning = 0.12e6
+    # g().RearrangeCool556.h.Amp = 0.14
+    
+    # 2-D per-beam grid (det x amp) on ONE beam, the other pinned -- mirrors the RNR/imaging campaigns:
+    # g().RearrangeCool556.X.FreqDetuning.scan(1, np.linspace(0.08e6, 0.24e6, 9))
+    # g().RearrangeCool556.X.Amp.scan(2, np.linspace(0.08, 0.24, 9))
     g().Pushout.STIRAPDelay = DELAY_US * 1e-6   # 2026-08-03 round 4 optimum (locked; was 0.6e-6)
     # g().Pushout.STIRAPDelay = 0.6e-6   # 2026-07-30 step-0 delay pre-scan (data_20260730_162309): transfer only for POSITIVE delay, best +0.6us (surv 0.151), broad 0.4-1.6us; <=0 dead (~0.97)
     # 2026-08-03 REVERSE R1 -- re-locate the reverse delay. Two reasons it must move: (a) the 07-31
@@ -329,8 +355,8 @@ def build():
     #g().Pushout.STIRAPReverseDelay.scan(1, np.linspace(-1.5e-6, 1.5e-6, 13))   # 2026-08-03 REVERSE 2-D (user directive)
     g().Pushout.STIRAPReverseDelay = -0.25e-6   # 2026-07-31 round 3 best (data_20260731_111148: 1.5us Ch2 @ -0.25us -> 0.876 +-0.009); irrelevant for the reverse-OFF control: re-check the delay AT the new widths -- the 0 optimum (data_20260731_105045) was located with pw556/pw308 Ch2 = 2/2, and pw308 is now 7us, so the optimal overlap has likely moved
     g().Pushout.STIRAPPadTime = 2e-6   # 2026-07-21 mj=0 quad ridge-3D optimum (308-first; window +0.6..+1.4us)
-    g().Pushout.STIRAPGap = 1e-6   # short fixed hold (forward optimum). For a Rydberg-lifetime sweep: .scan(1, gap_pts)
-    g().Pushout.IfReverse = 0   # 2026-08-03 REVERSE campaign ON (forward locked + verified at 95.80% this morning)
+    g().Pushout.STIRAPGap = 5e-6 #.scan(1, np.linspace(0.5e-6, 20e-6, 11)) #= 1e-6   # short fixed hold (forward optimum). For a Rydberg-lifetime sweep: .scan(1, gap_pts)
+    g().Pushout.IfReverse = 1   # 2026-08-03 REVERSE campaign ON (forward locked + verified at 95.80% this morning)
     g().Pushout.IfPump = 0
     g().Pushout.PumpTime = 1e-6
     g().Pushout.Pump616Freq = 282.355e6   # mj=0 pump616 (pumps OFF this config)
@@ -338,9 +364,13 @@ def build():
     g().Pushout.Pump556Amp = 0.5 # 2026-07-16 pump556 amp sweep (data_20260716_210005): best ~0.8-1.0 (monotonic to ceiling)
 
     # g().Pushout.Amp369 = 1
+    g().Pushout.IonizationViaDAC = 0  # 1: Ramp DAC to ionize. 0: Use TTL switch to ionize
     g().Pushout.TimeIonization = 3e-6
-    g().Init.VIonizationSet5to8 = 4  # The ionization voltage is set during the InitStep, and switched by the TTL
+    g().Init.VIonizationSet5to8 = 0  # The ionization voltage is set during the InitStep, and switched by the TTL
 
+    # Test with RNR Step replacing the STIRAP step
+    g().ReleaseRecapture.Time.scan(1, np.linspace(0.5e-6, 20e-6, 11))   # 2026-07-16 RNR lifetime sweep (data_20260716_210005): best ~0.8-1.0 (monotonic to ceiling)
+    
     # ---- warmup_kwargs (runp; forwarded ONCE at dequeue with reset_params) --------------
     rp = g.runp()
     rp.warmup_kwargs.model_filename = MODEL_FILENAME
@@ -357,7 +387,7 @@ def build():
     rp.warmup_kwargs.cuda_graph = True
     rp.warmup_kwargs.derive_threshold = 0.35
     
-    g().rearrange_kwargs.extras.wgs_warm = True
+    g().rearrange_kwargs.extras.wgs_warm = True # We are using the warm WGS for rearrangement
     g().rearrange_kwargs.extras.wgs_pad = 2048
     g().rearrange_kwargs.extras.wgs_iters = 3
 
