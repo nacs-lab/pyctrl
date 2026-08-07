@@ -245,13 +245,57 @@ def build():
     # carrier cannot see that).
     # (CARRIER_MHZ / PERP_MHZ / LINE_OFFSET_MHZ / FREQ_PATH and the locked PW556_US / PW308_US /
     #  DELAY_US are defined at the top of build() -- they are used by the AWG block above.)
-    g().AWG.AWG556.Ch1.pulse_width_us = 6.0   # 2026-08-03 round 4 optimum (locked)
-    # g().AWG.AWG556.Ch1.pulse_width_us = 6.0   # 2026-07-21 mj=0 quad ridge-3D optimum (data 20260721_182536); 100-shot verify 4.56% target surv = 95.44% exc (data 20260721_190200)
+    # 2026-08-06 POWER RE-WALK ROUND 1. The USER RAISED THE 556 OPTICAL POWER on the hardware side,
+    # which invalidates the locked ridge: every prior amplitude scan railed at the ceiling
+    # ("monotonic to ceiling, best=1.0, still power-limited"), i.e. the old optimum was a POWER
+    # constraint, not a physics optimum. With more light the 556 pulse AREA at a given
+    # amplitude_scale x pulse_width is larger, so (a) amplitude_scale may now have a real INTERIOR
+    # optimum below 1.0, and (b) the optimal pw556 should come DOWN (same area, more power).
+    # amplitude_scale and pulse_width both set pulse area => strongly coupled => scan them as a 2-D,
+    # not one at a time. pw308/delay stay at the round-4 lock this round (re-checked next round once
+    # the 556 axis has moved). Metric = target-only verify-conditioned survival (runbook Rule 1),
+    # re-paired by the logged Params (Rule 2). LOWER survival = better excitation.
+    # BASELINE to beat: 6.0 / 4.7 / 0.4 = 0.0420 +-0.0022 (95.80% exc, data_20260803_114419).
+    # amplitude_scale 1.0 is included so the baseline is re-read INSIDE this scan (drift-free
+    # head-to-head), and the grid extends DOWN because that is the direction more power opens up.
+    # 2026-08-06 ROUND 1 (user directive): pw556 FIXED at 5.0 us; sweep AMPLITUDE x DELAY instead.
+    # Rationale for this pairing: with more 556 light the pulse AREA at a given amplitude is larger,
+    # and amplitude and delay are the two knobs that set whether the adiabatic passage stays on the
+    # ridge -- the 556/308 overlap (delay) is what the changed 556 Rabi frequency most directly
+    # detunes. Width is held so the 2-D is a clean plane through the ridge, not an area-degenerate
+    # slice (amp x width would trade off along constant area and mostly re-measure one axis).
+    AMP556_PWR     = [0.4, 0.55, 0.7, 0.85, 1.0]                # scan dim 1 (fastest)
+    DELAY_PWR_US   = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]             # scan dim 2 (0.4 = the round-4 lock)
+    g().AWG.AWG556.Ch1.pulse_width_us = 4 #5.0   # 2026-08-06 FIXED per user (was 6.0, the 08-03 lock)
     g().AWG.AWG556.Ch1.max_amplitude_vpp = 15   # 2026-07-16 (now HONORED by AWGManager channel-mode; was silently forced to consts default 15)
-    g().AWG.AWG556.Ch1.amplitude_scale = 0#1   # opt: scan 0.4-1.0 @ vpp15 -> monotonic to ceiling, best=1.0 (still power-limited)
+    g().AWG.AWG556.Ch1.amplitude_scale = 0.85    # 2026-08-06 round 1: scan 0.4-1.0 @ vpp15 -> monotonic to ceiling, best=1.0 (still power-limited)
+    # g().AWG.AWG556.Ch1.amplitude_scale = 1   # pre-power-raise: scan 0.4-1.0 @ vpp15 -> monotonic to ceiling, best=1.0 (still power-limited)
     
     g().AWG.AWG556.Ch2.shape = "fall_quintic"   # anchor; gap = inner-peak separation
-    g().AWG.AWG556.Ch2.carrier_freq_MHz = 143.5  # 2026-07-31 MATCHED to Ch1 for the reverse campaign (was 142.944, stale from when reverse was OFF/unused -- same 556 transition, so it must sit on the same locked line)
+    # 2026-08-06 QUADRUPLE_SPACING REVERSE ROUND 2 -- 556 Ch2 WIDTH x CARRIER 2-D (user directive).
+    # Scanned together because they are coupled: the carrier sets the detuning from the 556 transition
+    # and the width sets both the pulse AREA and the pulse BANDWIDTH (~1/pw; at 2us that is ~0.5 MHz,
+    # comparable to the scan step here), so a narrow pulse tolerates a different detuning than a wide
+    # one. Doing them one-at-a-time would pin each at the other's wrong value.
+    # CARRIER RANGE: 143.5 is inherited from Ch1 (the locked FORWARD two-photon pair 143.5/EOM616
+    # 234.2) on the argument that reverse drives the SAME 556 transition. That is physically sound but
+    # has never been verified independently for the reverse pulse on any array, so this scan tests it
+    # +-0.5 MHz around the inherited value rather than assuming it.
+    # WIDTH RANGE: 2.0 was located on the DOUBLE_SPACING array (marginal peak, both axes interior) and
+    # is unvalidated here; span 1.0-4.0 to re-locate it on quadruple_spacing. All values < 6 (the
+    # user's hard width ceiling).
+    PW556_CH2_Q2   = [1.0, 1.5, 2.0, 3.0, 4.0]                    # (width x carrier 2-D, done)
+    CARRIER_CH2_Q2 = [143.0, 143.25, 143.5, 143.75, 144.0]        # (width x carrier 2-D, done)
+    # Q2 RESULT (data_20260806_213036, 25 cells x 625 shots). BOTH axes INTERIOR.
+    #   pw556 marginal:  1.0 0.7555 | 1.5 0.8381 | 2.0 0.8458 | 3.0 0.7114 | 4.0 0.4573  (+-0.006)
+    #   car556 marginal: 143.00 0.6672 | 143.25 0.7330 | 143.50 0.7506 | 143.75 0.7350 |
+    #                    144.00 0.7195  (+-0.007)
+    #   best cell: pw556 1.5 / car 143.50 -> 0.8953 +-0.0114; runners-up 2.0/143.75 0.8811,
+    #              2.0/143.50 0.8708, 1.5/143.75 0.8705 (flat top, all within ~2 SEM).
+    # CARRIER LOCKED 143.5 -- a real resonance peaked exactly at the value inherited from the forward
+    # Ch1 pair (143.5 / EOM616 234.2), with symmetric ~0.03-0.08 falloff at +-0.25-0.5 MHz. The
+    # inheritance was never independently tested for the reverse pulse before; it is now.
+    g().AWG.AWG556.Ch2.carrier_freq_MHz = 143.5   # 2026-08-06 Q2 optimum (= the Ch1 line, verified)
     # 2026-07-31 REVERSE round 4 -- EQUAL-WIDTH test (per user: the 556 and 308 Ch2 pulses should be
     # at similar width and mostly overlap). pw556_Ch2 and pw308_Ch2 are CO-VARIED on scan dim 1 so
     # they stay equal; delay is dim 2. All values <= 7 (hardware ceiling).
@@ -266,30 +310,128 @@ def build():
     # (1.5/7 -> 0.101 +-0.031, 7/7 -> 0.082 +-0.009). OPEN QUESTION: for the spline shapes
     # total = pulse_width_us and each is ONE monotone ramp, so 556 falls to 0 by t=1.5us while 308 is
     # only ~20% risen -- the two barely overlap, yet it transfers better. Worth understanding.
-    g().AWG.AWG556.Ch2.pulse_width_us = 6   # 2026-08-03 width map REDO after the timing fix, dim 1
+    # 2026-08-06 REVERSE ROUND 1 under the <6us WIDTH CONSTRAINT (user directive: BOTH the 556 Ch2 and
+    # the 308 Ch2 pulse width must be < 6 us). This retires the 07-31 champion (556 1.5 / 308 7.0) --
+    # its 308 width is outside the allowed set -- so the reverse optimum must be re-located INSIDE the
+    # box, not inherited.
+    # WHY a 2-D over the two WIDTHS (not width x delay again): today's data already maps delay, and
+    # says it is the WEAK axis inside the live window, while the widths are where the constraint
+    # bites. Pooled marginals from data_20260806_190541 (pw556 x reverse delay = 5 x 11; pw308_Ch2
+    # was FIXED at 4.0 there, NOT co-varied), target-only verify-conditioned; REVERSE wants HIGH:
+    #   delay: -1.50 0.585 | -1.20 0.628 | -0.90 0.662 | -0.60 0.724 | -0.30 0.769 | 0.00 0.766
+    #          +0.30 0.759 | +0.60 0.774 | +0.90 0.763 | +1.20 0.750 | +1.50 0.715 (+-0.012 each)
+    #   => broad plateau -0.30..+1.20 (all within ~2 SEM), falling off hard below -0.6us.
+    #   pw556 (pooled over all delays, at pw308=4.0): 2.0 0.7376 | 3.0 0.7361 | 4.0 0.7170 |
+    #          5.0 0.6693 | 6.0 0.7328  (+-0.008 each) => best at the SHORT end (2-3us), 5.0 is a
+    #          real dip; so the <6us constraint is NOT binding -- the allowed box already contains
+    #          the better 556 widths, and the 07-31 "556 wants SHORT" result survives.
+    # PAIRING CORRECTION (this is why the numbers above supersede an earlier reading): the per-shot
+    # Params id is 1-indexed AND ScanGroup emits the DEFAULT cell as pid 1 before walking the rest
+    # column-major, so a (pid-1)%n0 / (pid-1)//n0 formula mis-attributes EVERY cell (25/25 wrong on
+    # this grid). Use tmp_rev_stirap_analyze.py, which rebuilds the pid -> cell map from the scan's
+    # own recorded ScanGroup (validated 0/25 mismatches against a live-built group).
+    # CAVEAT that motivates this round: today's reverse scans ran at ~1 shot/CELL (58-62 shots over
+    # 55-70 combos), so each cell carries ~+-0.025 and the "best cell" (0.818) is a max-of-55
+    # fluctuation, NOT a located optimum -- only the pooled marginals above are trustworthy. So:
+    # hold delay on the plateau, sweep the two widths INDEPENDENTLY (the 07-31 asymmetric-vs-equal
+    # question re-asked inside the legal box), and give each cell real shots.
+    # 6 x 5 = 30 combos x --reps 20 = 600 shots = 20/cell (~5.6k mid-events/cell) -> ~+-0.006/cell,
+    # enough to resolve the ~0.04-0.07 spread the marginals show instead of re-reading noise.
+    # Metric = target-only verify-conditioned RETURN (Rule 1), paired via the scan's own descriptor
+    # (Rule 2 + the pairing correction above), i.e. tmp_rev_stirap_analyze.py.
+    # 556 axis reaches DOWN to 1.0 (the marginal favours the short end, and 07-31's champion was 1.5)
+    # instead of centring on 4-5; 308 axis spans the legal box since its width was never mapped
+    # independently below 7 -- every prior 308 conclusion came from the now-illegal 7us cell.
+    # WIDTH-ROUND RESULT (data_20260806_191709, 30 combos x ~17 shots/cell, ~4.7k mid-events/cell).
+    # BOTH width axes came back INTERIOR (nothing railed) => the <6us constraint is NOT binding, and
+    # the reverse pulse genuinely wants SHORT pulses. Target-only verify-conditioned RETURN:
+    #   pw556 marginal: 1.0 0.7158 | 1.5 0.7437 | 2.0 0.7709 | 3.0 0.7289 | 4.0 0.7091 | 5.75 0.7194
+    #   pw308 marginal: 2.0 0.7255 | 3.0 0.7456 | 4.0 0.7466 | 5.0 0.7309 | 5.75 0.7081  (+-0.003)
+    #   top cells: 2.0/2.0 0.8110 +-0.0055 | 1.5/2.0 0.8032 +-0.0058 | 2.0/3.0 0.8008 +-0.0059
+    #              default corner 5.75/5.75 0.6959 +-0.0070
+    # => ADOPTED 2.0/2.0: beats the 5.75/5.75 corner by +0.115 (~14 SEM). Plateau top is FLAT
+    # (2.0/2.0 vs 1.5/2.0 = 1.0 SEM, vs 2.0/3.0 = 1.3 SEM) so this is a plateau-center pick, not an
+    # argmax pick; stable across the 500-shot and 2542-shot reads (0.8121 -> 0.8110).
+    # ANOMALY (open): 3.0/2.0 reads 0.6126 +-0.0071, ~10 SEM BELOW both neighbours (2.0/2.0 0.811,
+    # 4.0/2.0 0.684) -- a single non-monotone dip in an otherwise smooth map. Not explained; re-read
+    # it before ever locking a config near pw556 3.0.
+    PW556_CH2_REV = [1.0, 1.5, 2.0, 3.0, 4.0, 5.75]   # (width 2-D, done)
+    PW308_CH2_REV = [2.0, 3.0, 4.0, 5.0, 5.75]        # (width 2-D, done)
+    # 2026-08-06 REVERSE ROUND 2 -- re-locate the reverse DELAY at the new 2.0/2.0 widths. Mandatory
+    # because the pinned +0.3us came from a map taken at pw556 4-5us (and, before the pairing fix, was
+    # read off a mis-attributed marginal): the 556<->308 overlap that sets adiabatic return scales with
+    # the pulse widths, so a delay located at 4-5us cannot be assumed at 2us. Both widths PINNED at the
+    # round-1 optimum; delay is the only swept axis (dim 1), spanning the corrected live window
+    # (-0.3..+1.2 plateau, dead below -0.6) with a couple of points past each edge to prove interiority.
+    # ROUND 2 RESULT (data_20260806_193652, 10 pts x ~15 shots, ~4.3k mid-events/pt). The delay DID
+    # move, which is why this round was mandatory: best is now -0.50us (0.8298 +-0.0058), NOT the
+    # +0.30 round-1 pin (which re-reads ~0.79 here, interpolating between +0.25 and 0.00).
+    #   -0.75 0.6638 | -0.50 0.8298 | -0.25 0.8256 | 0.00 0.8114 | +0.25 0.7743 | +0.50 0.6752
+    #   +0.75 0.6652 | +1.00 0.6567 | +1.25 0.6673 | +1.50 0.6299   (+-0.006..0.008 each)
+    # Shape: a single ~0.75us-wide window (-0.5..0.0 all >= 0.81) sitting on a ~0.66 floor. The old
+    # broad "-0.3..+1.2 plateau" was a WIDTH-DEPENDENT artifact -- at 2us pulses the window is much
+    # narrower and shifted negative (556 firing first), consistent with overlap scaling with width.
+    # NOT YET INTERIOR on the negative side: -0.50 (0.8298) -> -0.75 (0.6638) is a 0.166 drop in ONE
+    # 0.25us step, i.e. the grid is too coarse to say where the cliff is or whether the true peak sits
+    # between -0.75 and -0.50. ROUND 3 refines 0.05-0.10us steps across -0.70..-0.15 to place the peak
+    # and prove it is interior (runbook: inspect the argmin POSITION, do not lock an edge).
+    REV_DELAY_R2_US = [-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5]   # (round 2, done)
+    REV_DELAY_R3_US = [-0.70, -0.65, -0.60, -0.55, -0.50, -0.45, -0.40, -0.35, -0.30, -0.25, -0.20, -0.15]
+    # 2026-08-06 QUADRUPLE_SPACING ROUND 2: 556 Ch2 width on dim 1 (paired with the Ch2 carrier on
+    # dim 2 -- see the carrier block above for why they are scanned together). The 308 Ch2 width stays
+    # pinned at 2.0 this round so the 2-D is a clean plane in the 556 knobs; re-check it after.
+    # LOCKED 2.0 (2026-08-06 Q2, data_20260806_213036). Chose the MARGINAL peak (2.0 = 0.8458
+    # +-0.0061, pooled over all 5 carriers, ~3.5k mid-events) over the single best CELL
+    # (pw556 1.5 / car 143.50 = 0.8953 +-0.0114, ~0.7k events): the two widths are 0.9 SEM apart
+    # in the marginal (1.5 = 0.8381), i.e. statistically tied, and the marginal carries ~5x the
+    # statistics -- the runbook's flat-plateau lesson says do not lock a max-of-25 cell. 2.0 also
+    # matches the independently-located double_spacing optimum, so it is the same physics on both
+    # arrays. If a fixed-point verify is ever run, 1.5 vs 2.0 at 143.5 is the pair to settle.
+    g().AWG.AWG556.Ch2.pulse_width_us = 2.0   # 2026-08-06 Q2 width optimum (marginal peak)
+    #g().AWG.AWG556.Ch2.pulse_width_us.scan(1, PW556_CH2_Q2)   # Q2 width x carrier 2-D (done)
     g().AWG.AWG556.Ch2.max_amplitude_vpp = 15   # 2026-07-14 raised 11->15 (more STIRAP power)
-    g().AWG.AWG556.Ch2.amplitude_scale = 0#1   # opt: scan 0.4-1.0 @ vpp15 -> monotonic to ceiling, best=1.0 (still power-limited)
+    # 2026-08-06 REVERSE ROUND 4 -- 556 Ch2 AMPLITUDE scan (user directive). Why it is worth redoing:
+    # the standing 0.9 comes from a PRE-power-raise scan whose note says "monotonic to ceiling,
+    # best=1.0, still power-limited", i.e. it measured a POWER CEILING, not an optimum -- and since
+    # then (a) the user raised the 556 optical power, and (b) the reverse pulse moved to 2.0us widths
+    # at -0.5us delay. Peak drive = max_amplitude_vpp * amplitude_scale (pulse_waveform.py), so at
+    # 2us the pulse AREA per unit amplitude is ~3x smaller than at the old 6us -> the amplitude that
+    # completes the adiabatic return has almost certainly moved UP, and an interior optimum can now
+    # exist where before everything railed.
+    # Scanned DOWN as well as up: with more light, over-driving is a real failure mode for adiabatic
+    # transfer (too-fast Rabi = non-adiabatic), so the grid must be able to show a turnover, not just
+    # a ceiling. 1.0 is the hardware ceiling at vpp15 (amplitude_scale is clamped 0-1).
+    # SAFE for the forward pulse: AWGManager keys waveforms per CHANNEL (C1/C2) and bakes
+    # amplitude_scale into the Ch2 waveform while the device vpp stays fixed, so sweeping Ch2 does
+    # NOT perturb the locked forward Ch1 pulse (verified in awg_manager.py).
+    AMP556_CH2_REV = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    g().AWG.AWG556.Ch2.amplitude_scale = 0.9 #.scan(1, AMP556_CH2_REV)   # 2026-08-06 reverse amp round
+    # g().AWG.AWG556.Ch2.amplitude_scale = 0.9   # pre-power-raise pin (railed to ceiling, stale)
     g().AWG.AWG556.Ch2.pad_time_us = 0.0
     
     g().AWG.AWG308.Ch1.shape = "fall_quintic"
     g().AWG.AWG308.Ch1.carrier_freq_MHz = 200
-    g().AWG.AWG308.Ch1.pulse_width_us = 4.7   # 2026-08-03 round 4 optimum (locked; was 5.7, the 07-21 value)
+    g().AWG.AWG308.Ch1.pulse_width_us = 4 #4.7   # 2026-08-03 round 4 optimum (locked; was 5.7, the 07-21 value)
     g().AWG.AWG308.Ch1.max_amplitude_vpp = 8   # 2026-07-15 raised 5.5->7.5 (amp saturated by 7.5)
-    g().AWG.AWG308.Ch1.amplitude_scale = 0 #0.9
+    g().AWG.AWG308.Ch1.amplitude_scale = 1
     g().AWG.AWG308.Ch1.pad_time_us = 2
     
     g().AWG.AWG308.Ch2.shape = "rise_quintic"
     g().AWG.AWG308.Ch2.carrier_freq_MHz = 200
-    g().AWG.AWG308.Ch2.pulse_width_us = 4.7  # 2026-08-03 width map REDO after the timing fix, dim 2 (INDEPENDENT of the 556 Ch2 width). Prior: FIXED at the 7us ceiling -- the pre-fix asymmetric map railed here (pw308=7 best in every 556 row). Cannot extend further (hardware ceiling). (per user: pulse_width_us must NOT exceed 7). Monotonic 2->7 (0.735 -> 0.834 return), so it rails here. (per user -- pulse_width_us must NOT exceed 7). Both width rounds railed here: pw308=7 beat every shorter value (2->7 monotonic, 0.735 -> 0.834 return). The >7 cells scanned in _110200 are INVALID, do not use them.
+    # 2026-08-06 reverse width 2-D, dim 2 (INDEPENDENT of the 556 Ch2 width -- the asymmetric-vs-equal
+    # question re-asked inside the <6us box). NOTE the prior rounds' "pw308 rails at 7" result is now
+    # OUT OF SCOPE by the user's <6us constraint, so it is not inherited: 7 (and the >7 cells in
+    # _110200, which were always invalid) are simply not in the allowed set.
+    g().AWG.AWG308.Ch2.pulse_width_us = 2.0   # 2026-08-06 reverse width-2D optimum (was .scan dim 2)
     g().AWG.AWG308.Ch2.max_amplitude_vpp = 8
-    g().AWG.AWG308.Ch2.amplitude_scale = 0#0.95
+    g().AWG.AWG308.Ch2.amplitude_scale = 1
 
 
     g.runp().AWGs = ["AWG556", "AWG308"]
 
     # ---- QICK microwave params (DEFERRED port; kept for the future, currently unused) ---
     g().Pushout.MRabi.Freq = 10863.04
-    g().Pushout.MRabi.Gain = 3000
+    g().Pushout.MRabi.Gain = 0
     g().Pushout.MRabi.FreqRabi = 7.187e6
     g().Pushout.Ramsey.Phase = 0
 
@@ -311,7 +453,7 @@ def build():
     # EOM616_MHZ = [round(233.0 + 0.1 * k, 4) for k in range(23)]     # 233.0 .. 235.2 MHz
     # g().Init.EOM616.Freq.scan(1, [f * 1e6 for f in EOM616_MHZ])
     g().Init.EOM616.Freq = 234.2e6   # PAIR w/ Ch1 143.5 (offset +90.7, round 5 confirmed; degenerate line runs +1:+1)
-    g().Pushout.VRydTrap = 1.9 #.scan(1, np.linspace(0, 1, 20))  # NOTE: trap-off block in STIRAPPushoutStep zeroes AmpSLM during the pulse -> this only sets the pre-ramp depth
+    g().Pushout.VRydTrap = 1.9 #.scan(1, np.linspace(0.2, 2.5, 10)) #= 1.9
     g().Pushout.BiasCoilCurrent.Ryd = 30
 
     # ---- post-rearrangement recool (RearrangeCool556hXStep, runs immediately before the pushout) ----
@@ -339,8 +481,14 @@ def build():
     # 2-D per-beam grid (det x amp) on ONE beam, the other pinned -- mirrors the RNR/imaging campaigns:
     # g().RearrangeCool556.X.FreqDetuning.scan(1, np.linspace(0.08e6, 0.24e6, 9))
     # g().RearrangeCool556.X.Amp.scan(2, np.linspace(0.08, 0.24, 9))
-    g().Pushout.STIRAPDelay = DELAY_US * 1e-6   # 2026-08-03 round 4 optimum (locked; was 0.6e-6)
-    # g().Pushout.STIRAPDelay = 0.6e-6   # 2026-07-30 step-0 delay pre-scan (data_20260730_162309): transfer only for POSITIVE delay, best +0.6us (surv 0.151), broad 0.4-1.6us; <=0 dead (~0.97)
+    # 2026-08-06 POWER RE-WALK ROUND 1: delay on scan dim 2 (paired with amplitude on dim 1; pw556
+    # fixed at 5.0). The grid spans the round-4 lock (0.4) and extends both ways -- the 08-03 delay
+    # scan showed transfer only for POSITIVE delay with a broad 0.4-1.6 window, so 0.0-1.0 covers
+    # the live region without spending shots on the dead negative side.
+    #g().Pushout.STIRAPDelay.scan(2, [d * 1e-6 for d in DELAY_PWR_US])
+    # g().Pushout.STIRAPDelay = DELAY_US * 1e-6   # 2026-08-03 round 4 optimum (locked; was 0.6e-6)
+    g().Pushout.STIRAPDelay = 1.8e-6 #.scan(2, np.linspace(0.5e-6, 2e-6, 10))   # 2026-08-03 round 4 optimum (locked; was 0.6e-6)
+    # 2026-07-30 step-0 delay pre-scan (data_20260730_162309): transfer only for POSITIVE delay, best +0.6us (surv 0.151), broad 0.4-1.6us; <=0 dead (~0.97)
     # 2026-08-03 REVERSE R1 -- re-locate the reverse delay. Two reasons it must move: (a) the 07-31
     # note's own TODO (the delay optimum was found with Ch2 widths 2/2 and pw308_Ch2 is now 7us), and
     # (b) the FORWARD pulse changed this morning (pw308 5.7->4.7, delay 0.6->0.4, excitation 93.7->95.8%),
@@ -353,23 +501,77 @@ def build():
     # (dim 2), 6 x 13 = 78 combos. Delay range narrowed to +-1.5 (R1 showed <-1.5 is dead).
     REV_DELAY_US = [round(-1.5 + 0.25 * k, 4) for k in range(13)]     # -1.50 .. +1.50 us (equal-width 2-D)
     #g().Pushout.STIRAPReverseDelay.scan(1, np.linspace(-1.5e-6, 1.5e-6, 13))   # 2026-08-03 REVERSE 2-D (user directive)
-    g().Pushout.STIRAPReverseDelay = -0.25e-6   # 2026-07-31 round 3 best (data_20260731_111148: 1.5us Ch2 @ -0.25us -> 0.876 +-0.009); irrelevant for the reverse-OFF control: re-check the delay AT the new widths -- the 0 optimum (data_20260731_105045) was located with pw556/pw308 Ch2 = 2/2, and pw308 is now 7us, so the optimal overlap has likely moved
+    # 2026-08-06 REVERSE ROUND 1: delay PINNED (both scan dims are now the two Ch2 widths). +0.3us is
+    # the top of today's pooled delay marginal (0.781 +-0.010, data_20260806_190541) and sits mid-
+    # plateau (-0.3..+1.2 all within ~2 SEM), so it is the robust hold-point rather than a noise pick.
+    # Re-check the delay AT the winning width pair next round -- the optimal 556/308 overlap moves with
+    # the widths, which is exactly why the 07-31 delay went stale (its own TODO).
+    # 2026-08-06 ROUND 2: delay is now the ONLY swept axis, at the 2.0/2.0 width optimum (see the
+    # REV_DELAY_R2_US rationale in the AWG556.Ch2 block). Round 1 ran pinned at +0.3e-6.
+    # 2026-08-06 ROUND 3: fine delay across the negative cliff at the 2.0/2.0 widths (see the
+    # REV_DELAY_R3_US rationale above -- round 2's 0.25us step left a 0.166 jump unresolved).
+    # 2026-08-06 ROUND 4 (amp scan): delay PINNED at the round-2 best -0.5us. Round 3's fine delay
+    # walk (-0.70..-0.15, id 286) may nudge this by <=0.1us; that is inside the flat top of the
+    # window (-0.5 and -0.25 read 0.8298 vs 0.8256, 0.5 SEM apart), so it does not bias the amp
+    # comparison. RE-CHECK the delay at the winning amplitude afterwards -- amp changes the Rabi
+    # frequency and therefore the adiabatic overlap, same coupling that moved the delay when the
+    # widths changed.
+    # 2026-08-06 QUADRUPLE_SPACING REVERSE ROUND 1 -- re-locate the reverse DELAY on the new array.
+    # The 2.0/2.0 widths and the delay were all located on the DOUBLE_SPACING array; the array just
+    # changed to quadruple_spacing (rearrange_kwargs.extras.pattern), which changes the site pitch
+    # and therefore how the 556/308 beams illuminate the target footprint, so none of it is assumed
+    # to carry over. Delay is re-located FIRST because it was by far the strongest axis on the old
+    # array (0.59 -> 0.83 across the scan, vs 0.06 for amplitude).
+    # RANGE: the corrected double-spacing curve (data_20260806_195643, manifest-paired) rose
+    # monotonically to the -0.15 edge and was STILL CLIMBING there:
+    #   -0.70 0.6254 | -0.60 0.5853 | -0.50 0.6578 | -0.40 0.7588 | -0.30 0.8101 | -0.25 0.8309
+    #   -0.20 0.8281 | -0.15 0.8328  (+-0.003 each)
+    # i.e. the old scan never bracketed its own peak. So this grid starts at -0.30 and runs PAST
+    # zero to +0.45, which brackets the peak from both sides on the new array (the coarse round-2
+    # scan had 0.00 = 0.8193 and +0.25 = 0.7662, so the turnover should sit inside this span).
+    # Q1 RESULT (data_20260806_211302, 8 pts x 40 shots, manifest-paired -- the manifest reproduced
+    # the corrected reconstruction exactly). Target-only verify-conditioned RETURN (HIGH = good):
+    #   -0.30 0.8580 | -0.20 0.8727 | -0.10 0.8892 | 0.00 0.8810 | +0.10 0.8826 | +0.20 0.8774
+    #   +0.30 0.8694 | +0.45 0.8444   (+-0.007 each)
+    # PEAK PROPERLY BRACKETED (rises from -0.30, tops at -0.10, falls to +0.45) -- an INTERIOR
+    # optimum, which the double-spacing campaign never achieved. Top is flat: -0.10 .. +0.20 span
+    # ~0.5 SEM, so -0.10 is a plateau-centre pick. Reverse-OFF floor on this array = 0.0381 survival
+    # (96.19% forward excitation, data_20260806_205429), so the reverse returns ~88.9% of atoms.
+    # ADOPTED -0.10us; re-check it once the width/carrier below move (overlap scales with width).
+    REV_DELAY_Q1_US = [-0.30, -0.20, -0.10, 0.0, 0.10, 0.20, 0.30, 0.45]   # (Q1 delay, done)
+    g().Pushout.STIRAPReverseDelay = -0.10e-6   # 2026-08-06 quadruple_spacing Q1 delay optimum
+    #g().Pushout.STIRAPReverseDelay.scan(1, [d * 1e-6 for d in REV_DELAY_Q1_US])   # Q1 (done)
+    #g().Pushout.STIRAPReverseDelay = -0.5e-6   # double-spacing round-4 pin
+    #g().Pushout.STIRAPReverseDelay.scan(1, [d * 1e-6 for d in REV_DELAY_R3_US])   # round 3 (id 286)
+    #g().Pushout.STIRAPReverseDelay.scan(1, [d * 1e-6 for d in REV_DELAY_R2_US])   # round 2 (done)
+    #g().Pushout.STIRAPReverseDelay = 0.3e-6   # 2026-08-06 round-1 pin (width 2-D)
+    #g().Pushout.STIRAPReverseDelay = -0.25e-6   # 2026-07-31 round 3 best (data_20260731_111148: 1.5us Ch2 @ -0.25us -> 0.876 +-0.009); irrelevant for the reverse-OFF control: re-check the delay AT the new widths -- the 0 optimum (data_20260731_105045) was located with pw556/pw308 Ch2 = 2/2, and pw308 is now 7us, so the optimal overlap has likely moved
     g().Pushout.STIRAPPadTime = 2e-6   # 2026-07-21 mj=0 quad ridge-3D optimum (308-first; window +0.6..+1.4us)
-    g().Pushout.STIRAPGap = 5e-6 #.scan(1, np.linspace(0.5e-6, 20e-6, 11)) #= 1e-6   # short fixed hold (forward optimum). For a Rydberg-lifetime sweep: .scan(1, gap_pts)
-    g().Pushout.IfReverse = 1   # 2026-08-03 REVERSE campaign ON (forward locked + verified at 95.80% this morning)
+    g().Pushout.STIRAPGap = 1e-6 #.scan(2, np.linspace(0e-6, 20e-6, 10))  # short fixed hold (forward optimum). For a Rydberg-lifetime sweep: .scan(1, gap_pts)
+    # 2026-08-06 REVERSE ON for the quadruple_spacing reverse campaign. Forward baseline measured on
+    # THIS array immediately before, reverse OFF, 206 shots (data_20260806_205429): survival
+    # 0.0381 +-0.0021 = 96.19% +-0.21% excitation, 80 target sites, mid-fill 0.989. That survival is
+    # the reverse-OFF FLOOR the reverse return has to beat -- with the reverse pulse on, atoms that
+    # were excited and brought back are RETAINED, so the metric flips to HIGH = good.
+    g().Pushout.IfReverse = 0
     g().Pushout.IfPump = 0
     g().Pushout.PumpTime = 1e-6
     g().Pushout.Pump616Freq = 282.355e6   # mj=0 pump616 (pumps OFF this config)
     g().Pushout.Pump556Freq = 143.556e6   # mj=0 pump556 (pumps OFF this config)
     g().Pushout.Pump556Amp = 0.5 # 2026-07-16 pump556 amp sweep (data_20260716_210005): best ~0.8-1.0 (monotonic to ceiling)
+    g().Pushout.SLMAOMAmpGap = 0.55
+    g().Pushout.IfGatePulses = 1  # 1 means we are not skipping Rydberg pulses
 
     # g().Pushout.Amp369 = 1
-    g().Pushout.IonizationViaDAC = 0  # 1: Ramp DAC to ionize. 0: Use TTL switch to ionize
-    g().Pushout.TimeIonization = 3e-6
-    g().Init.VIonizationSet5to8 = 0  # The ionization voltage is set during the InitStep, and switched by the TTL
+    g().Pushout.IonizationViaDAC = 0 #1: Ramp DAC to ionize. 0: Use TTL switch to ionize
+    g().Pushout.TimeIonization = 0.1e-6  # The ionization voltage is set during the InitStep, and switched by the TTL
+    g().Init.VIonizationSet5to8 = 4  # The ionization voltage is set during the InitStep, and switched by the TTL
 
-    # Test with RNR Step replacing the STIRAP step
-    g().ReleaseRecapture.Time.scan(1, np.linspace(0.5e-6, 20e-6, 11))   # 2026-07-16 RNR lifetime sweep (data_20260716_210005): best ~0.8-1.0 (monotonic to ceiling)
+    # Test with RNR Step replacing the STIRAP step -- DISABLED 2026-08-06 for the STIRAP power
+    # re-walk: with scienceStep="stirap" the RnR step never runs, and leaving this .scan() on dim 1
+    # would collide with the pw556 sweep (two params on the same dim = an unintended co-vary).
+    #g().ReleaseRecapture.Time = 1e-6
+    #g().ReleaseRecapture.Time.scan(1, np.linspace(0.5e-6, 20e-6, 20))   # 2026-07-16 RNR lifetime sweep (data_20260716_210005): best ~0.8-1.0 (monotonic to ceiling)
     
     # ---- warmup_kwargs (runp; forwarded ONCE at dequeue with reset_params) --------------
     rp = g.runp()
@@ -398,7 +600,7 @@ def build():
     g().rearrange_kwargs.extras.overdrive = False
     g().rearrange_kwargs.extras.dynamic = False
     g().rearrange_kwargs.extras.max_step_size = 0.75
-    g().rearrange_kwargs.extras.pattern = "double_spacing" #"quadruple_no_topright"  # 2026-07-10 quadruple_spacing (post optics move) -- the new default for the 33x33 array
+    g().rearrange_kwargs.extras.pattern = "octuple_spacing" #"quadruple_no_topright"  # 2026-07-10 quadruple_spacing (post optics move) -- the new default for the 33x33 array
     g().rearrange_kwargs.extras.ifEnhanced = False
     g().rearrange_kwargs.extras.precompute = False
     g().rearrange_kwargs.extras.precompute_host = False
@@ -406,6 +608,9 @@ def build():
     # Per-bseq cooling/imaging overlay (expConfig ByPattern) + per-frame detection pattern.
     g().rearrange_kwargs.extras.initial_pattern = INIT_PATTERN
     g().rearrange_kwargs.extras.final_pattern = TARGET_PATTERN
+    # 2026-08-06: back to STIRAP for the post-power-raise forward re-walk (was defaulting to "rnr"
+    # for the RnR A/B, which is what data_20260806_115520 / _121753 ran).
+    g().rearrange_kwargs.extras.scienceStep = "stirap"
 
     # ---- run params (runp) ---------------------------------------------------------------
     rp.NumPerGroup = 2000
