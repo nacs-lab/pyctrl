@@ -19,7 +19,6 @@ Usage:
         [--dry-run]
 """
 import argparse
-import glob
 import json
 import os
 import sys
@@ -29,9 +28,11 @@ REPO = r"c:\msys64\home\Ybtweezer-PC2\projects\experiment-control"
 DATA_ROOT = r"D:\OneDrive - Harvard University\Documents - Yb\Data"
 os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
 sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.join(REPO, "pyctrl", "lib"))
 
 import numpy as np              # noqa: E402
 import h5py                     # noqa: E402
+from scan_files_lite import frames_per_seq, image_source   # noqa: E402
 
 BOX, SIGMA = 9, 2               # MUST match rearrange_runtime._BOX/_SIGMA + lab boxSize/maskSigma
 
@@ -61,12 +62,11 @@ def run_frames(scan, frame_idx):
     cfg = json.load(open(os.path.join(data_dir, sid + ".json")))
     nimg = int(cfg["NumImages"])
     roi = cfg["roi"]
-    imgs = []
-    for p in sorted(glob.glob(os.path.join(data_dir, "*.h5"))):
-        with h5py.File(p, "r") as f:
-            if "imgs" in f:
-                imgs.append(f["imgs"][:])
-    imgs = np.concatenate(imgs, axis=0)
+    # Deterministic: /imgs lives in the scan's data file (combined layout) or in its
+    # sibling image_<stamp>.h5 (split layout) -- never in some other *.h5 in the dir.
+    with h5py.File(image_source(os.path.join(data_dir, sid + ".h5")), "r") as f:
+        nimg = frames_per_seq(f, default=nimg)     # file attr wins over the sidecar
+        imgs = f["imgs"][:]
     n_shots = imgs.shape[0] // nimg
     return imgs[: n_shots * nimg][frame_idx::nimg].astype(np.float64), roi
 

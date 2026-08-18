@@ -60,8 +60,10 @@ def main():
     data_dir = a.dir or json.load(open(os.path.join(STATE_DIR, "imaging_state_r%d.json" % a.round)))["data_dir"]
 
     sys.path.insert(0, REPO)
+    sys.path.insert(0, os.path.join(PYCTRL, "lib"))
     import numpy as np
     import h5py
+    from scan_files_lite import frames_per_seq, image_source
     from yb_analysis.detection.dynamical_threshold import _fit_run_site_params, _compute_site_intensities
     from yb_analysis.detection.hist_init import make_mask
 
@@ -70,9 +72,15 @@ def main():
     gy = np.asarray(cfg["initGridLocationsY"], float)
     gx = np.asarray(cfg["initGridLocationsX"], float)
     positions = np.column_stack([gy, gx])          # (M,2) [y,x]
-    with h5py.File(os.path.join(data_dir, sid + ".h5"), "r") as f:
-        imgs = f["imgs"][0::a.num_images]          # img1 of each shot
+    # intensities live in the data file; /imgs may live in a sibling image_<stamp>.h5
+    # (split layout) -- one handle for both is only valid for a combined scan.
+    data_h5 = os.path.join(data_dir, sid + ".h5")
+    with h5py.File(data_h5, "r") as f:
         I1_store = f["intensities_img1"][:]
+    with h5py.File(image_source(data_h5), "r") as f:
+        # the image file's own attr is authoritative; --num-images is the fallback
+        nimg = frames_per_seq(f, default=a.num_images)
+        imgs = f["imgs"][0::nimg]                  # img1 of each shot
     imgs = np.asarray(imgs)
     print("=" * 90)
     print("OFFLINE imaging diag  scan_id=%s  n_shots=%d  n_sites=%d  img %s"
