@@ -83,6 +83,27 @@ class SlmScanSession:
         self._legacy = bool(legacy_zerniked)
         self._baked = baked_zernike
 
+    def set_defocus(self, z4):
+        """Re-point the LOADING DEFOCUS mid-scan and rewrite the phase if it changed.
+
+        This is what makes a per-shot defocus (ANSI z4) sweep possible inside ONE scan: the
+        declared pattern is unchanged, only its ``[0 0 0 0 z4]`` Zernike moves, and
+        :meth:`_write_if_new` keys on that Zernike (``_pattern_key``) so a changed value forces a
+        fresh ``write_loading_phase``. Called from the run loop's per-shot pre_cb BEFORE the
+        sequence runs, so the atoms of that shot are loaded at the new plane.
+
+        Returns True iff a write actually went out (unchanged value / no declared pattern -> False).
+        """
+        if not self._path:
+            return False                    # holding the lock only -- nothing declared to rewrite
+        z = [0.0, 0.0, 0.0, 0.0, float(z4)] if float(z4) else []
+        if _key_list(z) == _key_list(self._zernike):
+            return False
+        self._zernike = z
+        before = self._last_written
+        self._write_if_new()
+        return self._last_written != before
+
     def is_held(self):
         return self.held
 

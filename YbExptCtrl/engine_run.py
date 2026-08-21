@@ -15,10 +15,11 @@ import os
 
 import run_timing
 from camera_runtime import sync_camera_exposure
-from slm_runtime import (DEFAULT_LOADING_DEFOCUS, _loading_defaults, _first_loading_pattern,
+from slm_runtime import (DEFAULT_LOADING_DEFOCUS, _pattern_defocus, _loading_defaults, _first_loading_pattern,
                          _loading_patterns_json, _make_slm_session, _is_rearrange_scan,
                          _n_rounds, _frame_patterns, _initial_setup_rearrangement,
                          _runp_num, _runp_get)
+import slm_runtime
 import awg_runtime
 
 # pyctrl package root (…/pyctrl/YbExptCtrl/engine_run.py -> …/pyctrl) for locating config.yml,
@@ -144,7 +145,8 @@ def make_engine_run(server, camera, seq_config, log=None):
         # every build in this scan resolves cooling/imaging/VSLMServo against this pattern; a
         # rearrange seq overrides it per bseq via set_pattern. No-op when ByPattern is empty.
         # Cleared in the finally below.
-        pat0 = _first_loading_pattern(scangroup.runp(), default_phase=_ld_phase, all_scans=_ld_all)
+        pat0 = _first_loading_pattern(scangroup.runp(), default_phase=_ld_phase, all_scans=_ld_all,
+                                     seq_config=seq_config)
         import expConfig_helper
         expConfig_helper.set_current_pattern((pat0 or {}).get("name"))
         # Pre-run camera exposure sync: now the per-pattern overlay is active, push the resolved
@@ -153,7 +155,8 @@ def make_engine_run(server, camera, seq_config, log=None):
         sync_camera_exposure(camera, seq_config, (pat0 or {}).get("name"),
                              log=lambda m: log("[runner] %s" % m))
         slm_ses = _make_slm_session(scangroup, scan_id, log,
-                                    default_phase=_ld_phase, all_scans=_ld_all)
+                                    default_phase=_ld_phase, all_scans=_ld_all,
+                                    seq_config=seq_config)
         # Fresh per-shot health for this scan, so a failing previous scan can't
         # bleed its "shots failing" banner into a healthy new one (and vice
         # versa). Best-effort -- a missing method (older/MATLAB server) is fine.
@@ -191,7 +194,7 @@ def make_engine_run(server, camera, seq_config, log=None):
                 frame_patterns=_frame_patterns(scangroup, num_images, seq_config,
                                                log=lambda m: log("[runner] %s" % m)),
                 loading_defocus=_runp_num(scangroup.runp(), "loading_defocus",
-                                          DEFAULT_LOADING_DEFOCUS),
+                                          _pattern_defocus(seq_config, (pat0 or {}).get("name"))),
                 log=lambda m: log("[runner] %s" % m)))
         # Capture ownership comes from the SEQ's own declaration (@seq_capabilities(owns_frames=
         # True)), NOT a runp sniff: the seq that does the mid-sequence grab is the source of truth.
@@ -207,6 +210,16 @@ def make_engine_run(server, camera, seq_config, log=None):
             def _slm_pre_cb(_seq_num, _arg0, _ses=slm_ses):
                 _ses.ensure_held()
             pre.append(_slm_pre_cb)
+            # Per-shot LOADING-DEFOCUS sweep: a scan that declares g().SLM.LoadingDefocus as a
+            # scanned param gets this point's focal plane written to the SLM before the shot runs
+            # (see slm_runtime.make_slm_defocus_pre_cb). None -> not swept -> zero cost. Appended
+            # AFTER ensure_held so ownership is confirmed before the rewrite. Rearrangement scans
+            # are excluded: their loading plane goes through setup_rearrangement's
+            # loading_zernike (both the initial and the bookend WGS write), not this session.
+            _dcb = slm_runtime.make_slm_defocus_pre_cb(scangroup, slm_ses,
+                                                       log=lambda m: log("%s" % m))
+            if _dcb is not None:
+                pre.append(_dcb)
 
         armed = False
         if camera is not None and num_images > 0:

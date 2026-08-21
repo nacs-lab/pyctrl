@@ -8,7 +8,10 @@ scan.
 The operator-edited knobs live HERE (moved from runner.py 2026-07-22): change
 :data:`DEFAULT_LOADING_PATTERN_PHASE` / :data:`ALL_SCANS_LOAD_PATTERN` /
 :data:`DEFAULT_LOADING_DEFOCUS` in THIS module to change the every-scan loading-pattern
-behaviour.
+behaviour. The loading PLANE is the exception: since 2026-08-10 it is per-array config
+(``ByPattern[<pattern>]["SLM"]["Loading"]["Defocus"]`` -> :func:`_pattern_defocus`), and
+:data:`DEFAULT_LOADING_DEFOCUS` is only the fallback for a pattern that declares none.
+Precedence: ``runp().loading_defocus`` > per-pattern config > this constant.
 
 :func:`_runp_num` / :func:`_runp_get` (generic DynProps runp accessors) are parked here because
 most of their users live in this module; engine_run imports them from here.
@@ -18,13 +21,20 @@ Split out of runner.py (now run_loop.py) 2026-07-22.
 
 import os
 
-# Default loading defocus (ANSI z4) when a scan declares a loading pattern but does NOT set
-# ``runp().loading_defocus``. The loading focal plane is a property of the science camera, not the
-# pattern: until the camera is moved it is a fixed -5 (the plane the global SLM->camera affine is
-# calibrated against). Production SLM scans already set this explicitly; this default keeps every
-# other loading-pattern scan at the SAME plane so the single global affine stays valid. Change this
-# (and re-bootstrap the affine) if/when the camera focus moves.
-DEFAULT_LOADING_DEFOCUS = -5.0
+# Default loading defocus (ANSI z4) when a scan declares a loading pattern, sets no
+# ``runp().loading_defocus``, AND its pattern carries no ``SLM.Loading.Defocus`` overlay.
+#
+# 2026-08-10: -5.0 -> 0.0 (user directive). The loading plane is now a PER-ARRAY config value
+# (ByPattern ``SLM.Loading.Defocus``, read by :func:`_pattern_defocus`) rather than one global
+# constant, so this is just the neutral "no defocus" fallback for a pattern that has not declared
+# its plane -- not a claimed calibration. An array whose plane matters must SET it (33x33_feedback11
+# measured -2.5 the same day).
+#
+# ⚠ This used to encode the plane the global SLM->camera affine is calibrated against (-5), so any
+# rearrangement path that relied on the fallback would now map against a stale affine. Every
+# rearrangement scan sets ``rp.loading_defocus`` explicitly (matched to
+# ``rearrange_kwargs.extras.z4``), which still wins over both this and the per-pattern key.
+DEFAULT_LOADING_DEFOCUS = 0.0
 
 # Every-scan default loading pattern + toggle. Operative defaults live HERE (not in
 # expConfig consts, which are governed by the config drift oracle / THE ONE RULE and
@@ -54,6 +64,38 @@ def _loading_defaults(seq_config):
     except Exception:  # noqa: BLE001
         pass
     return phase, all_on
+
+
+def _pattern_defocus(seq_config, pattern_name=None, default=None):
+    """Loading defocus (ANSI z4) for ``pattern_name``, from ``consts["SLM"]["Loading"]["Defocus"]``
+    resolved THROUGH the ByPattern overlay, else :data:`DEFAULT_LOADING_DEFOCUS`.
+
+    This makes the loading plane a per-ARRAY config value instead of a module constant, so a
+    pattern whose optimum plane is not -5 can carry its own (2026-08-10: 33x33_feedback11 measured
+    -2.5, worth +0.007 survival / +0.004 per-site fidelity over -5 at ~10 SEM).
+
+    ⚠ The header's rationale for a single global -5 still holds for REARRANGEMENT: the global
+    SLM->camera affine is calibrated at one plane, so moving a rearranged array's loading plane
+    invalidates that mapping until the affine is re-bootstrapped. A per-pattern value is safe for
+    plain loading/imaging scans; set it on a rearranged pattern only together with a fresh affine.
+
+    Runtime-only (never reaches serialize()), so no byte-oracle effect."""
+    if default is None:
+        default = DEFAULT_LOADING_DEFOCUS
+    try:
+        consts = getattr(seq_config, "consts", None) or {}
+        if pattern_name:
+            try:
+                import expConfig_helper
+                consts = expConfig_helper.apply_pattern(consts, str(pattern_name))
+            except Exception:  # noqa: BLE001 - no overlay -> base consts
+                pass
+        ld = (consts.get("SLM", {}) or {}).get("Loading", {}) or {}
+        if "Defocus" in ld and ld["Defocus"] is not None:
+            return float(ld["Defocus"])
+    except Exception:  # noqa: BLE001
+        pass
+    return float(default)
 
 
 def _runp_num(runp, name, default=0):
@@ -151,7 +193,8 @@ def _frame_patterns(scangroup, num_images, seq_config, log=None):
     return names[:n]
 
 
-def _make_slm_session(scangroup, scan_id, log, default_phase=None, all_scans=False):
+def _make_slm_session(scangroup, scan_id, log, default_phase=None, all_scans=False,
+                      seq_config=None):
     """Construct (do NOT begin) the :class:`SlmScanSession` for this scan + declare its loading
     pattern. Returns None when ``runp().useScanLongSlmLock`` is disabled (default ON). The caller
     runs ``begin()`` after the optional initial setup_rearrangement, mirroring the user spec order
@@ -167,14 +210,90 @@ def _make_slm_session(scangroup, scan_id, log, default_phase=None, all_scans=Fal
     from devices.slm import get_client, SlmScanSession
     ses = SlmScanSession(get_client(), description="scan %s" % scan_id,
                          log=lambda m: log("[runner] %s" % m))
-    pat = _first_loading_pattern(rp, default_phase=default_phase, all_scans=all_scans)
+    pat = _first_loading_pattern(rp, default_phase=default_phase, all_scans=all_scans,
+                                seq_config=seq_config)
     if pat is not None:
         ses.set_loading_pattern(pat["name"], pat["phase_path"], pat["zernike"],
                                 legacy_zerniked=pat["legacy"], baked_zernike=pat["baked"])
     return ses
 
 
-def _first_loading_pattern(rp, default_phase=None, all_scans=False):
+# =========================================================================== #
+# Per-shot LOADING-DEFOCUS sweep (one scan, N focal planes)
+#
+# ``runp().loading_defocus`` is a scan-CONSTANT: it is read once here and applied on the single
+# scan-start SLM write, so it cannot express a defocus sweep. A scan that wants to sweep the
+# loading plane declares it as a SCANNED SEQUENCE PARAM instead:
+#
+#     g().SLM.LoadingDefocus.scan(1, matlab_colon(-10, 0.1, 0))   # 101 focal planes, one scan
+#
+# The value is not read by any Step (it never reaches serialize() -> no byte effect, THE ONE RULE
+# is untouched); it exists so the per-point param dict carries the plane, exactly as
+# ``g().AWG.*`` / ``g().QICK.*`` carry per-point device state. The per-shot pre_cb below reads
+# this point's value out of ``scangroup.getseq(point_idx)`` and rewrites the loading hologram's
+# Zernike BEFORE the shot runs, so that shot's atoms are loaded at that plane. Same mechanism as
+# ``awg_runtime.make_pre_cb`` (Siglent waveform recall) / ``make_qick_pre_cb``.
+#
+# Cost: one ``write_loading_phase`` per CHANGED plane (skipped when the point repeats), i.e. the
+# same call rearrangement scans make hundreds of times per shot. The write lands before the
+# sequence trigger, and the shot's own Init/BlueMOT (~0.5 s) covers LC settling.
+# =========================================================================== #
+DEFOCUS_PARAM = ("SLM", "LoadingDefocus")
+
+
+def _point_defocus(pt):
+    """This scan point's ``SLM.LoadingDefocus`` (rad), or None when the scan doesn't sweep it."""
+    node = pt
+    for key in DEFOCUS_PARAM:
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    try:
+        return float(node)
+    except (TypeError, ValueError):
+        return None
+
+
+def defocus_scan_values(scangroup):
+    """Per-point loading defocus for the whole scan, or None when it isn't swept. Also None for a
+    single-point scan that merely SETS ``SLM.LoadingDefocus`` -- that needs no per-shot rewrite
+    beyond the scan-start write (which :func:`_first_loading_pattern` already covers via
+    ``runp().loading_defocus``); such a scan should use runp. Defensive -> None on any error."""
+    try:
+        n = int(scangroup.nseq())
+    except Exception:  # noqa: BLE001
+        return None
+    if n < 1:
+        return None
+    try:
+        vals = [_point_defocus(scangroup.getseq(i)) for i in range(1, n + 1)]
+    except Exception:  # noqa: BLE001
+        return None
+    if any(v is None for v in vals):
+        return None
+    return vals
+
+
+def make_slm_defocus_pre_cb(scangroup, session, log=None):
+    """Per-shot pre_cb that puts this point's loading plane on the SLM, or None when the scan does
+    not sweep ``SLM.LoadingDefocus``. Write failures are logged by the session, never fatal."""
+    vals = defocus_scan_values(scangroup)
+    if not vals or len(set(vals)) < 2:
+        return None
+    if log is not None:
+        log("[runner] per-shot loading defocus: %d planes, z4 %.3f..%.3f rad (SLM rewrite per "
+            "changed point)" % (len(set(vals)), min(vals), max(vals)))
+
+    def _slm_defocus_pre_cb(_seq_num, arg0):
+        try:
+            z4 = vals[int(arg0) - 1]            # scan points are 1-INDEXED (as in awg_runtime)
+        except (IndexError, TypeError, ValueError):
+            return
+        session.set_defocus(z4)
+    return _slm_defocus_pre_cb
+
+
+def _first_loading_pattern(rp, default_phase=None, all_scans=False, seq_config=None):
     """Resolve the img1 loading pattern + loading defocus (port of ybFirstLoadingPattern.m).
 
     Priority: an explicit ``runp().loading_phase`` (any scan), else a rearrangement scan's
@@ -203,9 +322,12 @@ def _first_loading_pattern(rp, default_phase=None, all_scans=False):
         phase = str(default_phase).strip()      # every-scan default loading pattern
     if not phase:
         return None
-    z4 = _runp_num(rp, "loading_defocus", DEFAULT_LOADING_DEFOCUS)
-    zernike = [0.0, 0.0, 0.0, 0.0, float(z4)] if z4 else []
+    # The pattern's OWN plane (ByPattern SLM.Loading.Defocus) is the default; an explicit
+    # runp().loading_defocus still wins, so a scan that deliberately sweeps or zeroes the plane
+    # (DefocusStackScan, TwoLayerLoadScan) is unaffected.
     name = os.path.splitext(os.path.basename(phase.replace("\\", "/")))[0]
+    z4 = _runp_num(rp, "loading_defocus", _pattern_defocus(seq_config, name))
+    zernike = [0.0, 0.0, 0.0, 0.0, float(z4)] if z4 else []
     legacy = bool(baked) and any(b != 0 for b in baked)
     return {"name": name, "phase_path": phase.replace("\\", "/"),
             "zernike": zernike, "legacy": legacy, "baked": baked}
