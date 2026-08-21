@@ -1,8 +1,9 @@
 """nidaq_runner: the transpose (#1 silent-bug risk) + structural session caching.
 
-NO-HARDWARE: the device hooks (_build_task / _write_and_start / _wait_task / _close_task) are
-stubbed, so the pure transpose and the cache-invalidation DECISION are exercised without
-nidaqmx or the card. The live card-listen / clock-out is NEEDS-HARDWARE (maintenance window).
+NO-HARDWARE: the device hooks (_build_task / _write_and_start / _wait_task / _close_task /
+_generated_count) are stubbed, so the pure transpose, the cache-invalidation DECISION and the
+DAQmx -200018 clock-burst triage are exercised without nidaqmx or the card. The live
+card-listen / clock-out is NEEDS-HARDWARE (maintenance window).
 """
 
 import pytest
@@ -80,7 +81,7 @@ def fake_nidaqmx(monkeypatch):
 
 def _write(samples):
     task = _RecordTask()
-    nidaq_runner._TASK_META[task] = (nidaq_runner._RATE, "/Dev1/PFI0")
+    nidaq_runner._TASK_META[task] = (nidaq_runner._RATE, "/Dev1/PFI0", True)   # (rate, clk, preload)
     nidaq_runner._write_and_start(task, samples)
     return task.written
 
@@ -128,8 +129,14 @@ class FakeTask:
     def __init__(self):
         self.writes = []
         self.started = 0
-        self.stopped = 0
+        self.stopped = 0        # stops performed INSIDE the stubbed _write_and_start (re-arm)
+        self.stops = 0          # real _stop_task(task) calls (error / swallow paths)
         self.closed = False
+
+    def stop(self):
+        # _stop_task is NOT stubbed: it calls task.stop() for real and swallows failures, so
+        # without this method every "did it stop the task?" assertion would silently pass.
+        self.stops += 1
 
 
 @pytest.fixture
@@ -217,3 +224,180 @@ def test_error_on_write_stops_task_and_forces_rebuild(stub_device, monkeypatch):
                         lambda task, samples: task.writes.append(samples))
     NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)
     assert len(stub_device) == 2
+
+
+# --------------------------------------------------------------------------- #
+# DAQmx -200018 triage: the post-sequence PFI0 clock burst (molecube2
+# controller.cpp:716-736) completes the finite task and then keeps strobing it, so a -200018
+# can fire with ALL real samples already converted -- cosmetic, must not kill the scan.
+# --------------------------------------------------------------------------- #
+class _FakeDaqError(Exception):
+    """Stand-in for nidaqmx.DaqError: carries .error_code like the real one."""
+    def __init__(self, code=-200018,
+                 msg="DAC conversion attempted before data to be converted was available"):
+        super().__init__(msg)
+        self.error_code = code
+
+
+class _MsgOnlyError(Exception):
+    """A DAQmx-ish error with NO error_code attribute -- only the message carries the code."""
+
+
+def _raise_underflow(*a, **k):
+    raise _FakeDaqError()
+
+
+def _stub_generated_count(monkeypatch, values):
+    """Stub ``_generated_count`` with a STATEFUL sequence (the last value repeats).
+
+    The counter is now read TWICE per shot: once in run() right after the start (the delta
+    base) and once in wait(). The base is deliberately NONZERO here (1000) -- a cumulative
+    ``total_samp_per_chan_generated`` mistaken for a fresh per-start count would make the gate
+    pass on any shot and swallow GENUINE underflows.
+    """
+    seq = list(values)
+    calls = []
+
+    def fake(task):
+        calls.append(task)
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    monkeypatch.setattr(nidaq_runner, "_generated_count", fake)
+    return calls
+
+
+def test_wait_swallows_burst_race_underflow(stub_device, monkeypatch):
+    calls = _stub_generated_count(monkeypatch, [1000, 1003])   # base, base + nsamps
+    NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)            # 3 samples per channel
+    assert NiDAQRunner._last_nsamps == 3
+    assert NiDAQRunner._gen_base == 1000               # snapshot taken at arm time
+    task = stub_device[0][0]
+    monkeypatch.setattr(nidaq_runner, "_wait_task", _raise_underflow)
+    NiDAQRunner.wait()                                 # cosmetic -> must NOT raise
+    assert len(calls) == 2                             # arm-time base + wait-time count
+    assert task.stops == 1                             # errored task was stopped (_stop_task)
+    assert NiDAQRunner.underflows_swallowed == 1
+    # Contract: the stopped task is REUSED. Keeping cache_in_use True forced a ~0.7 s channel
+    # rebuild at the next bseq arm -- mid-shot in a multi-bseq rearrangement shot.
+    assert NiDAQRunner._cache_in_use is False
+    monkeypatch.setattr(nidaq_runner, "_wait_task", lambda task: None)
+    NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)
+    assert len(stub_device) == 1                       # no mid-shot rebuild; same task re-armed
+
+
+def test_wait_reraises_genuine_underflow_short_count(stub_device, monkeypatch):
+    _stub_generated_count(monkeypatch, [1000, 1002])    # delta 2 < nsamps 3 -> a sample lost
+    NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)
+    task = stub_device[0][0]
+    monkeypatch.setattr(nidaq_runner, "_wait_task", _raise_underflow)
+    with pytest.raises(_FakeDaqError):
+        NiDAQRunner.wait()
+    # Errored Task must be stopped anyway: an open+errored Task keeps the AO channels DAQmx
+    # RESERVED, so out-of-band dashboard DC sets would hit -50103 until the idle release.
+    assert task.stops == 1
+    assert NiDAQRunner.underflows_swallowed == 0
+    assert NiDAQRunner._cache_in_use is True            # rebuild at the next arm
+
+
+def test_wait_reraises_when_count_unavailable(stub_device, monkeypatch):
+    _stub_generated_count(monkeypatch, [1000, None])    # wait-time count unqueryable
+    NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)
+    monkeypatch.setattr(nidaq_runner, "_wait_task", _raise_underflow)
+    with pytest.raises(_FakeDaqError):
+        NiDAQRunner.wait()
+
+
+def test_wait_reraises_when_base_unavailable(stub_device, monkeypatch):
+    # Arm-time base unreadable -> the delta is unknowable, so even a huge count cannot verify
+    # the shot: strict None handling must fall through to the re-raise.
+    _stub_generated_count(monkeypatch, [None, 10 ** 9])
+    NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)
+    assert NiDAQRunner._gen_base is None
+    monkeypatch.setattr(nidaq_runner, "_wait_task", _raise_underflow)
+    with pytest.raises(_FakeDaqError):
+        NiDAQRunner.wait()
+
+
+def test_wait_reraises_when_fifo_preload_inactive(stub_device, monkeypatch):
+    # preload_ok=False (card/nidaqmx rejected ao_use_only_on_brd_mem -> streaming fallback):
+    # a GENUINE mid-sequence host-feed underflow can still end with generated >= nsamps, so
+    # the "output was complete" argument does not hold and the gate must NOT swallow.
+    _stub_generated_count(monkeypatch, [1000, 1003])    # delta 3 == nsamps -> gate would pass
+    NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)
+    fake_task = NiDAQRunner._session
+    nidaq_runner._TASK_META[fake_task] = (nidaq_runner._RATE, "/Dev1/PFI0", False)
+    monkeypatch.setattr(nidaq_runner, "_wait_task", _raise_underflow)
+    with pytest.raises(_FakeDaqError):
+        NiDAQRunner.wait()
+    assert NiDAQRunner.underflows_swallowed == 0
+
+
+def test_delta_gate_realigns_per_arm_with_changing_nsamps(stub_device, monkeypatch):
+    # Consecutive shots of DIFFERENT length on the SAME cached task: _last_nsamps AND _gen_base
+    # must both re-latch at each arm, so shot 2's 4-sample delta is short of its 5 samples even
+    # though it exceeds shot 1's 3.
+    _stub_generated_count(monkeypatch, [1000, 1003, 1007])
+    NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)             # 3 samples
+    NiDAQRunner.wait()                                  # clean -> task reused
+    assert len(stub_device) == 1
+    NiDAQRunner.run(_CH, _CLK, _TRG, np.zeros((5, 2)))   # 5 samples
+    assert NiDAQRunner._last_nsamps == 5 and NiDAQRunner._gen_base == 1003
+    monkeypatch.setattr(nidaq_runner, "_wait_task", _raise_underflow)
+    with pytest.raises(_FakeDaqError):                  # delta 4 < 5
+        NiDAQRunner.wait()
+    assert NiDAQRunner.underflows_swallowed == 0
+
+
+def test_wait_matches_underflow_by_message_only(stub_device, monkeypatch):
+    # No error_code attribute at all (some wrappers re-raise plain Exceptions): the code must
+    # still be recognised from the message text and triaged by the same gate.
+    _stub_generated_count(monkeypatch, [1000, 1003])
+    NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)
+
+    def boom(task):
+        raise _MsgOnlyError("NI-DAQmx generation failed. Status Code: -200018")
+
+    monkeypatch.setattr(nidaq_runner, "_wait_task", boom)
+    NiDAQRunner.wait()                                  # recognised -> swallowed
+    assert NiDAQRunner.underflows_swallowed == 1
+    assert NiDAQRunner._cache_in_use is False
+
+
+def test_wait_reraises_non_underflow(stub_device, monkeypatch):
+    NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)
+
+    def boom(task):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(nidaq_runner, "_wait_task", boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        NiDAQRunner.wait()
+
+
+def test_run_retries_once_on_stale_underflow_at_arm(stub_device, monkeypatch):
+    # A -200018 latched by the PREVIOUS shot's burst surfaces at the new shot's first DAQmx
+    # call (task.stop() inside _write_and_start) -> rebuild the task and re-arm once.
+    calls = []
+
+    def flaky(task, samples):
+        calls.append(task)
+        if len(calls) == 1:
+            raise _FakeDaqError()
+        task.writes.append(samples)
+        task.started += 1
+
+    monkeypatch.setattr(nidaq_runner, "_write_and_start", flaky)
+    NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)            # must NOT raise
+    assert len(calls) == 2                             # armed again after the rebuild
+    assert calls[0] is not calls[1]                    # on a FRESH task
+    assert len(stub_device) == 2                       # initial build + rebuild
+    assert stub_device[0][0].closed is True            # the errored task was closed
+
+
+def test_run_raises_after_second_stale_underflow(stub_device, monkeypatch):
+    monkeypatch.setattr(nidaq_runner, "_write_and_start", _raise_underflow)
+    with pytest.raises(_FakeDaqError):
+        NiDAQRunner.run(_CH, _CLK, _TRG, _DATA)
+    assert len(stub_device) == 2                       # retried exactly once, then gave up
+    assert NiDAQRunner._cache_in_use is True           # never waited -> next arm rebuilds again
+    assert stub_device[1][0].stops == 1                # the failed retry task was stopped

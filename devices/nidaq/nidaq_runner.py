@@ -36,7 +36,10 @@ Execution details a naive port misses (finding D):
 Design inspired by the MATLAB original; no brassboard-seq code.
 """
 
+import logging
 import weakref
+
+_log = logging.getLogger(__name__)
 
 _RATE = 400e3          # NI sample-clock rate (Hz) = the FPGA PFI0 clock.
 # ⚠ Was 500e3 ("over-estimate"), but the PCIe-6738 REJECTS >400 kHz with 14 channels
@@ -52,6 +55,27 @@ _RATE = 400e3          # NI sample-clock rate (Hz) = the FPGA PFI0 clock.
 # __weakref__ is in its __slots__). Version-robust across nidaqmx 1.0.x (no slots) and 1.5+.
 _TASK_META = weakref.WeakKeyDictionary()
 
+# DAQmx -200018: "DAC conversion attempted before data to be converted was available".
+# Same matching logic as lib/run_seq.py _is_transient_ni -- duplicated here deliberately so a
+# devices/ module never imports lib/.
+_NI_UNDERFLOW_CODE = -200018
+
+
+def _is_underflow(exc):
+    """True if ``exc`` is the DAQmx -200018 AO underflow (code OR message text).
+
+    The ``error_code`` coercion is guarded: this runs INSIDE an ``except`` handler, so a weird
+    (non-numeric, property-raising) ``error_code`` must not replace the original exception with
+    a TypeError/ValueError -- it falls through to the message-text check instead.
+    """
+    try:
+        if int(getattr(exc, "error_code", 0) or 0) == _NI_UNDERFLOW_CODE:
+            return True
+    except (ValueError, TypeError):
+        pass
+    msg = str(exc)
+    return str(_NI_UNDERFLOW_CODE) in msg or "DAC conversion attempted before data" in msg
+
 
 class NiDAQRunner:
     """Process-global NI session with structural-equality caching (NiDAQRunner.m)."""
@@ -61,6 +85,9 @@ class NiDAQRunner:
     _channels = None           # cached channel list (structural copy)
     _clocks = {}
     _triggers = {}
+    _last_nsamps = None        # samples/chn armed for the in-flight shot (wait()'s triage)
+    _gen_base = None           # generated-count snapshot taken right AFTER start (delta gate)
+    underflows_swallowed = 0   # observability: cosmetic -200018s triaged away this session
 
     # ----------------------------------------------------------------------- #
     # public surface (mirrors NiDAQRunner.run / wait / clear_session)
@@ -72,9 +99,42 @@ class NiDAQRunner:
         called after the engine's own wait loop, in run_bseq)."""
         task = cls._get_session(channels, clocks, triggers)
         samples = _to_channel_major(data)        # [nsamps, nchns] -> [nchns, nsamps]
+        # Armed sample count for wait()'s -200018 triage. Recorded HERE (not in the
+        # NEEDS-HARDWARE _write_and_start hook, which tests stub out) so it is test-visible.
+        cls._last_nsamps = _nsamps_of(samples)
+        # Base for wait()'s DELTA gate. `total_samp_per_chan_generated` has UNDOCUMENTED reset
+        # semantics across stop/write/start on a REUSED Task (pyctrl caches ONE Task for every
+        # shot): it may be cumulative over the task's whole lifetime, or reset per start, or
+        # reset by the error auto-stop. Snapshotting it right AFTER the start and gating on
+        # (generated - base) is correct under ALL of those: cumulative -> the delta is this
+        # shot's count; per-start reset -> base is ~0 and the delta equals generated. A raw
+        # `generated >= nsamps` gate would be trivially true from shot 2 onward on a cumulative
+        # counter (swallowing GENUINE underflows). Cleared first so a failed arm cannot leave a
+        # stale base behind.
+        cls._gen_base = None
         try:
             _write_and_start(task, samples)
-        except BaseException:
+            cls._gen_base = _generated_count(task)
+        except BaseException as e:
+            if _is_underflow(e):
+                # A -200018 latched by the PREVIOUS shot's post-sequence PFI0 clock burst can
+                # surface HERE, at the first DAQmx call of the new shot (the unguarded
+                # task.stop() inside _write_and_start). The samples of that prior shot were
+                # already converted; the error is only sticky DAQmx state on the task.
+                _log.warning(
+                    "[nidaq] stale DAQmx %d at re-arm from prior shot's clock burst; "
+                    "rebuilding NI task and retrying once (nsamps=%s): %s",
+                    _NI_UNDERFLOW_CODE, cls._last_nsamps, e)
+                # cache_in_use is set -> _get_session closes the errored task and builds a
+                # FRESH one (and refreshes the cached structural state) before the retry.
+                task = cls._get_session(channels, clocks, triggers)
+                try:
+                    _write_and_start(task, samples)
+                    cls._gen_base = _generated_count(task)   # re-armed -> re-snapshot the base
+                    return
+                except BaseException:
+                    _stop_task(task)
+                    raise
             # A started-but-unwaited FINITE task blocks the next shot: stop/reset + force a
             # rebuild next time (cache_in_use stays True -> get_session rebuilds).
             _stop_task(task)
@@ -85,9 +145,69 @@ class NiDAQRunner:
         """Busy-wait for the in-flight shot to finish, then release the cache.
 
         ``cache_in_use`` is cleared ONLY here -- so an error between ``run`` and ``wait``
-        leaves it set and the next ``run`` rebuilds the session (matches MATLAB)."""
-        if cls._session is not None:
-            _wait_task(cls._session)
+        leaves it set and the next ``run`` rebuilds the session (matches MATLAB).
+
+        Triage of DAQmx -200018: the sequence emits EXACTLY N clock edges, then the molecube2
+        ZYNQ server floods PFI0 with a ~10 ms / ~5 MHz burst (~50 k edges, 200 ns apart) after
+        EVERY sequence (lib/controller.cpp:716-736, "a hack that is believed to make the NI card
+        happy"). The first burst edge is the N+1th edge that COMPLETES the finite task; if the
+        card loses the ~200 ns retire race, the next burst edge strobes an empty FIFO ->
+        -200018 with all N real samples already converted.
+
+        The gate is a DELTA against the base snapshotted right after this shot's start (run()),
+        NOT the raw count: ``total_samp_per_chan_generated`` has undocumented reset semantics on
+        the reused Task, so only ``generated - base >= nsamps`` is meaningful under BOTH
+        cumulative and per-start-reset counters. It also requires ``preload_ok``: the "all real
+        samples already converted" argument holds only when the whole waveform sat in the
+        onboard FIFO -- on the best-effort streaming fallback a GENUINE mid-sequence host-feed
+        underflow could still end with generated >= nsamps. None-handling is strict: an
+        unreadable base or count falls through to the re-raise path (today's behavior).
+        Anything else (short count, a different error) is a genuine fault and propagates."""
+        task = cls._session
+        if task is not None:
+            try:
+                _wait_task(task)
+            except Exception as e:  # noqa: BLE001 - triage the known burst-race underflow
+                if not _is_underflow(e):
+                    raise
+                nsamps = getattr(cls, "_last_nsamps", None)
+                base = getattr(cls, "_gen_base", None)
+                generated = _generated_count(task)
+                preload_ok = _TASK_META.get(task, (None, None, True))[2]
+                if (nsamps is not None and base is not None and generated is not None
+                        and (generated - base) >= nsamps and preload_ok):
+                    # Post-sequence clock-burst race (molecube2 controller.cpp:716-736): all
+                    # real samples were already converted (the engine wait returned first; the
+                    # onboard FIFO had every real edge covered), so the shot's analog output is
+                    # complete and this error is cosmetic. Swallow it and keep the scan running.
+                    # cache_in_use is CLEARED (task reused): leaving it True forced a ~0.7 s
+                    # full channel rebuild at the NEXT bseq arm, which in a multi-bseq
+                    # (rearrangement) shot lands MID-SHOT while atoms are held. Instead stop the
+                    # task and reuse it; if it really is poisoned by sticky DAQmx error state,
+                    # the next _write_and_start raises a stale -200018 and run()'s existing
+                    # rebuild-and-retry-once path recovers -- so the rebuild cost is paid only
+                    # when actually needed, never unconditionally mid-shot.
+                    _stop_task(task)               # best-effort error-state clear
+                    cls.underflows_swallowed += 1
+                    _log.warning(
+                        "[nidaq] DAQmx %d after the post-sequence PFI0 clock burst: "
+                        "generated=%s-%s=%s/%s samples per chn (preload_ok=%s) -- shot output "
+                        "COMPLETE, error swallowed (%d this session); NI task stopped + reused",
+                        _NI_UNDERFLOW_CODE, generated, base,
+                        (generated - base), nsamps, preload_ok, cls.underflows_swallowed)
+                    cls._cache_in_use = False
+                    return
+                # Genuine (or unverifiable) underflow. Stop the errored task before re-raising:
+                # an open+errored Task keeps its AO channels DAQmx-RESERVED, so out-of-band
+                # dashboard DC sets would fail with -50103 until the idle release. cache_in_use
+                # stays True -> the next _get_session rebuilds a FRESH task.
+                _stop_task(task)
+                _log.warning(
+                    "[nidaq] DAQmx %d NOT attributable to the clock burst: generated=%s "
+                    "base=%s nsamps=%s samples per chn (preload_ok=%s) -- real underflow or "
+                    "count unqueryable, re-raising",
+                    _NI_UNDERFLOW_CODE, generated, base, nsamps, preload_ok)
+                raise
         cls._cache_in_use = False
 
     @classmethod
@@ -134,6 +254,9 @@ class NiDAQRunner:
         cls._channels = None
         cls._clocks = {}
         cls._triggers = {}
+        cls._last_nsamps = None
+        cls._gen_base = None
+        cls.underflows_swallowed = 0
 
 
 # =========================================================================== #
@@ -153,6 +276,13 @@ def _to_channel_major(data):
         nsamps = len(data)
         nchns = len(data[0]) if nsamps else 0
         return [[float(data[s][c]) for s in range(nsamps)] for c in range(nchns)]
+
+
+def _nsamps_of(samples):
+    """Samples per channel of a channel-major ``[nchns, nsamps]`` block (array or list)."""
+    if hasattr(samples, "shape"):
+        return int(samples.shape[1])
+    return len(samples[0]) if len(samples) else 0
 
 
 def _chan_key(ch):
@@ -198,42 +328,49 @@ def _build_task(channels, clocks, triggers, rate):
 
     task = nidaqmx.Task()
     clk_src = None
+    preload_ok = True
     for ch in channels:
         dev, chn = _chan_key(ch)
         ao = task.ao_channels.add_ao_voltage_chan("%s/ao%s" % (dev, chn))
-        # FIX for the intermittent DAQmx -200018 underflow ("DAC conversion attempted before data
-        # ... available"): preload the WHOLE finite waveform into the card's 65,535-sample onboard
-        # FIFO, so there is NO host->FIFO DMA during the externally-clocked (FPGA PFI0) generation
-        # -- the host can't be late feeding a sample, which is exactly what -200018 is. The MATLAB
-        # driver instead set Rate=500e3 (> the real clock) for trailing-edge tolerance; the pyctrl
-        # port had to drop to 400e3 (6738 -200332 at 14 chn), losing that margin -> the underflow
-        # returned (job #949 556AutlerTownesScan_30G, 204/610 lost; recurred 5+ sessions). Our
-        # waveforms are ~210 samples x 14 chn (~3 k) << the 65,535 shared FIFO, so the preload fits
-        # easily. Best-effort: a card/nidaqmx that rejects the property falls back to the streaming
-        # path (the old behavior). ponytail: FIFO preload kills the host-feed race; the deeper
-        # FPGA-PFI0 edge-count question stays a maintenance-window item.
+        # Preload the WHOLE finite waveform into the card's 65,535-sample onboard FIFO, so there
+        # is NO host->FIFO DMA during the externally-clocked (FPGA PFI0) generation. That removed
+        # the HOST-FEED component of the intermittent DAQmx -200018 ("DAC conversion attempted
+        # before data ... available"): the host can no longer be late with a sample. Our waveforms
+        # are ~210 samples x 14 chn (~3 k) << the 65,535 shared FIFO, so the preload fits easily.
+        # It is NOT the whole fix, though -- source-verified 2026-08-17: the sequence emits EXACTLY
+        # N clock edges (zero margin) and the molecube2 ZYNQ server then deliberately floods PFI0
+        # with a ~10 ms burst at ~5 MHz (~50 k edges, 200 ns apart) after EVERY sequence ("a hack
+        # that is believed to make the NI card happy", molecube2 lib/controller.cpp:716-736). The
+        # first burst edge is the N+1th edge that COMPLETES the finite task; the residual -200018 is
+        # the card losing that ~200 ns retire race, so a following burst edge strobes the DAC with
+        # an empty FIFO -- with all N real samples already converted. NiDAQRunner.wait() triages
+        # that case (generated >= nsamps) and the scan continues. The MATLAB driver's Rate=500e3
+        # "trailing-edge margin" never existed at the DAQmx layer either (see the clamp below).
+        # Best-effort: a card/nidaqmx that rejects the property falls back to the streaming path
+        # (the old behavior) -- recorded in _TASK_META so wait() can report it.
         try:
             ao.ao_use_only_on_brd_mem = True
         except Exception:  # noqa: BLE001 - unsupported -> keep the streaming path
-            pass
+            preload_ok = False
         if clk_src is None:
             task.triggers.start_trigger.cfg_dig_edge_start_trig(
                 "/%s/%s" % (dev, triggers[dev]), trigger_edge=Edge.RISING)
             clk_src = "/%s/%s" % (dev, clocks[dev])   # external sample clock (PFI0)
     # With an EXTERNAL clock, `rate` is only DAQmx's expected-max hint (buffer sizing + the
-    # device's computed max-rate); the real timing is the FPGA PFI0 edges. The MATLAB driver set
-    # it ABOVE the real clock on purpose (trailing-edge tolerance). Use the device's OWN computed
-    # ceiling for this channel mapping (samp_clk_max_rate) when it beats our nominal `rate`, so we
-    # restore that margin without hard-coding a value the 6738 would reject (-200332). Best-effort:
-    # fall back to the nominal `rate` if the query/clamp is unavailable. (Secondary to the onboard
-    # FIFO preload above, which is the actual -200018 fix.)
+    # device's computed max-rate); the real timing is the FPGA PFI0 edges. This clamp was meant to
+    # restore the MATLAB driver's Rate=500e3 "trailing-edge margin" from the device's OWN ceiling
+    # instead of a hard-coded value the 6738 rejects (-200332). MEASURED on the PCIe-6738
+    # 2026-08-17: samp_clk_max_rate is 1 MHz at ONE channel but 400 kHz for ANY >= 2 channels,
+    # i.e. exactly _RATE -- so on this card `dev_max > rate` never fires and the clamp is dead
+    # code (kept: harmless, and other cards may have real headroom). The MATLAB "margin" never
+    # existed at the DAQmx layer either: cfg at 450k / 500k / 1M is rejected with -200332.
     try:
         dev_max = float(task.timing.samp_clk_max_rate)
         if dev_max > rate:
             rate = dev_max
     except Exception:  # noqa: BLE001 - query unsupported -> keep the nominal rate
         pass
-    _TASK_META[task] = (rate, clk_src)
+    _TASK_META[task] = (rate, clk_src, preload_ok)
     return task
 
 
@@ -246,9 +383,10 @@ def _write_and_start(task, samples):
     count from the queued data (the cached Task keeps the expensive channel/trigger setup).
     """
     from nidaqmx.constants import AcquisitionType, Edge
-    nsamps = int(samples.shape[1]) if hasattr(samples, "shape") else len(samples[0])
+    nsamps = _nsamps_of(samples)
     task.stop()
-    rate, clk_src = _TASK_META[task]
+    meta = _TASK_META[task]
+    rate, clk_src = meta[0], meta[1]         # meta = (rate, clk_src, preload_ok)
     task.timing.cfg_samp_clk_timing(
         rate, source=clk_src, active_edge=Edge.RISING,
         sample_mode=AcquisitionType.FINITE, samps_per_chan=nsamps)
@@ -268,6 +406,14 @@ def _write_and_start(task, samples):
 
 def _wait_task(task):
     task.wait_until_done()
+
+
+def _generated_count(task):
+    """Total samples per channel actually converted by the card (None if unqueryable)."""
+    try:
+        return int(task.out_stream.total_samp_per_chan_generated)
+    except Exception:  # noqa: BLE001 - property may be unreadable on an errored/closed task
+        return None
 
 
 def _stop_task(task):
