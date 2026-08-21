@@ -258,7 +258,9 @@ def build(mode):
                 "width": len(WIDTH_VALUES_US),
                 "sd": len(STEEPNESS_VALUES) * len(DELAY_VALUES_US)}[mode]
     rp.NumPerGroup = n_points * (10 if mode == "sd" else 15)    # matches default reps
-    rp.loading_defocus = -5
+    # 2026-08-10: loading plane now comes from the per-array config
+    # (ByPattern[<pattern>].SLM.Loading.Defocus -> slm_runtime._pattern_defocus);
+    # setting rp.loading_defocus here would override it, so it is left unset.
     rp.NumImages = 3 if verify else 2
     rp.Scramble = 1
     rp.isGrid2 = 0

@@ -75,7 +75,9 @@ def build(field_G=30, green_amp=0.10, ryd308_amp=0.4, green_freq_mhz=143.5332,
     rp.isHC = 0
     rp.isGrid2 = 0
     rp.loading_phase = "phase/33x33_feedback11.pt"
-    rp.loading_defocus = -5
+    # 2026-08-10: loading plane now comes from the per-array config
+    # (ByPattern[<pattern>].SLM.Loading.Defocus -> slm_runtime._pattern_defocus);
+    # setting rp.loading_defocus here would override it, so it is left unset.
     return g, eom_freqs, vion_vals
 
 

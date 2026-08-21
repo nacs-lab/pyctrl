@@ -68,7 +68,9 @@ def _runp(g):
     # expConfig SLM.Loading default (33x33_uniform) -- the wrong array AND the wrong per-pattern
     # detection thresholds, which silently corrupts the recapture survival this scan optimizes.
     g.runp().loading_phase = "phase/33x33_feedback11.pt"   # server-side WGS phase path
-    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    # 2026-08-10: loading plane now comes from the per-array config
+    # (ByPattern[<pattern>].SLM.Loading.Defocus -> slm_runtime._pattern_defocus);
+    # setting rp.loading_defocus here would override it, so it is left unset.
 
 
 def build(beam="h", fdet=DEF_FDET, famp=DEF_AMP, x_pin=DEF_X_PIN, h_pin=DEF_H_PIN,

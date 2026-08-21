@@ -118,7 +118,9 @@ def build(field_G=30, green_amp=0.2, ryd308_amp=0.4, green_freq_mhz=None,
     # Optional per-scan SLM loading-pattern override (mirrors Revival616Scan). Comment out to use
     # the expConfig SLM.Loading default.
     g.runp().loading_phase = "phase/33x33_feedback11.pt"   # server-side WGS phase path
-    g.runp().loading_defocus = -5                          # ANSI z4 loading defocus (rad)
+    # 2026-08-10: loading plane now comes from the per-array config
+    # (ByPattern[<pattern>].SLM.Loading.Defocus -> slm_runtime._pattern_defocus);
+    # setting g.runp().loading_defocus here would override it, so it is left unset.
     return g
 
 

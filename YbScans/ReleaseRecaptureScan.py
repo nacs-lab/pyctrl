@@ -87,7 +87,9 @@ def build(tstep=DEF_TSTEP, tmax=DEF_TMAX):
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
     g.runp().loading_phase = "phase/33x33_feedback11.pt"   # server-side WGS phase path
-    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    # 2026-08-10: loading plane now comes from the per-array config
+    # (ByPattern[<pattern>].SLM.Loading.Defocus -> slm_runtime._pattern_defocus);
+    # setting g.runp().loading_defocus here would override it, so it is left unset.
     return g
 
 
