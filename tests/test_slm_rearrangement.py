@@ -82,7 +82,13 @@ def test_setup_body_phase_filepath_and_extras_merge():
     assert body["model_filename"] == "m.pth"
     assert body["nsteps"] == 50 and body["reset_params"] is True
     assert body["grid_rotation"] == 90 and body["z4"] == -4   # extras merged top-level
-    assert "extras" not in body and "skip" not in body and "ignored_none" not in body
+    assert "extras" not in body
+    # An explicit None INSIDE extras is SENT (as JSON null): the server's extras dict is
+    # merge-only, so transmitting the key is the only way to clear a sticky value. Dropping
+    # it made `rk.extras.foo = None` read as a clear while being a no-op.
+    assert "skip" in body and body["skip"] is None
+    # A top-level None is still dropped -- unchanged, that path means "not supplied".
+    assert "ignored_none" not in body
 
 
 def test_encode_bits_string_logical_and_index_list():

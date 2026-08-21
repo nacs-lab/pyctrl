@@ -20,8 +20,17 @@ Differences from the MATLAB original (per the user spec):
     so a server-side release (lease lapse during a long shot / warmup, or a stolen lock) can't
     silently wedge the scan. Because the lease is renewed ONLY while shots run, a pause / hung shot
     / crashed runner lets it lapse within ``lease_s`` and the server auto-releases ``slm`` -- the
-    SLM is never wedged for longer than one (short) lease after a stop. Keep ``lease_s`` modest for
-    that reason.
+    SLM is never wedged for longer than one (short) lease after a stop.
+
+    ``lease_s`` MUST therefore exceed the longest single shot, not the typical one. The renewal
+    points are all on the per-shot path, so a shot that blocks inside ``/slm/rearrange`` emits no
+    heartbeat for its whole duration; if that exceeds the lease, the server releases the lock
+    UNDERNEATH A HEALTHY RUN. What follows is not recoverable by retrying: the next ``ensure_held``
+    regrab lands while the same server is still inside a rearrange, hits its busy gate, and 503s.
+    That chain killed jobs 313, 343, 344 and 391 (391 at 194/1320 shots, after exhausting a 45 s
+    retry budget). Keeping the lease "modest" is therefore in direct tension with surviving the
+    slow-shot tail, and the tail wins: an over-long lease costs at most one lease of a stuck SLM
+    after a crash, whereas an under-long lease costs the entire run.
   * **Active, immediate pause drop.** :meth:`on_pause` releases the lock the instant the scan
     pauses (so the SLM can be adjusted); :meth:`on_resume` reacquires + rewrites the phase.
   * **Acquire is mandatory.** :meth:`begin` / :meth:`ensure_held` / :meth:`on_resume`-via-shot
@@ -49,11 +58,22 @@ class SlmLockUnavailable(RuntimeError):
 
 
 class SlmScanSession:
-    def __init__(self, client, lease_s=15.0, acquire_block_s=5.0,
+    # 2026-08-07: raised 15.0 -> 60.0. Measured shot totals on the axial campaign are 3.2 s median
+    # but the tail reaches 22 s (before_bseq alone hit 20.2 s), so a 15 s lease lapsed mid-shot on
+    # the slow tail -- ~1 lapse/min in the runner log, each one a 409 followed by a regrab that can
+    # 503 against the server's own rearrange gate. 60 s clears the worst observed shot by ~3x.
+    def __init__(self, client, lease_s=60.0, acquire_block_s=5.0,
+                 acquire_retry_s=45.0, acquire_retry_pause_s=0.5,
                  description="yb scan", clock=time.monotonic, log=None):
         self.c = client
         self.lease_s = float(lease_s)             # lock lease (timeout_s); renewed by keepalive
         self.acquire_block_s = float(acquire_block_s)   # wait budget to acquire (block_timeout)
+        # Total budget for retrying TRANSIENT acquire failures (503 server-busy / 408). Must
+        # comfortably exceed the longest rearrange call, since the server's busy gate 503s for its
+        # whole duration: this campaign measures 0.7 s median / 5.3 s p90 with ~400-frame shots, so
+        # 45 s is ~8x the p90 and still bounded well below any human-noticeable stall.
+        self.acquire_retry_s = float(acquire_retry_s)
+        self.acquire_retry_pause_s = float(acquire_retry_pause_s)
         self.desc = str(description)
         self._clock = clock
         self._log = log or (lambda _m: None)
@@ -178,26 +198,70 @@ class SlmScanSession:
     # ----------------------------------------------------------------------- #
     # internals
     # ----------------------------------------------------------------------- #
+    # HTTP statuses that mean "the server is momentarily unable", NOT "you lost the lock".
+    # 503 is the server's busy gate -- it is returned while a rearrange is in flight, and the
+    # slm skill documents it as RETRIABLE ("503 'server busy: rearrange' is retriable; the
+    # Python client backs off ~0.3 s"). 408 is a blocking-acquire timeout, likewise transient.
+    _TRANSIENT_STATUS = (503, 408)
+
     def _acquire(self, mandatory):
-        try:
-            self.c.acquire_lock("slm", self.desc,
-                                timeout_s=self.lease_s,
-                                block_timeout=self.acquire_block_s)
-            self.held = True
-            self._last_ok_t = self._clock()
-        except SlmHTTPError as err:
-            self.held = False
-            self._log("[SlmScanSession] acquire slm lock failed (HTTP %d): %s"
-                      % (err.status, err.detail))
-            if mandatory:
-                raise SlmLockUnavailable(
-                    "could not acquire the slm lock within %.1fs (HTTP %d: %s)"
-                    % (self.acquire_block_s, err.status, err.detail))
-        except Exception as err:  # noqa: BLE001 - connection error / server down
-            self.held = False
-            self._log("[SlmScanSession] acquire slm lock error: %s" % err)
-            if mandatory:
-                raise SlmLockUnavailable("could not acquire the slm lock: %s" % err)
+        """Acquire the ``slm`` lock, RETRYING transient server-busy responses.
+
+        WHY THE RETRY EXISTS (2026-08-07). Jobs 313 and 343 both died with
+        ``could not acquire the slm lock within 5.0s (HTTP 503: server busy: rearrange (timed out
+        after 2.0 s))`` -- 343 after only 4 of 1386 shots. The campaign's pseudo-one-way shots make
+        ~300-400 SLM writes and the rearrange call runs 0.7 s median / 5.3 s p90, so a heartbeat or
+        acquire issued while one is in flight gets the 503 busy gate. The old code treated that
+        single transient 503 as a permanent failure and raised, killing the whole run.
+
+        A 503 says nothing about ownership, so retry it across a budget that comfortably exceeds
+        the longest rearrange call. Genuine lock loss (409 / 423) and every other status still fail
+        immediately -- a scan that truly cannot own the SLM must not silently spin.
+        """
+        deadline = self._clock() + self.acquire_retry_s
+        attempt = 0
+        last = None
+        while True:
+            attempt += 1
+            try:
+                self.c.acquire_lock("slm", self.desc,
+                                    timeout_s=self.lease_s,
+                                    block_timeout=self.acquire_block_s)
+                self.held = True
+                self._last_ok_t = self._clock()
+                if attempt > 1:
+                    self._log("[SlmScanSession] slm lock acquired on attempt %d" % attempt)
+                return
+            except SlmHTTPError as err:
+                last = err
+                self.held = False
+                transient = err.status in self._TRANSIENT_STATUS
+                if transient and self._clock() < deadline:
+                    self._log("[SlmScanSession] slm acquire HTTP %d (%s) -- transient, retrying "
+                              "(attempt %d, %.1fs left)"
+                              % (err.status, err.detail, attempt,
+                                 deadline - self._clock()))
+                    time.sleep(self.acquire_retry_pause_s)
+                    continue
+                self._log("[SlmScanSession] acquire slm lock failed (HTTP %d): %s"
+                          % (err.status, err.detail))
+                if mandatory:
+                    raise SlmLockUnavailable(
+                        "could not acquire the slm lock within %.1fs (HTTP %d: %s)"
+                        % (self.acquire_retry_s if transient else self.acquire_block_s,
+                           err.status, err.detail))
+                return
+            except Exception as err:  # noqa: BLE001 - connection error / server down
+                last = err
+                self.held = False
+                if self._clock() < deadline:
+                    self._log("[SlmScanSession] slm acquire error (%s) -- retrying" % err)
+                    time.sleep(self.acquire_retry_pause_s)
+                    continue
+                break
+        self._log("[SlmScanSession] acquire slm lock error: %s" % last)
+        if mandatory:
+            raise SlmLockUnavailable("could not acquire the slm lock: %s" % last)
 
     def _release(self):
         if not self.held:

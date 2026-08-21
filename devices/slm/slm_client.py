@@ -183,6 +183,16 @@ class SlmClient:
     # -> /lock/acquire) hits the busy gate and 503s "setup_rearrangement in progress". That is the
     # scan-wedges-on-its-own-setup failure. Give setup its own generous read timeout.
     SETUP_TIMEOUT_S = 180.0
+    # A 3-D rearrange builds the warm-WGS kernel table + captures the CUDA graph on its
+    # FIRST call of a scan, which can exceed the 30 s default.  When it does, the client
+    # gives up while the SERVER is still working, and the next several shots then fail
+    # 'compute lock acquire: 503 server busy: rearrange' and are cancelled -- ~7 shots lost
+    # at the head of every scan (jobs 565/567, 2026-08-07).  Nothing is wrong except the
+    # deadline, so give that one build room.  This only lengthens how long we WAIT before
+    # declaring failure; it changes no server behaviour.
+    REARRANGE_TIMEOUT_S = 180.0
+    # socket headroom on top of an /eval's own server-side budget
+    EVAL_TIMEOUT_MARGIN_S = 30.0
 
     def setup_rearrangement(self, **kwargs):
         """One-time / per-shot rearrangement config. Mirrors ``slm_client.m::setup_rearrangement``
@@ -231,7 +241,8 @@ class SlmClient:
         if extras:
             body.update(dict(extras))
         _stamp_runid(body, scan_id, seq_id)
-        return self._post_json("/slm/rearrange", body)
+        return self._post_json("/slm/rearrange", body,
+                               timeout=self.REARRANGE_TIMEOUT_S)
 
     def update_rearrange(self, results, scan_id=None, seq_id=None):
         """Post-rearrangement detection results -> ``/slm/results`` (ledger row for the shot)."""
@@ -256,8 +267,14 @@ class SlmClient:
         Raises :class:`SlmHTTPError` on HTTP error; raises :class:`RuntimeError` if the
         server reports a Python exception in ``response["error"]``."""
         body = {"code": code, "session": self.client_id}
+        # The socket timeout has to cover the server-side budget too.  X-Eval-Timeout only tells
+        # the SERVER how long it may run; without a matching client timeout the request died at
+        # the 30 s default while the server was still working, so any long /eval (a two-layer
+        # 3-D grid derive takes minutes) failed with ReadTimeout and looked like a server fault.
+        # The margin covers request/response transfer on top of the server's own budget.
         resp = self._post_json("/eval", body,
-                               extra_headers={"X-Eval-Timeout": str(float(timeout_s))})
+                               extra_headers={"X-Eval-Timeout": str(float(timeout_s))},
+                               timeout=float(timeout_s) + self.EVAL_TIMEOUT_MARGIN_S)
         if resp.get("error"):
             raise RuntimeError("SLM /eval error: %s\nstdout: %s\nstderr: %s"
                                % (resp["error"],
@@ -305,9 +322,29 @@ def _build_setup_body(kwargs):
                 body[key + "_filepath"] = s
         elif key == "extras":
             if isinstance(val, dict):
+                # An explicit None extra is SENT (as JSON null), not dropped.
+                #
+                # The server's extras dict is merge-only, so the ONLY way to clear a sticky key is
+                # to transmit a new value for it.  Dropping None here made that impossible while
+                # making the scan source read as though it worked: `rk.extras.pattern = None`
+                # looked like a clear and was a no-op, so the previous round's value survived.
+                # Three failures on 2026-08-07 traced to exactly this --
+                #   * `pattern` not cleared -> "pass either target_bits OR pattern, not both",
+                #     killing every shot of job 511;
+                #   * `true_defocus` not cleared -> the lift would read its phase correction in
+                #     rad/um instead of rad/rad from shot 2 onward;
+                #   * `target_grid_planes_z_rad` not cleared -> round 0 derived the flat loading
+                #     phase refocused at the far plane (is_3d, per_plane [1067, 0]) so the site
+                #     count changed and target_bits stopped matching (job 551).
+                # Pre-existing scans already assumed this behaviour: PPGAxial* sets
+                # `extras.depth_fill_frac = None` commented "sticky legacy override -- must be
+                # cleared explicitly", which silently never cleared anything.
+                #
+                # "Leave unchanged" is still available and is the DEFAULT: just don't set the key.
+                # Absent -> not sent -> server keeps its cached value.  Explicit None -> sent as
+                # null -> server stores None, which is what every `is not None` gate reads.
                 for ek, ev in val.items():
-                    if ev is not None:
-                        body[ek] = ev
+                    body[ek] = ev
         elif key == "target_bits":
             body["target_bits"] = _as_float_list(val)
         else:
