@@ -197,6 +197,38 @@ def _parse_gauss_fits_struct(d):
 # =========================================================================== #
 # knm orientation guard (resilient against a transposed record.json knm)
 # =========================================================================== #
+def _knm_offset(rec):
+    """The record's optional per-pattern registration offset as ``(dy, dx)`` knm-px.
+
+    Mirrors ``yb_analysis.analysis.affine_transform._apply_knm_offset``. Zeros when unset or
+    malformed -- a bad offset must degrade to "no offset", never break grid resolution.
+    """
+    import numpy as np
+    off = rec.get("knm_offset") if isinstance(rec, dict) else None
+    if off is None:
+        return np.zeros(2, dtype=np.float64)
+    try:
+        off = np.asarray(off, dtype=np.float64).reshape(2)
+    except (ValueError, TypeError):
+        return np.zeros(2, dtype=np.float64)
+    if not np.isfinite(off).all():
+        return np.zeros(2, dtype=np.float64)
+    return off
+
+
+def _with_offset(knm, rec):
+    """``knm + knm_offset`` -- see :mod:`yb_analysis.analysis.pattern_registry`.
+
+    The GLOBAL affine carries only effects common to every pattern; a residual belonging to ONE
+    pattern lives here instead, folded in BEFORE the affine so the affine is fit blind to it.
+    """
+    import numpy as np
+    off = _knm_offset(rec)
+    if not off.any():
+        return knm
+    return np.asarray(knm, dtype=np.float64) + off[None, :]
+
+
 def _canonical_knm(rec):
     """Return the record's trap positions as canonical registry ``[y, x]`` (N,2), guarding against a
     record whose ``knm`` was written transposed as ``[x, y]``.
@@ -215,6 +247,11 @@ def _canonical_knm(rec):
         correct the exact, provable transpose, never guess.
     When there is no ``positions_knm3d`` we cannot prove an orientation, so ``knm`` is returned as-is
     (no heuristic -- a tall/wide array must not be "corrected"). Any failure returns the raw ``knm``.
+
+    EVERY return then passes through :func:`_with_offset`, which adds the record's optional
+    per-pattern ``knm_offset`` (knm-px, ``[y, x]``). Applied after the transpose guard, since the
+    offset is stored in canonical order. Mirrors ``affine_transform.canonical_knm`` so the engine
+    and the analysis side resolve identical grids.
     Returns None only when there is no usable ``knm`` at all.
     """
     import numpy as np
@@ -227,16 +264,16 @@ def _canonical_knm(rec):
         return None
     p3 = rec.get("positions_knm3d") if isinstance(rec, dict) else None
     if not p3:
-        return knm                                   # no 3D truth to check against -> as-is
+        return _with_offset(knm, rec)                                   # no 3D truth to check against -> as-is
     try:
         p3 = np.asarray(p3, dtype=np.float64)
         if p3.ndim != 2 or p3.shape[0] != knm.shape[0] or p3.shape[1] < 2:
-            return knm                               # shape mismatch -> can't cross-check
+            return _with_offset(knm, rec)                               # shape mismatch -> can't cross-check
         yx = p3[:, :2]                               # canonical [y, x] from the 3D source
         # Compare only over finite rows; a NaN anywhere must not decide the orientation.
         finite = np.isfinite(knm).all(1) & np.isfinite(yx).all(1)
         if not finite.any():
-            return knm
+            return _with_offset(knm, rec)
         k, g = knm[finite], yx[finite]
         # RELATIVE fit, not an absolute tolerance: knm and positions_knm3d were derived at slightly
         # different times/precisions, so even a correctly-oriented knm differs from the 3D source by
@@ -251,10 +288,10 @@ def _canonical_knm(rec):
         abs_ok = d_swap <= max(1.0, span / 20.0)     # swapped fit is sub-lattice-scale
         rel_ok = d_swap <= d_same / 8.0              # and fits far better than the as-stored order
         if abs_ok and rel_ok:
-            return yx                                # knm is transposed -> use the 3D [y, x]
-        return knm                                   # already canonical, or unrelated -> trust knm
+            return _with_offset(yx, rec)                                # knm is transposed -> use the 3D [y, x]
+        return _with_offset(knm, rec)                                   # already canonical, or unrelated -> trust knm
     except Exception:  # noqa: BLE001 - the guard must never break grid resolution
-        return knm
+        return _with_offset(knm, rec)
 
 
 # =========================================================================== #
