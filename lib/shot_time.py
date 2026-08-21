@@ -30,7 +30,7 @@ Wholly best-effort: every entry point swallows its own exceptions, and a failure
 disables the session rather than raising. A monitoring log must never be able to fail a scan.
 Kill-switch: ``YB_SHOT_TIME=0`` (env).
 
-TEMPORARY: added for the RP-N vs fluorescence correlation campaign. See ``_rp_ncorr/``.
+TEMPORARY: added for the RP-N vs fluorescence correlation campaign. See ``campaigns/imaging/rp_ncorr/``.
 """
 
 import os

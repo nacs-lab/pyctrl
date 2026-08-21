@@ -3,16 +3,16 @@ changed less than a threshold between an OLD and a NEW site-resolved depth measu
 
 Feeds the global "analyze only these sites" option: writes the .npy the
 yb_analysis.analysis.site_mask 'stable' registry name points at (default
-_daily/stable_sites_lt5pct.npy), plus an index list + a spatial map.
+campaigns/daily/scratch/stable_sites_lt5pct.npy), plus an index list + a spatial map.
 
 Each depth npz must carry ``centers_mj1`` (per-site |mj|=1 Lorentzian center [Hz]),
 ``good`` (bool), ``grid_x``/``grid_y``. Depth is recomputed from centers with the
 supplied per-scan mj=0 f0 (so a stale f0 baked into the npz doesn't matter).
 
   python pyctrl/tools/build_stable_site_mask.py \
-      --old  _feedback33x33/_wide_depths_fb9.npz --old-f0 107.8199e6 \
-      --new  _daily/fb9_depths_narrow.npz        --new-f0 107.8737e6 \
-      --thresh 0.05 --out _daily/stable_sites_lt5pct.npy
+      --old  campaigns/feedback/33x33/_wide_depths_fb9.npz --old-f0 107.8199e6 \
+      --new  campaigns/daily/scratch/fb9_depths_narrow.npz        --new-f0 107.8737e6 \
+      --thresh 0.05 --out campaigns/daily/scratch/stable_sites_lt5pct.npy
 
 Run under the yb_analysis env from the project root. The MASK_REGISTRY['stable']
 path in yb_analysis/analysis/site_mask.py should match --out.
