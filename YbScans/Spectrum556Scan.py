@@ -41,7 +41,8 @@ from PushoutSurvivalSeq import PushoutSurvivalSeq
 
 
 def build(mj=0, loading_phase=None, defocus=None, mj0_center_mhz=None,
-          mj1_window=None, mj1_amp=None):
+          mj1_window=None, mj1_amp=None, mj0_amp=None, mj0_half_mhz=None,
+          mj0_step_mhz=None):
     """The Spectrum556Scan ScanGroup (single group, 1-D Pushout.Green.Freq sweep).
 
     Mirrors Spectrum556Scan.m's active blocks; the byte-affecting params only (the dbstack
@@ -67,7 +68,14 @@ def build(mj=0, loading_phase=None, defocus=None, mj0_center_mhz=None,
     if mj == 0:
         # mj=0 calibration push-out: weak/short so the dip width tracks the line,
         # not power/time broadening (the recipe behind 107.735 MHz, expConfig.m:122).
-        g().Pushout.Green.Amp = 0.12
+        # 2026-08-10: made overridable (--mj0-amp). At the standing 0.12 the dip VANISHED
+        # (scan 20260810_140743: survival flat 0.98-0.99 across the whole window, R^2=0.047,
+        # degenerate FWHM) -- the same push-power regression the 399 line hit on 08-03/08-06.
+        # Raise the amp when the dip goes shallow rather than fitting noise; a weak push and a
+        # line that has walked OUT of the +-0.2 MHz window look alike, so widen (--mj0-half)
+        # and re-amp together. NOTE the default here is 0.12, not the 0.10 the docstring
+        # claims -- amp comments in this file have been wrong before.
+        g().Pushout.Green.Amp = 0.12 if mj0_amp is None else float(mj0_amp)
         g().Pushout.Time = 5e-3
     elif mj == 1:
         # |mj|=1 "check trap depth": stronger + longer to drive the weaker,
@@ -92,7 +100,8 @@ def build(mj=0, loading_phase=None, defocus=None, mj0_center_mhz=None,
         # has drifted to ~107.82, which sat at the right EDGE of the old fixed 107.5-107.9
         # window (2026-06-24) -- centering keeps the dip mid-window as the resonance drifts.
         # Falls back to a recent center if the config can't be read on the submit side.
-        STEP_MHZ, HALF_MHZ = 0.01, 0.20
+        STEP_MHZ = 0.01 if mj0_step_mhz is None else float(mj0_step_mhz)
+        HALF_MHZ = 0.20 if mj0_half_mhz is None else float(mj0_half_mhz)
         center_mhz = 107.82
         if mj0_center_mhz is not None:
             center_mhz = float(mj0_center_mhz)
@@ -119,11 +128,15 @@ def build(mj=0, loading_phase=None, defocus=None, mj0_center_mhz=None,
         # dip sat >106.5; kagome dip expected ~105.8-106.5 -> wide first-round window 104.8-107.4.
         # (tri_3013_camfb 07-15 used 105.5:0.1:107.5.)
         # 2026-07-16 back on 33x33_feedback11: standard 33x33 window 103.5:0.1:106.5.
+        # 2026-08-10 (user directive): narrowed to 104.5:0.1:106.5 (21 pts). The line has
+        # walked up -- 105.5606 MHz on 08-10 (scan 20260810102020, R^2=0.971, 310 shots)
+        # vs 105.3565 on 08-07 -- so the old 103.5-104.5 low edge was dead range; the dip
+        # now sits mid-window and each point gets ~1.5x the shots for the same rep count.
         if mj1_window is not None:
             lo, step, hi = mj1_window
             freqs = [v * 1e6 for v in matlab_colon(float(lo), float(step), float(hi))]
         else:
-            freqs = [v * 1e6 for v in matlab_colon(103.5, 0.1, 106.5)]
+            freqs = [v * 1e6 for v in matlab_colon(104.5, 0.1, 106.5)]
     g().Pushout.Green.Freq.scan(1, freqs)
     
     # ---- run params (runp); no byte effect, drive the live run ------------
@@ -138,22 +151,29 @@ def build(mj=0, loading_phase=None, defocus=None, mj0_center_mhz=None,
     #     SLM.Loading: 33x33_uniform, defocus -5). Uncomment to load a different
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
+    # 2026-08-10: the loading PLANE is no longer hardcoded here. Setting rp.loading_defocus
+    # overrides the per-array config, so it is set ONLY when --defocus is passed; otherwise the
+    # plane comes from ByPattern[<pattern>]["SLM"]["Loading"]["Defocus"] via
+    # slm_runtime._pattern_defocus (33x33_feedback11 = -4.0, measured 08-12), falling back to
+    # DEFAULT_LOADING_DEFOCUS for a pattern that declares none.
     if loading_phase is not None:
         g.runp().loading_phase = loading_phase
-        g.runp().loading_defocus = -5 if defocus is None else float(defocus)
     else:
         g.runp().loading_phase = "phase/33x33_feedback11.pt"  # 2026-07-16 daily cal on 33x33_feedback11
-        g.runp().loading_defocus = -5                         # ANSI z4; 33x33 focal plane
+    if defocus is not None:
+        g.runp().loading_defocus = float(defocus)
     return g
 
 
 def Spectrum556Scan(url=None, reps=3, mj=0, loading_phase=None, defocus=None,
-                    mj0_center_mhz=None, mj1_window=None, mj1_amp=None):
+                    mj0_center_mhz=None, mj1_window=None, mj1_amp=None,
+                    mj0_amp=None, mj0_half_mhz=None, mj0_step_mhz=None):
     """Build + submit the 556 spectrum scan (mj=0 or mj=1). Returns the queued descriptor id."""
     from yb_start_scan import ybStartScan
 
     g = build(mj=mj, loading_phase=loading_phase, defocus=defocus,
-              mj0_center_mhz=mj0_center_mhz, mj1_window=mj1_window, mj1_amp=mj1_amp)
+              mj0_center_mhz=mj0_center_mhz, mj1_window=mj1_window, mj1_amp=mj1_amp,
+              mj0_amp=mj0_amp, mj0_half_mhz=mj0_half_mhz, mj0_step_mhz=mj0_step_mhz)
     npts = g.nseq()
     opts = {}
     if reps is not None:
@@ -180,7 +200,15 @@ if __name__ == "__main__":
     ap.add_argument("--mj1-window", type=float, nargs=3, metavar=("LO","STEP","HI"), default=None,
                     help="mj=1 sweep colon in MHz (e.g. 104.8 0.1 107.4)")
     ap.add_argument("--mj1-amp", type=float, default=None, help="mj=1 pushout Green.Amp (default 0.10)")
+    ap.add_argument("--mj0-amp", type=float, default=None,
+                    help="mj=0 pushout Green.Amp (default 0.12); raise it when the dip goes shallow")
+    ap.add_argument("--mj0-step", type=float, default=None,
+                    help="mj=0 step MHz (default 0.01); coarsen it to widen without a huge point count")
+    ap.add_argument("--mj0-half", type=float, default=None,
+                    help="mj=0 window half-width MHz (default 0.20); widen when the line may have walked out")
     args = ap.parse_args()
     Spectrum556Scan(url=args.url, reps=args.reps, mj=args.mj, loading_phase=args.loading_phase,
                     defocus=args.defocus, mj0_center_mhz=args.mj0_center,
-                    mj1_window=args.mj1_window, mj1_amp=args.mj1_amp)
+                    mj1_window=args.mj1_window, mj1_amp=args.mj1_amp,
+                    mj0_amp=args.mj0_amp, mj0_half_mhz=args.mj0_half,
+                    mj0_step_mhz=args.mj0_step)

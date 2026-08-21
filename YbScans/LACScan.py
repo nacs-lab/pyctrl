@@ -120,8 +120,8 @@ def LACScan(url=None, reps=None):
     # g().BlueMOT.LoadingTime = 1.0    # 2026-07-15: longer blue-MOT load (was ~0.23-0.3 default) -- redo LAC scan with more atoms delivered
     # g().BlueMOT.FreqDetuning = -44e6
     # g().BlueMOT.Amp = 0.6
-    g().GreenMOT.BiasCoilCurrent.X.scan(1, np.linspace(0.030, 0.040, 10))    # razor-sharp X (dim1) -- tri_3013_camfb MOT-position scan
-    g().GreenMOT.BiasCoilCurrent.Y.scan(2, np.linspace(0.24, 0.30, 10))      # broader Y (dim2)
+    #g().GreenMOT.BiasCoilCurrent.X.scan(1, np.linspace(0.030, 0.040, 10))    # razor-sharp X (dim1) -- tri_3013_camfb MOT-position scan
+    #g().GreenMOT.BiasCoilCurrent.Y.scan(2, np.linspace(0.24, 0.30, 10))      # broader Y (dim2)
     #g().GreenMOT.BiasCoilCurrent.Z.scan(1, np.linspace(0.16, 0.20, 11))
     # g().GreenMOT.PowerBroaden.HandoverTime = 0.015
     # g().GreenMOT.CoolDown.FreqDetuning = 0.5e6
@@ -137,7 +137,10 @@ def LACScan(url=None, reps=None):
 
     # ---- run params (runp) ------------------------------------------------
     rp = g.runp()
-    rp.NumPerGroup = 2000
+    # 2026-08-07: single fixed point at expConfig defaults, 100 shots -- read the
+    # CURRENT 33x33_feedback11 loading rate + uniformity and watch it vs shot index
+    # (does it warm up / thermalize?) after a sudden loading drop. 1 point => rep=100.
+    rp.NumPerGroup = 100
     rp.NumImages = 1              # loading-rate readout (MOT-position opt); img1 only
     rp.isInit = 0
     rp.Scramble = 0   # randomize point order so run-start warmup doesn't bias low-time points
@@ -148,18 +151,21 @@ def LACScan(url=None, reps=None):
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
     g.runp().loading_phase = "phase/33x33_feedback11.pt"   # server-side WGS phase path
-    g.runp().loading_defocus = -5
-    g#().loading_defocus.scan(1, np.linspace(-20, 0, 5));                    # ANSI z4 loading defocus (rad): -20..20 step 5 (9 pts) -- tri_3013_v2 focus bracket
+    # 2026-08-10: loading plane now comes from the per-array config
+    # (ByPattern[<pattern>].SLM.Loading.Defocus -> slm_runtime._pattern_defocus);
+    # setting rp.loading_defocus here would override it, so it is left unset.
+    #g().loading_defocus.scan(1, np.linspace(-20, 0, 5));                    # ANSI z4 loading defocus (rad): -20..20 step 5 (9 pts) -- tri_3013_v2 focus bracket
 
     opts = {}
     if reps is not None:
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
 
-    desc = ("tri_3013_camfb (z4=-2) LAC drive-plane re-verify: LAC.Amp 0.04-0.20 (7) x "
-            "LAC.FreqDetuning 0.10-0.30 MHz (7), TweezerLoadingSeq loading-rate, 6 reps=294 shots. "
-            "Committed 0.22/0.10 was tuned on v2; re-check on camfb @ 0.6 loading before imaging opt.")
-    did = ybStartScan("TweezerLoadingSeq", g, url=url, label="tri3013camfb_LAC_Amp_Det",
+    desc = ("33x33_feedback11 (z4=-5) loading-rate diagnostic: single fixed point at expConfig "
+            "defaults, 100 shots, img1 only. Loading dropped suddenly -- read the current rate + "
+            "uniformity (CV, x/y gradient) and the per-shot trend to see if it warms up/thermalizes "
+            "over the run before touching any knob.")
+    did = ybStartScan("TweezerLoadingSeq", g, url=url, label="LACScan",
                       description=desc, **opts)
     # print("submitted LACScan sweep (%d pts %.3f..%.3f A) -> descriptor id %s (url=%s)"
     #       % (len(xvals), xvals[0], xvals[-1], did, url or "default"))
