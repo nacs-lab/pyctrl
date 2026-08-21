@@ -19,7 +19,7 @@ camera, one Orca rising edge = one frame of fixed Orca.ExposureTime). Choose the
 Orca.ExposureTime; both the camera and this train follow it.
 
 SCANNING the period: BeamPulseTime/RecoolTime set the Python loop count -> they are FIXED scalars,
-NEVER a .scan() axis. Sweep them across ROUNDS (tools/strobe_imaging_round.py --pulse-time), an outer
+NEVER a .scan() axis. Sweep them across ROUNDS (archive/tools/strobe_imaging_round.py --pulse-time), an outer
 loop -- one submission per period.
 
 NO scope-sync TTL is wired -- trigger the scope on the FIRST 399 PD pulse (tools/strobe_scope_capture.py).

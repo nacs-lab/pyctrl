@@ -248,13 +248,13 @@ def _consts():
         # (choose the collect window via Orca.ExposureTime, base or a ByPattern overlay).
         #
         # BeamPulseTime/RecoolTime set the LOOP structure -> FIXED scalars, NEVER a .scan() axis; sweep
-        # them across ROUNDS (tools/strobe_imaging_round.py --pulse-time). BeamPulseTime 1 us ~ AOM rise
+        # them across ROUNDS (archive/tools/strobe_imaging_round.py --pulse-time). BeamPulseTime 1 us ~ AOM rise
         # -> partial pulse; verify on scope (trigger on the first PD pulse -- no scope-sync TTL wired).
         # WARN: small RecoolTime -> many cycles -> big sequence; validate at short Orca.ExposureTime first.
         #
         # Cool556 here is a SEPARATE recool set from the during-imaging Imag399.Cool556: with the 399 OFF
         # during recool there is no light shift -> the optimum detuning/amp differs. Seeded from
-        # Imag399.Cool556; retune via tools/strobe_imaging_round.py cool mode.
+        # Imag399.Cool556; retune via archive/tools/strobe_imaging_round.py cool mode.
         # PulsesPerBurst (N): per super-cycle, fire N alternating beam1/beam2 SHORT pulses (the image
         # burst -- short pulses keep the per-beam momentum kick + heating low) THEN one recool window.
         # period = 2*N*BeamPulseTime + RecoolTime; duty = 2*N*BeamPulseTime/period. Raise N to raise duty
