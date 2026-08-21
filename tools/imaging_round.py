@@ -9,7 +9,7 @@ PushouthXStep -- confirmed irrelevant to the 399 imaging here, 2026-06-20.)
   * imaging FIDELITY -- from img1: per-cell pool the masked-site intensities, split by
     logicals_img1 (atom vs empty); report dist (mu_atom-mu_empty ADU), d' and infidelity
     (optimal-cut, threshold-free) -> fidelity = 1-infid.  (math copied from
-    _feedback47x47/imag2d_fidelity.py)
+    campaigns/feedback/47x47/imag2d_fidelity.py)
   * SURVIVAL -- from img2: per-site P(img2=1 | img1=1) = prob11, averaged over sites. ALWAYS run at
     0 pushout (hold ~0) so this is the REAL 50 ms two-image survival at the swept frames, given current
     cooling. The long-pushout proxy + per-image-survival (survpi/surv1) models were REMOVED 2026-06-20
@@ -139,16 +139,28 @@ def _state_path(rnd):
     return os.path.join(STATE_DIR, "imaging_state_r%d.json" % rnd)
 
 
-def _pin_strobe_and_cooling(g, c, blue_amp, blue_amp2):
-    """Pin the strobe amps + the during-image/strobe 556 cooling to the warm4 values."""
+def _pin_strobe_and_cooling(g, c, blue_amp, blue_amp2, hold=0.001):
+    """Pin the strobe amps + the during-image/strobe 556 cooling to the pattern values.
+
+    `hold` = Pushout.Time. DEFAULT 0.001 = 0 pushout, so `survival` is the REAL 50 ms two-image
+    survival (the printed NOTE + the runbook both assume this). It used to be hardcoded 0.2 s,
+    which silently made the detuning scan's survival a 200 ms-pushout amplified proxy.
+    """
     reson556 = float(c.Resonance556mj0Freq)
-    g().Pushout.Time = 0.2
+    g().Pushout.Time = float(hold)
     g().Pushout.Blue.Amp1 = float(blue_amp)
     g().Pushout.Blue.Amp2 = float(blue_amp2)
     g().Pushout.Green.X.Freq = reson556 + float(c.Imag399.Cool556.X.FreqDetuning)
     g().Pushout.Green.X.Amp = float(c.Imag399.Cool556.X.Amp)
     g().Pushout.Green.h.Freq = reson556 + float(c.Imag399.Cool556.h.FreqDetuning)
     g().Pushout.Green.h.Amp = float(c.Imag399.Cool556.h.Amp)
+
+
+def _resolve_pid(args, c):
+    """(Img1PIDSet, Img2PIDSet) -- explicit --img1/--img2 else the pattern overlay's values."""
+    p1 = float(args.img1) if args.img1 is not None else float(c.BlueMOT.Img1PIDSet)
+    p2 = float(args.img2) if args.img2 is not None else float(c.BlueMOT.Img2PIDSet)
+    return p1, p2
 
 
 def build(args):
@@ -164,6 +176,19 @@ def build(args):
         g().BlueMOT.Img1PIDSet = float(args.fix_pid[0])
         g().BlueMOT.Img2PIDSet = float(args.fix_pid[1])
 
+    # Optional loading working set. expConfig's MOT values go stale between sessions (the GreenMOT
+    # bias-X resonance is ~3 mA wide and drifts with coil temperature), so an imaging round run on
+    # the stale point loads poorly and every per-site number is measured on fewer atoms. These pin
+    # the CURRENT working point without touching expConfig. All default to None = unchanged.
+    if getattr(args, "green_bias_x", None) is not None:
+        g().GreenMOT.BiasCoilCurrent.X = float(args.green_bias_x)
+    if getattr(args, "blue_det", None) is not None:
+        g().BlueMOT.FreqDetuning = float(args.blue_det) * 1e6
+    if getattr(args, "blue_loading_time", None) is not None:
+        g().BlueMOT.LoadingTime = float(args.blue_loading_time)
+    if getattr(args, "lac_time", None) is not None:
+        g().LAC.Time = float(args.lac_time)
+
     if args.mode == "detuning":
         dets = _colon(*args.fdet)                       # MHz
         dets_hz = [float(d) * 1e6 for d in dets]
@@ -171,9 +196,29 @@ def build(args):
         g().Imag399.FreqDetuning.scan(1, dets_hz)
         # ... and the strobe Blue.Freq LINKED on the SAME axis (else it stays at base line).
         g().Pushout.Blue.Freq.scan(1, [reson399 + d for d in dets_hz])
-        _pin_strobe_and_cooling(g, c, args.blue_amp, args.blue_amp2)
-        axis_desc = "Imag399.FreqDetuning(MHz)=%s amps=%.2f/%.2f" % (
-            [round(d, 3) for d in dets], args.blue_amp, args.blue_amp2)
+        # image-frame 399 power under the PID scheme: DDS amps (post-servo attenuation) held at
+        # --blue-amp/--blue-amp2 (keep at 1 unless deliberately attenuating -- see
+        # gotcha-stale-dds-amps-pid-imaging) and the servo setpoints pinned so the whole sweep
+        # runs at ONE power (else it falls back to the ByPattern overlay implicitly).
+        g().Imag399.Amp1 = float(args.blue_amp)
+        g().Imag399.Amp2 = float(args.blue_amp2)
+        p1, p2 = _resolve_pid(args, c)
+        g().BlueMOT.Img1PIDSet = p1
+        g().BlueMOT.Img2PIDSet = p2
+        # cooling-during-image: --xcool/--hcool override, else the pattern overlay's values.
+        xcd = float(args.xcool[0]) * 1e6 if args.xcool else float(c.Imag399.Cool556.X.FreqDetuning)
+        xca = float(args.xcool[1]) if args.xcool else float(c.Imag399.Cool556.X.Amp)
+        hcd = float(args.hcool[0]) * 1e6 if args.hcool else float(c.Imag399.Cool556.h.FreqDetuning)
+        hca = float(args.hcool[1]) if args.hcool else float(c.Imag399.Cool556.h.Amp)
+        g().Imag399.Cool556.X.FreqDetuning = xcd
+        g().Imag399.Cool556.X.Amp = xca
+        g().Imag399.Cool556.h.FreqDetuning = hcd
+        g().Imag399.Cool556.h.Amp = hca
+        _pin_strobe_and_cooling(g, c, args.blue_amp, args.blue_amp2, args.hold)
+        axis_desc = ("Imag399.FreqDetuning(MHz)=%s DDSamps=%.2f/%.2f PIDset %.2f/%.2f hold=%.4fs "
+                     "cool X(%.2fMHz,%.2f) h(%.2fMHz,%.2f)" % (
+                         [round(d, 3) for d in dets], args.blue_amp, args.blue_amp2, p1, p2,
+                         args.hold, xcd / 1e6, xca, hcd / 1e6, hca))
     elif args.mode == "amps":
         a1 = [float(a) for a in _colon(*args.amp1)]
         a2 = [float(a) for a in _colon(*args.amp2)]
@@ -278,8 +323,9 @@ def build(args):
         # --dds-amp1/--dds-amp2 pin the image-frame DDS amps (default 1 = old behavior).
         g().Imag399.Amp1 = float(args.dds_amp1)
         g().Imag399.Amp2 = float(args.dds_amp2)
-        g().BlueMOT.Img1PIDSet = float(args.img1)
-        g().BlueMOT.Img2PIDSet = float(args.img2)
+        pid1, pid2 = _resolve_pid(args, c)
+        g().BlueMOT.Img1PIDSet = pid1
+        g().BlueMOT.Img2PIDSet = pid2
         g().Imag399.FreqDetuning = float(args.det) * 1e6
         g().Pushout.Time = float(args.hold)            # 0 pushout (real 50 ms survival)
         if beam == "X":
@@ -300,7 +346,7 @@ def build(args):
             fixed = "X(%.2fMHz,%.2f)" % (xcd / 1e6, xca)
         axis_desc = "COOL %s: det(MHz)=%s x amp=%s  PIDset %.2f/%.2f det %.2f fixed %s hold %.4fs" % (
             beam, [round(d, 3) for d in dets], [round(a, 3) for a in cam],
-            args.img1, args.img2, args.det, fixed, args.hold)
+            pid1, pid2, args.det, fixed, args.hold)
     else:  # pushout: img1/img2 detection FIXED (good), sweep the PUSHOUT imaging dose (amp1 x amp2).
         # Decouples survival from detection: prob11 differences across the pushout grid are REAL atom
         # loss (the detection floor is constant). Per-image survival = (prob11/floor)^(t_img/hold).
@@ -627,12 +673,17 @@ if __name__ == "__main__":
     ap.add_argument("--fdet", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=(-9.0, 0.5, -1.0),
                     help="detuning mode: Imag399.FreqDetuning colon in MHz "
                          "(2x-finer default 2026-06-24: step 0.5 MHz)")
-    ap.add_argument("--blue-amp", type=float, default=0.30, help="detuning mode: fixed Imag399.Amp1")
-    ap.add_argument("--blue-amp2", type=float, default=0.20, help="detuning mode: fixed Imag399.Amp2")
-    ap.add_argument("--img1", type=float, default=1.0,
-                    help="cool mode: BlueMOT.Img1PIDSet (399 beam-1 imaging-power setpoint, V) = W")
-    ap.add_argument("--img2", type=float, default=0.35,
-                    help="cool mode: BlueMOT.Img2PIDSet (399 beam-2 imaging-power setpoint, V) = W")
+    ap.add_argument("--blue-amp", type=float, default=1.0,
+                    help="detuning mode: fixed image-frame DDS Imag399.Amp1 (PID scheme -> keep 1.0; "
+                         "<1 attenuates POST-servo, gotcha-stale-dds-amps-pid-imaging)")
+    ap.add_argument("--blue-amp2", type=float, default=1.0,
+                    help="detuning mode: fixed image-frame DDS Imag399.Amp2 (keep 1.0, see --blue-amp)")
+    ap.add_argument("--img1", type=float, default=None,
+                    help="cool/detuning mode: BlueMOT.Img1PIDSet (399 beam-1 imaging-power setpoint, V) "
+                         "= W; default = the loading PATTERN overlay's value")
+    ap.add_argument("--img2", type=float, default=None,
+                    help="cool/detuning mode: BlueMOT.Img2PIDSet (399 beam-2 imaging-power setpoint, V) "
+                         "= W; default = the loading PATTERN overlay's value")
     ap.add_argument("--amp1", type=float, nargs=3, metavar=("LO", "STEP", "HI"), default=(0.16, 0.015, 0.30),
                     help="amps mode: Imag399.Amp1 colon "
                          "(2x-finer default 2026-06-24: step 0.015, span recentred on the 0.16-0.30 "
@@ -649,6 +700,15 @@ if __name__ == "__main__":
                     help="amps mode: override Imag399.Cool556.X (det MHz, amp) via g() (default: pattern overlay)")
     ap.add_argument("--hcool", type=float, nargs=2, metavar=("DET_MHZ", "AMP"), default=None,
                     help="amps mode: override Imag399.Cool556.h (det MHz, amp) via g() (default: pattern overlay)")
+    ap.add_argument("--green-bias-x", type=float, default=None,
+                    help="pin GreenMOT.BiasCoilCurrent.X (A) via g() -- the current loading working "
+                         "point, since the expConfig value goes stale (~3 mA wide resonance)")
+    ap.add_argument("--blue-det", type=float, default=None,
+                    help="pin BlueMOT.FreqDetuning (MHz) via g()")
+    ap.add_argument("--blue-loading-time", type=float, default=None,
+                    help="pin BlueMOT.LoadingTime (s) via g()")
+    ap.add_argument("--lac-time", type=float, default=None,
+                    help="pin LAC.Time (s) via g()")
     ap.add_argument("--reps", type=int, default=6)
     ap.add_argument("--fix-pid", type=float, nargs=2, metavar=("PID1", "PID2"), default=None,
                     help="pin BlueMOT.Img1/Img2PIDSet via g() (beats ByPattern) -- use 0.5 0.5 to "

@@ -145,6 +145,22 @@ def _apply_globals(s, entries):
     return applied, missing
 
 
+def _scan_pattern_name(scangroup):
+    """The scan's SLM loading-pattern name (expConfig ``ByPattern`` key), or None.
+
+    Mirrors what the live runner resolves per scan (``slm_runtime._first_loading_pattern`` from
+    ``runp().loading_phase``). Best-effort -> None (base consts) if the helpers can't be imported.
+    """
+    try:
+        from seq_config import SeqConfig
+        from slm_runtime import _first_loading_pattern, _loading_defaults
+        phase, all_scans = _loading_defaults(SeqConfig.get(1))
+        pat = _first_loading_pattern(scangroup.runp(), default_phase=phase, all_scans=all_scans)
+    except Exception:  # noqa: BLE001
+        return None
+    return (pat or {}).get("name")
+
+
 def reconstruct(scan_dir, pts_per_ramp=100, make_xref=True):
     """Regenerate every unique point's ``.seq`` + ``manifest.json`` into ``<scan>/sequence/``.
 
@@ -191,31 +207,43 @@ def reconstruct(scan_dir, pts_per_ramp=100, make_xref=True):
         except Exception:  # noqa: BLE001
             captured = {}
 
+    # Re-apply the run's per-pattern config overlay (expConfig ByPattern) exactly as the live
+    # runner does before every build (engine_run: _first_loading_pattern ->
+    # expConfig_helper.set_current_pattern). It overrides REAL waits (e.g. 33x33_feedback11:
+    # LAC.Time 20 -> 30 ms, Orca/Imag399.ExposureTime -> 50 ms), so skipping it reconstructs
+    # waveforms on a timeline that drifts from the run's by every overridden wait.
+    import expConfig_helper
+    prev_pattern = expConfig_helper.current_pattern()
+    expConfig_helper.set_current_pattern(_scan_pattern_name(scangroup))
+
     os.makedirs(seq_dir, exist_ok=True)
     n_total = int(scangroup.nseq())
     unique = {}                                # str(seqid) -> filename
     approximate = False
-    for n in range(1, n_total + 1):
-        seqid, seqparam, _ = scangroup.getseq_with_var(n)
-        key = str(seqid)
-        if key in unique:
-            continue                           # dedup: one .seq per unique compiled point
-        s = ExpSeq(seqparam)
-        seqfn(s)
-        _generate(s)
-        _applied, missing = _apply_globals(s, captured.get(key))
-        if missing:
-            approximate = True
-        data = dump_output.dump_output_branches(
-            s.pyseq, pts_per_ramp=pts_per_ramp, seq_name=seq_name,
-            inverse_chn_map=getattr(s, "inverse_chn_map", None))
-        fname = "point_%05d__seqid_%s.seq" % (n, re.sub(r"[^A-Za-z0-9._-]", "_", key))
-        tmp = os.path.join(seq_dir, fname + ".tmp")
-        with open(tmp, "wb") as fh:
-            fh.write(data)
-        os.replace(tmp, os.path.join(seq_dir, fname))
-        unique[key] = fname
-        del s
+    try:
+        for n in range(1, n_total + 1):
+            seqid, seqparam, _ = scangroup.getseq_with_var(n)
+            key = str(seqid)
+            if key in unique:
+                continue                       # dedup: one .seq per unique compiled point
+            s = ExpSeq(seqparam)
+            seqfn(s)
+            _generate(s)
+            _applied, missing = _apply_globals(s, captured.get(key))
+            if missing:
+                approximate = True
+            data = dump_output.dump_output_branches(
+                s.pyseq, pts_per_ramp=pts_per_ramp, seq_name=seq_name,
+                inverse_chn_map=getattr(s, "inverse_chn_map", None))
+            fname = "point_%05d__seqid_%s.seq" % (n, re.sub(r"[^A-Za-z0-9._-]", "_", key))
+            tmp = os.path.join(seq_dir, fname + ".tmp")
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, os.path.join(seq_dir, fname))
+            unique[key] = fname
+            del s
+    finally:
+        expConfig_helper.set_current_pattern(prev_pattern)
 
     # manifest.json -- reuse SeqDumpSession.finalize for an identical schema, then stamp
     # the reconstruction flags the dashboard surfaces.

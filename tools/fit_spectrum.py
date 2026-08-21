@@ -68,6 +68,10 @@ def main():
     ap.add_argument("--recache", action="store_true",
                     help="rebuild analysis_payload.json instead of reusing it (needed when the "
                          "cache was pinned mid-run and holds only the first few shots)")
+    ap.add_argument("--x-unit", choices=("Hz", "MHz"), default="Hz",
+                    help="unit the swept axis is ALREADY in (default Hz, converted to MHz for "
+                         "display). Pass 'MHz' for axes stored in MHz (e.g. QICK.freq) so the "
+                         "plot/prints use the values as-is instead of dividing by 1e6")
     args = ap.parse_args()
 
     import numpy as np
@@ -101,10 +105,15 @@ def main():
         raise SystemExit("Lorentzian fit failed (too few finite points?)")
     center, fwhm, r2 = fit["center"], abs(fit["width"]), fit["r_squared"]
 
+    # Display scaling: axis stored in Hz -> /1e6 for MHz prints; stored in MHz -> as-is.
+    xs = 1e6 if args.x_unit == "Hz" else 1.0     # axis value -> MHz
+    fk = 1e3 if args.x_unit == "Hz" else 1e-3    # FWHM value -> kHz
+
     span = x.max() - x.min()
     edge = (center <= x.min() + 0.02 * span or center >= x.max() - 0.02 * span)
     out = {"scan_id": sid, "scan_dir": scan_dir, "n_shots": d.get("n_shots"),
            "n_params": d.get("n_params"), "n_peaks": args.peaks, "mode": args.mode,
+           "x_unit": args.x_unit,
            "center_Hz": center, "fwhm_Hz": fwhm,
            "r_squared": r2, "x_min_Hz": float(x.min()), "x_max_Hz": float(x.max()),
            "loading_mean": (float(np.nanmean(ld)) if ld.size else None), "edge_pinned": bool(edge)}
@@ -116,12 +125,12 @@ def main():
           % (sid, d.get("n_shots"), d.get("n_params"),
              ("  loading ~%.2f" % np.nanmean(ld)) if ld.size else ""))
     print("  [1 Lorentzian %s] center = %.4f MHz   FWHM = %.1f kHz   R^2 = %.3f%s"
-          % (args.mode, center / 1e6, fwhm / 1e3, r2,
+          % (args.mode, center / xs, fwhm / fk, r2,
              "   *** EDGE-PINNED ***" if edge else ""))
     print("  window %.3f-%.3f MHz | survival %.2f-%.2f"
-          % (x.min() / 1e6, x.max() / 1e6, np.nanmin(y), np.nanmax(y)))
+          % (x.min() / xs, x.max() / xs, np.nanmin(y), np.nanmax(y)))
     if args.ref is not None:
-        print("  delta from ref %.4f MHz = %+.1f kHz" % (args.ref / 1e6, (center - args.ref) / 1e3))
+        print("  delta from ref %.4f MHz = %+.1f kHz" % (args.ref / xs, (center - args.ref) / fk))
 
     # Optional second model: a double Lorentzian dip (two-component / mj-split lines).
     dfit = None
@@ -140,40 +149,40 @@ def main():
                              "center2_Hz": float(c2), "fwhm2_Hz": float(w2),
                              "splitting_Hz": dfit["splitting"], "r_squared": dfit["r_squared"]}
             print("  [2 Lorentzian] peak1 = %.4f MHz (FWHM %.1f kHz) | peak2 = %.4f MHz (FWHM %.1f kHz)"
-                  % (c1 / 1e6, w1 / 1e3, c2 / 1e6, w2 / 1e3))
+                  % (c1 / xs, w1 / fk, c2 / xs, w2 / fk))
             print("                 splitting = %.3f MHz   R^2 = %.3f  (vs %.3f single)"
-                  % (dfit["splitting"] / 1e6, dfit["r_squared"], r2))
+                  % (dfit["splitting"] / xs, dfit["r_squared"], r2))
 
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(7.5, 4.7))
-        ax.errorbar(x / 1e6, y, yerr=ye, fmt="o", ms=4, color="k", capsize=2,
+        ax.errorbar(x / xs, y, yerr=ye, fmt="o", ms=4, color="k", capsize=2,
                     label="array-avg survival", zorder=5)
-        ax.plot(fit["x_fit"] / 1e6, fit["y_fit"], "-", color="C3",
+        ax.plot(fit["x_fit"] / xs, fit["y_fit"], "-", color="C3",
                 lw=(1.2 if dfit else 1.5), alpha=(0.8 if dfit else 1.0),
                 label="1 Lorentzian  R²=%.3f" % r2)
         if dfit is not None:
-            ax.plot(dfit["x_fit"] / 1e6, dfit["y_fit"], "-", color="C1", lw=2.0,
+            ax.plot(dfit["x_fit"] / xs, dfit["y_fit"], "-", color="C1", lw=2.0,
                     label="2 Lorentzian  R²=%.3f" % dfit["r_squared"])
-            ax.plot(dfit["x_fit"] / 1e6, dfit["comp1_fit"], "--", color="C1", lw=0.8, alpha=0.6)
-            ax.plot(dfit["x_fit"] / 1e6, dfit["comp2_fit"], "--", color="C1", lw=0.8, alpha=0.6)
+            ax.plot(dfit["x_fit"] / xs, dfit["comp1_fit"], "--", color="C1", lw=0.8, alpha=0.6)
+            ax.plot(dfit["x_fit"] / xs, dfit["comp2_fit"], "--", color="C1", lw=0.8, alpha=0.6)
             for c in dfit["centers"]:
-                ax.axvline(c / 1e6, color="C1", ls=":", lw=0.7, alpha=0.5)
+                ax.axvline(c / xs, color="C1", ls=":", lw=0.7, alpha=0.5)
         else:
-            ax.axvline(center / 1e6, color="C3", ls="--", lw=0.9)
+            ax.axvline(center / xs, color="C3", ls="--", lw=0.9)
         if args.ref is not None:
-            ax.axvline(args.ref / 1e6, color="k", ls=":", lw=0.9, label="prev ref")
+            ax.axvline(args.ref / xs, color="k", ls=":", lw=0.9, label="prev ref")
         ax.set_xlabel(args.xlabel)
         ax.set_ylabel("survival (P11)")
         if dfit is not None:
             ttl = ("%s  2-peak %.4f / %.4f MHz  split %.2f MHz  R²=%.3f (1pk %.3f)"
-                   % (sid, dfit["centers"][0] / 1e6, dfit["centers"][1] / 1e6,
-                      dfit["splitting"] / 1e6, dfit["r_squared"], r2))
+                   % (sid, dfit["centers"][0] / xs, dfit["centers"][1] / xs,
+                      dfit["splitting"] / xs, dfit["r_squared"], r2))
         else:
             ttl = ("%s  center %.4f MHz  FWHM %.0f kHz  R2 %.3f"
-                   % (sid, center / 1e6, fwhm / 1e3, r2))
+                   % (sid, center / xs, fwhm / fk, r2))
         ax.set_title(ttl, fontsize=9)
         ax.legend(fontsize=8)
         fig.tight_layout()

@@ -13,6 +13,13 @@ fit (low R^2, edge-pinned center, too few loaded shots) are dropped -> grey x's.
 
 Run from PROJECT ROOT with the yb_analysis env:
     python pyctrl/tools/persite_fit_centers.py <scan_id> [<scan_id> ...] [--minr2 0.4] [--minload 20]
+                                               [--mode dip|peak]
+
+NOTE (2026-08-18): on a Revival616 line the per-site fits are NOISE-LIMITED at ~3 loaded
+shots/site/point (131/1068 sites pass minr2=0.4, median centre stderr 4.3 MHz > the 1.4 MHz
+centre scatter), and that line also sits on a SLOPED baseline that this single-Lorentzian
+model does not carry -- so prefer spatial CELL-POOLING for revival lineshape work. See the
+08/18 Notion entry.
 Saves persite_fit_centers_<primary_scan_id>[_combN].png into the first scan's data folder.
 """
 import argparse
@@ -25,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _persite_common import load_combined, _bootstrap_root
 
 
-def build(scan_ids, minr2=0.4, minload=20):
+def build(scan_ids, minr2=0.4, minload=20, mode='dip'):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -48,7 +55,7 @@ def build(scan_ids, minr2=0.4, minload=20):
         if good.sum() < 6 or np.nansum(n_load[i]) < minload:
             continue
         try:
-            fit = fit_lorentzian(freq[good], y[good], None, mode="dip")   # UNWEIGHTED
+            fit = fit_lorentzian(freq[good], y[good], None, mode=mode)   # UNWEIGHTED
         except Exception:
             fit = None
         if not fit:
@@ -73,7 +80,7 @@ def build(scan_ids, minr2=0.4, minload=20):
                    label="no fit (%d)" % int((~ok).sum()))
     sc = ax.scatter(xs[ok], ys[ok], c=c_mhz[ok], s=42, cmap="turbo",
                     vmin=vlo, vmax=vhi, edgecolors="none")
-    cb = fig.colorbar(sc, ax=ax); cb.set_label("fitted dip center [MHz]")
+    cb = fig.colorbar(sc, ax=ax); cb.set_label("fitted %s center [MHz]" % mode)
     if have_xy:
         ax.set_xlabel("site x [px]"); ax.set_ylabel("site y [px]")
         ax.set_aspect("equal"); ax.invert_yaxis()
@@ -104,5 +111,8 @@ if __name__ == "__main__":
     ap.add_argument("scan_ids", nargs="+", help="one or more scan ids to POOL (same grid+freq axis)")
     ap.add_argument("--minr2", type=float, default=0.4, help="min per-site fit R^2 to keep")
     ap.add_argument("--minload", type=int, default=20, help="min total loaded shots to fit a site")
+    ap.add_argument("--mode", choices=("dip", "peak"), default="dip",
+                    help="lineshape: 'dip' (push-out spectrum, default) or 'peak' (a survival "
+                         "REVIVAL line, e.g. Revival616Scan). Mirrors fit_spectrum.py --mode.")
     a = ap.parse_args()
-    build(a.scan_ids, minr2=a.minr2, minload=a.minload)
+    build(a.scan_ids, minr2=a.minr2, minload=a.minload, mode=a.mode)

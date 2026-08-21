@@ -61,7 +61,11 @@ XREF_NAME = "xref.json"
 # v9: + per-basic-sequence tagging -- "steps" carry "seq_idx" and "time_regions" bands carry an
 #     optional 3rd element (== bseq_id), so a multi-basic-seq scan (e.g. SLM rearrangement) shows
 #     only the displayed basic sequence's phase ruler / wait bands (was: every bseq's, overlaid).
-XREF_VERSION = 9
+# v10: the run's per-pattern config overlay (expConfig ByPattern, from runp().loading_phase) is
+#     re-applied before the rebuild -- v9 and earlier built against BASE consts, so a pattern that
+#     overrides a wait (33x33_feedback11: LAC.Time 20->30 ms, Orca.ExposureTime->50 ms) shifted
+#     every later step/wait band by the difference (~10 ms) and the ruler mislabeled pulses.
+XREF_VERSION = 10
 _DEFAULT_TICK = 10 ** 12                              # config.yml tick_per_sec (1 ps); engine-free fallback
 _SIDECAR_RE = re.compile(r"^data_\d{8}_\d{6}\.json$")
 # LIVE experiment + lib dirs (NOT the snapshot) so the provenance hooks are loaded.
@@ -187,6 +191,25 @@ def _read_globals_by_seqid(seq_dir):
     return out
 
 
+def _scan_pattern_name(scangroup, seq_config):
+    """The scan's SLM loading-pattern name (expConfig ``ByPattern`` key), or None.
+
+    The live runner sets this before every build (``engine_run``: ``_first_loading_pattern`` ->
+    ``expConfig_helper.set_current_pattern``), and the overlay changes REAL TIMING (e.g.
+    ``33x33_feedback11`` sets ``LAC.Time`` 20 -> 30 ms and ``Orca.ExposureTime`` -> 50 ms). An
+    offline rebuild that skips it places every step/wait band after the first overridden wait at
+    the WRONG absolute time (the phase ruler then labels a pulse with the neighbouring step).
+    Best-effort -> None (base consts, as before) if the helpers aren't importable.
+    """
+    try:
+        from slm_runtime import _first_loading_pattern, _loading_defaults
+        phase, all_scans = _loading_defaults(seq_config)
+        pat = _first_loading_pattern(scangroup.runp(), default_phase=phase, all_scans=all_scans)
+    except Exception:  # noqa: BLE001
+        return None
+    return (pat or {}).get("name")
+
+
 def build_scan_xref(scan_dir):
     """Build ``xref.json`` for ``scan_dir`` from its ``descriptor`` using the LIVE code."""
     scan_dir = os.path.abspath(scan_dir)
@@ -213,23 +236,34 @@ def build_scan_xref(scan_dir):
     name_by_seqid = _existing_seq_names(seq_dir)
     globals_by_seqid = _read_globals_by_seqid(seq_dir)   # for absolute wait time_regions
 
+    # Re-apply the run's per-pattern config overlay (expConfig ByPattern) exactly as the live
+    # runner does -- it changes real waits (LAC.Time, Orca/Imag399.ExposureTime), so without it
+    # every band after the first overridden wait is placed at the wrong absolute time.
+    import expConfig_helper
+    prev_pattern = expConfig_helper.current_pattern()
+    pattern = _scan_pattern_name(scangroup, SeqConfig.get(1))
+    expConfig_helper.set_current_pattern(pattern)
+
     n_total = int(scangroup.nseq())
     by_file = {}
     seen = set()
     failed = 0
-    for n in range(1, n_total + 1):
-        seqid, seqparam, _ = scangroup.getseq_with_var(n)
-        key = str(seqid)
-        if key in seen:
-            continue
-        seen.add(key)
-        fname = name_by_seqid.get(key) or (
-            "point_%05d__seqid_%s.seq" % (n, re.sub(r"[^A-Za-z0-9._-]", "_", key)))
-        try:
-            by_file[fname] = capture_point_xref(
-                seqfn, seqparam, globals_map=globals_by_seqid.get(key))
-        except Exception:  # noqa: BLE001 - one point's failure never aborts the rest
-            failed += 1
+    try:
+        for n in range(1, n_total + 1):
+            seqid, seqparam, _ = scangroup.getseq_with_var(n)
+            key = str(seqid)
+            if key in seen:
+                continue
+            seen.add(key)
+            fname = name_by_seqid.get(key) or (
+                "point_%05d__seqid_%s.seq" % (n, re.sub(r"[^A-Za-z0-9._-]", "_", key)))
+            try:
+                by_file[fname] = capture_point_xref(
+                    seqfn, seqparam, globals_map=globals_by_seqid.get(key))
+            except Exception:  # noqa: BLE001 - one point's failure never aborts the rest
+                failed += 1
+    finally:
+        expConfig_helper.set_current_pattern(prev_pattern)
 
     path = write_xref_json(seq_dir, by_file, scan_id=scan_id)
     n_edges = sum(len(e.get("channel_to_params", {})) for e in by_file.values())
