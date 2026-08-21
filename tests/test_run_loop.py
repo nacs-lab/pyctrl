@@ -73,6 +73,7 @@ class FakeQueueServer:
         self.submitted = []                     # [(job_id, payload), ...]
         self.submitted_summaries = []           # [summary_or_None, ...] (parallel to submitted)
         self.submitted_priorities = []          # [priority, ...] (parallel to submitted)
+        self.submitted_places = []              # [place_at_descriptor, ...] (parallel)
         self.linked = []                        # [(desc_id, job_id), ...]
         self.desc_finished = []                 # [(desc_id, status, msg), ...]
         self.dummy_running = []                 # [flag, ...]
@@ -106,7 +107,8 @@ class FakeQueueServer:
     def set_background_running(self, flag, name=''):
         self.bg_running.append((flag, name))
 
-    def submit_job(self, payload, summary=None, job_id=None, priority='normal', cycle=False):
+    def submit_job(self, payload, summary=None, job_id=None, priority='normal', cycle=False,
+                   place_at_descriptor=None):
         if self.submit_should_raise:
             raise RuntimeError("submit boom")
         # Mirror the real ExptServer: a given job_id is reused verbatim (pyctrl
@@ -119,6 +121,8 @@ class FakeQueueServer:
         self.submitted.append((jid, payload))
         self.submitted_summaries.append(summary)
         self.submitted_priorities.append(priority)
+        # In-place dispatch anchor: the built job takes the descriptor's queue slot.
+        self.submitted_places.append(place_at_descriptor)
         return jid
 
     def link_descriptor_to_job(self, desc_id, job_id):
@@ -156,6 +160,17 @@ class TestHandleDescriptorPop:
         assert srv.submitted == [(1, b'{"seq":"A"}'), (2, b'{"seq":"B"}')]
         assert srv.linked == [(1, 1), (2, 2)]
         assert srv.desc_finished == []
+
+    def test_built_job_anchored_at_descriptor_slot(self):
+        # The built job must take the descriptor's QUEUE SLOT (place_at_descriptor),
+        # not the back of the queue -- otherwise dispatch silently undoes any operator
+        # reordering done with the queue's up/down arrows.
+        srv = FakeQueueServer(descriptors=[
+            {"id": 4, "descriptor": '{"seq":"A"}'},
+            {"id": 9, "descriptor": '{"seq":"B"}'},
+        ])
+        assert run_loop.handle_descriptor_pop(srv) == 2
+        assert srv.submitted_places == [4, 9]
 
     def test_empty_queue_returns_zero(self):
         srv = FakeQueueServer()

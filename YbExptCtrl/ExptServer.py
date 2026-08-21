@@ -1051,7 +1051,7 @@ class ExptServer(object):
     # -------- Job queue (NEW) --------
 
     def submit_job(self, payload, summary=None, job_id=None,
-                   priority='normal', cycle=False):
+                   priority='normal', cycle=False, place_at_descriptor=None):
         """Append a new job to the queue. `payload` is the MATLAB
         getByteStreamFromArray(...) blob the runner will decode with
         getArrayFromByteStream. `summary` is an optional dict produced by
@@ -1069,7 +1069,16 @@ class ExptServer(object):
         descriptor -> unchanged fresh-id behavior. DIVERGENCE from
         matlab_new/YbExptCtrl/ExptServer.py (which always mints a fresh id and
         archives a distinct-id descriptor): pyctrl is both producer and consumer
-        with an identity payload, so the second id was vestigial."""
+        with an identity payload, so the second id was vestigial.
+
+        `place_at_descriptor` (in-place dispatch): the id of the descriptor row this
+        job was built from. The job is inserted AT that descriptor's queue index
+        instead of at the back, so a descriptor->job conversion never reorders the
+        queue behind the operator's back. Without it, a descriptor the operator moved
+        to the front would still run LAST (it got appended once dispatched), which is
+        what made the queue's up/down arrows meaningless across kinds -- see
+        queue_move. Falls back to appending when the id isn't in the queue (already
+        dropped, or a plain MATLAB submit with no descriptor)."""
         with self.__queue_lock:
             if job_id is None:
                 jid = self.__next_job_id
@@ -1122,7 +1131,21 @@ class ExptServer(object):
                         if 3 <= len(cand) <= 64 and cand.replace('_', '').isalnum():
                             entry['seqName'] = cand
                             break
-            self.__queue.append(entry)
+            # In-place dispatch: take the originating descriptor's queue slot (it is
+            # popped right after, by link_descriptor_to_job) so the built job keeps the
+            # position the operator gave the descriptor. Resolved HERE, under the queue
+            # lock, so a concurrent submit/cancel can't shift the index out from under us.
+            pos = None
+            if place_at_descriptor is not None:
+                want = int(place_at_descriptor)
+                for i, e in enumerate(self.__queue):
+                    if e.get('kind') == 'descriptor' and e['id'] == want:
+                        pos = i
+                        break
+            if pos is None:
+                self.__queue.append(entry)
+            else:
+                self.__queue.insert(pos, entry)
             self.__save_queue_locked()
             return jid
 
@@ -1148,25 +1171,33 @@ class ExptServer(object):
             return False
 
     def queue_move(self, job_id: int, direction: str) -> bool:
-        """direction = 'up' or 'down'. Moves a queued entry among queued
-        SAME-KIND neighbors only -- jobs and descriptors don't compete
-        for ordering (the dispatcher pops descriptors independently of
-        the job runner)."""
+        """direction = 'up' or 'down'. Swaps a queued entry with its neighbor among
+        the queued entries of the SAME SCHEDULING LANE ('normal' vs 'background'),
+        regardless of kind: a not-yet-dispatched descriptor and an already-built job
+        DO compete for ordering, because the dispatcher inserts the built job at the
+        descriptor's own queue slot (submit_job(place_at_descriptor=...)) and
+        pop_next_job takes the first queued job in list order. So the displayed order
+        is the run order, and moving a descriptor above a queued job really does make
+        it run first.
+
+        Lanes stay separate: the background (calibration) lane is round-robin and only
+        runs when the foreground is idle, so ordering a background scan against a
+        foreground one would be meaningless."""
         if isinstance(direction, (bytes, bytearray)):
             direction = direction.decode('ascii', errors='ignore')
         with self.__queue_lock:
-            # Find the target entry first so we can match by id AND filter
-            # the neighbor pool by the same kind.
-            target_kind = None
+            # Find the target entry first so we can match by id AND filter the
+            # neighbor pool to the same lane.
+            target_lane = None
             for e in self.__queue:
                 if e['id'] == job_id:
-                    target_kind = e.get('kind', 'job')
+                    target_lane = e.get('priority', 'normal')
                     break
-            if target_kind is None:
+            if target_lane is None:
                 return False
             queued_idx = [i for i, e in enumerate(self.__queue)
                           if e['state'] == 'queued'
-                          and e.get('kind', 'job') == target_kind]
+                          and e.get('priority', 'normal') == target_lane]
             pos = None
             for p, i in enumerate(queued_idx):
                 if self.__queue[i]['id'] == job_id:

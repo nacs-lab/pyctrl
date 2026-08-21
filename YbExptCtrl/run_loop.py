@@ -169,7 +169,11 @@ def handle_descriptor_pop(server, max_per_iter=MAX_DESC_PER_ITER, log=None,
             # Reuse the descriptor's id for the job so the scan has a SINGLE id (the one the
             # .py script printed); link_descriptor_to_job then drops the descriptor row (its
             # same-id branch) instead of archiving a redundant second row.
-            job_id = server.submit_job(payload, summary=summary, job_id=desc_id, priority=priority)
+            # place_at_descriptor: the built job takes the descriptor's QUEUE SLOT rather
+            # than the back, so dispatch never reorders what the operator arranged with the
+            # queue's up/down arrows (ExptServer.queue_move is lane-scoped, kind-agnostic).
+            job_id = server.submit_job(payload, summary=summary, job_id=desc_id,
+                                       priority=priority, place_at_descriptor=desc_id)
             server.link_descriptor_to_job(desc_id, job_id)
             dispatched += 1
         except Exception as e:  # noqa: BLE001 - bad descriptor: mark error, keep draining
