@@ -4,6 +4,9 @@
 Copied from RearrangeMWScan and switched to the Echo template with a 2D phase x T sweep. The STIRAP
 round-trip is FIXED at the mj=-1 verified forward optimum + reference quintic-reverse seeds; the MW
 carrier is FIXED on the located sigma- resonance (~11318.7 MHz). Echo = pi/2 - T/2 - pi - T/2 - pi/2:
+2026-08-19: ported to the HIGH-FIELD (60 G) operating point from RearrangeSTIRAPScan (forward lock
+118.8856 / EOM616 230.4316, delay 1.333 us, reverse delay -0.2 us). CAUTION: QICK.freq is still the
+20 G MW resonance -- re-locate it at 60 G before any fixed-freq run.
 sweeping the closing-pi/2 phase at each T gives a phase-scan echo (fitted phase -> signed detuning,
 no fringe/f0 degeneracy); sweeping T gives the Hahn-echo coherence decay (T2echo).
 
@@ -96,33 +99,37 @@ def build():
     g().rearrange_kwargs.extras.verifyImage = verify
     g().rearrange_kwargs.extras.n_rounds = 1
 
-    # ---- FORWARD (Ch1) FIXED at the mj=-1 VRydTrap=0.2 optimum ----
+    # ---- FORWARD (Ch1) at the 2026-08-19 HIGH-FIELD (60 G) lock ----------------------------
+    # 2026-08-19: RETUNED 30 G mj=-1 -> 60 G high field (ported from RearrangeSTIRAPScan). 30 G
+    # values preserved in the trailing comments. 60 G forward lock (data_20260819_092526):
+    # carrier/EOM616 = 118.8856/230.4316 at the along-ridge floor (survival 0.0267 +- 0.0042);
+    # ridge line for re-derivation: carrier = 118.982 + 0.814*(EOM616 - 230.55).
     g().AWG.AWG556.Ch1.shape = "rise_quintic"
-    g().AWG.AWG556.Ch1.carrier_freq_MHz = 142.944   # mj=-1 forward optimum, verified (data_20260722_164834, 94.3% exc; trap ON)
-    g().AWG.AWG556.Ch1.pulse_width_us = 6.0   # mj=-1 verified optimum
+    g().AWG.AWG556.Ch1.carrier_freq_MHz = 118.8856   # 60 G lock; was 142.944 (30 G mj=-1, data_20260722_164834)
+    g().AWG.AWG556.Ch1.pulse_width_us = 3   # 60 G; was 6.0 (30 G mj=-1)
     g().AWG.AWG556.Ch1.max_amplitude_vpp = 15
-    g().AWG.AWG556.Ch1.amplitude_scale = 1
+    g().AWG.AWG556.Ch1.amplitude_scale = 0.87   # 60 G; was 1 (30 G)
 
-    # ---- REVERSE (Ch2) quintic de-excitation (reference quintic seeds; pw/RD re-tune pending) ----
+    # ---- REVERSE (Ch2) quintic de-excitation (60 G: delay confirmed data_20260819_095938; widths = incumbent 2/2, 08-19 width-2D pending) ----
     g().AWG.AWG556.Ch2.shape = "fall_quintic"
-    g().AWG.AWG556.Ch2.carrier_freq_MHz = 142.944   # matched to forward carrier (quintic-reverse ref convention)
-    g().AWG.AWG556.Ch2.pulse_width_us = 2   # reverse width us (556 Ch2 = 308 Ch2; seed, unverified)
+    g().AWG.AWG556.Ch2.carrier_freq_MHz = 118.8856   # 60 G, matched to forward carrier; was 142.944 (30 G)
+    g().AWG.AWG556.Ch2.pulse_width_us = 2   # incumbent (08-19 reverse width-2D pending); 556 Ch2 = 308 Ch2
     g().AWG.AWG556.Ch2.max_amplitude_vpp = 15
-    g().AWG.AWG556.Ch2.amplitude_scale = 1.0   # quintic-reverse ref seed (was FLAT-era 0.44)
+    g().AWG.AWG556.Ch2.amplitude_scale = 0.9   # 60 G (RearrangeSTIRAPScan value); was 1.0 (30 G seed)
     g().AWG.AWG556.Ch2.pad_time_us = 0.0
 
     g().AWG.AWG308.Ch1.shape = "fall_quintic"
     g().AWG.AWG308.Ch1.carrier_freq_MHz = 200
-    g().AWG.AWG308.Ch1.pulse_width_us = 5.7   # mj=-1 verified optimum
+    g().AWG.AWG308.Ch1.pulse_width_us = 3   # 60 G; was 5.7 (30 G mj=-1)
     g().AWG.AWG308.Ch1.max_amplitude_vpp = 8
-    g().AWG.AWG308.Ch1.amplitude_scale = 0.9
+    g().AWG.AWG308.Ch1.amplitude_scale = 1   # 60 G; was 0.9 (30 G)
     g().AWG.AWG308.Ch1.pad_time_us = 2
 
     g().AWG.AWG308.Ch2.shape = "rise_quintic"
     g().AWG.AWG308.Ch2.carrier_freq_MHz = 200
     g().AWG.AWG308.Ch2.pulse_width_us = 2   # reverse width us (matches 556 Ch2)
     g().AWG.AWG308.Ch2.max_amplitude_vpp = 8
-    g().AWG.AWG308.Ch2.amplitude_scale = 0.95
+    g().AWG.AWG308.Ch2.amplitude_scale = 1   # 60 G; was 0.95 (30 G)
 
     g.runp().AWGs = ["AWG556", "AWG308"]
 
@@ -133,32 +140,31 @@ def build():
     # Freq FIXED on the located resonance. Most precise + up-to-date: 2026-07-24 overnight eightfold
     # Ramsey T=1us global fit f0 = 11318.7562 MHz (R2 0.999), same config as this scan (sigma- line,
     # 71 3S1 mj=-1 -> 71 3P2 mj=-2). rabi_freq from the on-res MW Rabi Omega/2pi = 4.825 MHz (T_pi 104 ns).
+    #_F_DIP = 483e3                                    # predicted dipolar-exchange freq (Hz)
+    #_STEP = (1.0 / _F_DIP) / 10.0                     # 10 samples per oscillation period
+    #TIME_PTS = [round(float(v), 12) for v in np.linspace(0.01e-6, 10e-6, 30)]  # s
+    #TIME_PTS = [0.01e-6, 2.5e-6, 5.0e-6, 10.0e-6, 15e-6, 20e-6]  # s
+    TIME_PTS = [0.01e-6, 0.01e-6]
+    
+    QICK_FREQ_MHZ = 11275.3252   # MW resonance in MHz 
+    RABI_FREQ = 24.155e6 #4.6815e6 #
+    GAIN = 5000 
+    PHASE = [0, 60, 120, 180, 240, 300, 360] #0.0
+    
     g().QICK.template = "Echo"
-    g().QICK.freq = 11318.7562                       # MHz, FIXED on resonance (2026-07-24 Ramsey global)
-
-    # DIPOLAR EXCHANGE: read the SS<->PP populations directly, so NO phase scan -- fix closing-pi/2
-    # phase = 0 and sweep ONLY the free-evolution time T (1D). (The phase scan was for single-atom
-    # coherence readout; the dipolar oscillation shows directly in the 2-atom populations vs T.)
-    # axis 1: echo free-evolution T = wait_time (s). Predicted dipolar freq ~483 kHz -> period
-    # 2.070 us; 10 pts/period -> step 0.207 us, over 0.05..10 us (~4.8 periods, 49 pts).
-    # STIRAPGap auto-sizes for max T=10 us. round(,12) not (,4): sub-us values round to 0.0 at 4 dp
-    # and zero the pulse (job #90 HW-min guard).
-    _F_DIP = 483e3                                    # predicted dipolar-exchange freq (Hz)
-    _STEP = (1.0 / _F_DIP) / 10.0                     # 10 samples per oscillation period
-    TIME_PTS = [round(float(v), 12) for v in np.arange(0.05e-6, 15e-6 + _STEP / 2, _STEP)]  # s (0.05..15us)
-
-    g().QICK.phase = 0.0                              # FIXED closing-pi/2 phase (deg) -- no phase scan
+    g().QICK.freq = QICK_FREQ_MHZ #11318.7562           # 20 G value, STALE at 60 G (see note above)
+    g().QICK.phase = 0   #.scan(2, PHASE)  #        # FIXED closing-pi/2 phase (deg) -- no phase scan
     g().QICK.wait_time.scan(1, TIME_PTS)             # axis 1 (sole): echo free-evolution T (s)
-    g().QICK.gain = 2000                             # DAC gain (nonzero to emit; 0 = silent)
-    g().QICK.rabi_freq = 4.825e6                     # derives t_pi2 = 1/(4*f), t_pi = 2*t_pi2 (from MW Rabi)
+    g().QICK.gain = GAIN                             # DAC gain (nonzero to emit; 0 = silent)
+    g().QICK.rabi_freq = RABI_FREQ                # derives t_pi2 = 1/(4*f), t_pi = 2*t_pi2 (from MW Rabi)
     g.runp().QICK = True                             # opt in -> engine_run wires setup/arm/cleanup
 
-    g().Init.EOM616.Freq = 233.967e6   # mj=-1 two-photon (308) resonance
+    g().Init.EOM616.Freq = 230.4316e6   # 60 G lock (pairs with carrier 118.8856); was 233.967e6 (30 G mj=-1)
 
-    g().Pushout.VRydTrap = 0.2   # in-pulse trap depth (trap ON)
-    g().Pushout.BiasCoilCurrent.Ryd = 30
-    g().Pushout.STIRAPDelay = 1.0e-6   # mj=-1 verified optimum (308-first)
-    g().Pushout.STIRAPReverseDelay = -0.5e-6   # quintic reverse delay s (data_20260722_172621)
+    g().Pushout.VRydTrap = 0.2   # 60 G (RearrangeSTIRAPScan value); was 0.2 (30 G trap-ON)
+    g().Pushout.BiasCoilCurrent.Ryd = 60   # 60 G high field; was 30
+    g().Pushout.STIRAPDelay = 1.333e-6   # 60 G mid-plateau (data_20260818_174505: peak 1.222, plateau to 2.0); was 1.0e-6 (30 G)
+    g().Pushout.STIRAPReverseDelay = -0.2e-6   # 60 G confirmed (data_20260819_095938); was -0.5e-6 (30 G, data_20260722_172621)
     # STIRAPGap must span the whole QICK program so the MW plays entirely inside the gap. It CO-SCANS
     # with wait_time (same axis 1): per T point, gap = qick_program_duration(that T's echo) + margin.
     # (Co-scanning instead of one fixed max-T gap keeps the Rydberg hold as SHORT as possible at each
@@ -167,13 +173,13 @@ def build():
     _tmpl = g().QICK.template()
     _GAP_MARGIN = 0e-6 #0.5e-6                               # margin on top of each point's program length
     def _prog_dur(Tval):
-        return qick_program_duration({"template": _tmpl, "freq": 11318.7562, "gain": 2000,
-                                      "rabi_freq": 4.825e6, "phase": 0.0, "wait_time": Tval})
+        return qick_program_duration({"template": _tmpl, "freq": QICK_FREQ_MHZ, "gain": GAIN,
+                                      "rabi_freq": RABI_FREQ, "phase": PHASE, "wait_time": Tval})
     try:
         from devices.qick_awg import qick_program_duration
         GAP_PTS = [round(_prog_dur(T) + _GAP_MARGIN, 12) for T in TIME_PTS]
     except Exception:  # noqa: BLE001 - off the engine venv: T + pulses (Ramsey 2*t_pi2, Echo 4*t_pi2) + margin
-        _tpi2 = 1.0 / (4 * 4.825e6)
+        _tpi2 = 1.0 / (4 * RABI_FREQ)
         _npulse = 4 if str(_tmpl).lower() == "echo" else 2   # Echo: 2*pi/2 + pi = 4*t_pi2; Ramsey: 2*pi/2
         GAP_PTS = [round(T + _npulse * _tpi2 + _GAP_MARGIN, 12) for T in TIME_PTS]
     g().Pushout.STIRAPGap.scan(1, GAP_PTS)            # co-scans axis 1 with QICK.wait_time
@@ -181,11 +187,23 @@ def build():
     g().Pushout.IfMW = 1                             # fire TTLQickTrig in the fwd->rev gap
     g().Pushout.IfPump = 0
     g().Pushout.PumpTime = 1e-6
-    g().Pushout.Pump616Freq = round((234.444 + (233.967 - 234.089)) * 1e6, 3)   # + fwd EOM616 offset from model
-    g().Pushout.Pump556Freq = round((143.3 + (142.944 - 143.244)) * 1e6, 3)     # + fwd 556 carrier offset from model
+    g().Pushout.Pump616Freq = 282.355e6   # mj=0 pump616 (RearrangeSTIRAPScan; pumps OFF, IfPump=0)
+    g().Pushout.Pump556Freq = 143.556e6   # mj=0 pump556 (RearrangeSTIRAPScan; pumps OFF, IfPump=0)
     g().Pushout.Pump556Amp = 0.5
 
-    g().Pushout.Time369 = 2e-6
+    # ---- trap timing during the pulse / gap (ported from RearrangeSTIRAPScan 2026-08-12) ----
+    # NOTE: both knobs change the trap the atoms see INSIDE the fwd->rev gap, which is exactly where
+    # the echo evolves -- the light shift there moves, so re-verify the MW resonance (QICK.freq) and
+    # the dipolar frequency after this.
+    g().Pushout.STIRAPPadTime = 2e-6   # moves the AmpSLM=0 trap-off point INSIDE the forward pulse
+    g().Pushout.SLMAOMAmpGap = 0.55    # trap depth held through the fwd->rev gap (was full depth)
+    g().Pushout.IfGatePulses = 1       # 1 = fire AWG gate pulses; 0 = the no-pulse A/B control
+
+    # ---- ionization (TTL path; renamed from Pushout.Time369 in 721b20c -- the old name is DEAD) ----
+    g().Pushout.IonizationViaDAC = 0    # 0 = TTL switch, 1 = legacy DAC electrode ramp
+    g().Pushout.TimeIonization = 0.1e-6
+    g().Pushout.TIonizationAlign = 0.5e-6
+    g().Init.VIonizationSet5to8 = 4     # DC level held by Dev1/2, asserted in InitStep; must be < 5 V
     g().Pushout.Vy = 4
 
     rp = g.runp()
@@ -203,6 +221,11 @@ def build():
     rp.warmup_kwargs.cuda_graph = True
     rp.warmup_kwargs.derive_threshold = 0.35
 
+    # Warm-started phase-locked WGS transit frames (server-side producer) instead of pure SLMnet.
+    g().rearrange_kwargs.extras.wgs_warm = True
+    g().rearrange_kwargs.extras.wgs_pad = 2048
+    g().rearrange_kwargs.extras.wgs_iters = 3   # >= 3 (2 is the contract-quality cliff)
+
     g().rearrange_kwargs.nsteps = 50
     g().rearrange_kwargs.step_period_ms = 0.696
     g().rearrange_kwargs.protocol = "rearrange2_eviction"
@@ -211,7 +234,7 @@ def build():
     g().rearrange_kwargs.extras.overdrive = False
     g().rearrange_kwargs.extras.dynamic = False
     g().rearrange_kwargs.extras.max_step_size = 0.75
-    g().rearrange_kwargs.extras.pattern = "eight_pairs"
+    g().rearrange_kwargs.extras.pattern = "eight_pairs" #"octuple_spacing" #
     g().rearrange_kwargs.extras.ifEnhanced = False
     g().rearrange_kwargs.extras.precompute = False
     g().rearrange_kwargs.extras.precompute_host = False
@@ -222,7 +245,7 @@ def build():
     rp.NumPerGroup = 2000
     rp.loading_defocus = -5
     rp.NumImages = 3 if verify else 2
-    rp.Scramble = 1
+    rp.Scramble = 0
     rp.isGrid2 = 0
     rp.isInit = 0
     rp.isHC = 0
@@ -251,7 +274,7 @@ def RearrangeEchoScan(url=None, reps=3):
     if reps is not None:
         opts["rep"] = reps
     desc = (
-        "mj=-1 rearrange + STIRAP round-trip; QICK ECHO (pi/2-T/2-pi-T/2-pi/2) in the fwd->rev gap. "
+        "60 G high-field rearrange + STIRAP round-trip; QICK ECHO (pi/2-T/2-pi-T/2-pi/2) in the fwd->rev gap. "
         "1D scan of free-evolution T %.3f..%.3f us (%d pts, ~10/period for a %.0f kHz dipolar osc); "
         "closing-pi/2 phase FIXED 0. QICK freq FIXED %.4f MHz (sigma- line), rabi_freq %.4g MHz, gain %s. "
         "STIRAPGap %.4gus (sized for max T). Forward: Ch1 556 %s %.3fMHz / EOM616 %.3fMHz, VRydTrap %.4g "
@@ -275,6 +298,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit the mj=-1 rearrange+STIRAP QICK spin-echo 2D (phase x T) scan.")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=3, help="passes over the sweep")
+    ap.add_argument("--reps", type=int, default=10, help="passes over the sweep")
     args = ap.parse_args()
     RearrangeEchoScan(url=args.url, reps=args.reps)

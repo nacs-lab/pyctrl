@@ -4,6 +4,9 @@ microwave carrier FREQUENCY.
 Copied from RearrangeSTIRAPScan_mjm1_trapON_reverseflat.py (the latest mj=-1 trap-ON STIRAP scan) and
 extended with a QICK microwave definition. The STIRAP round-trip is FIXED at the mj=-1 verified forward
 optimum + reference quintic-reverse seeds; the NEW scan axis is the QICK carrier frequency.
+2026-08-19: ported to the HIGH-FIELD (60 G) operating point from RearrangeSTIRAPScan (forward lock
+118.8856 / EOM616 230.4316, delay 1.333 us, reverse delay -0.2 us). CAUTION: QICK.freq is still the
+20 G MW resonance -- re-locate it at 60 G before any fixed-freq run.
 
 Flow per shot (STIRAPPushoutStep): forward STIRAP (Ch1, ground->Rydberg) -> [fwd->rev gap: QICK
 microwave, fired on TTLQickTrig=FPGA1/TTL14] -> reverse STIRAP (Ch2, Rydberg->ground). The microwave is
@@ -94,33 +97,37 @@ def build():
     g().rearrange_kwargs.extras.verifyImage = verify
     g().rearrange_kwargs.extras.n_rounds = 1
 
-    # ---- FORWARD (Ch1) FIXED at the mj=-1 VRydTrap=0.2 optimum ----
+    # ---- FORWARD (Ch1) at the 2026-08-19 HIGH-FIELD (60 G) lock ----------------------------
+    # 2026-08-19: RETUNED 20 G -> 60 G high field (ported from RearrangeSTIRAPScan). 20 G / 30 G
+    # values preserved in the trailing comments below. 60 G forward lock (data_20260819_092526):
+    # carrier/EOM616 = 118.8856/230.4316 at the along-ridge floor (survival 0.0267 +- 0.0042);
+    # ridge line for re-derivation: carrier = 118.982 + 0.814*(EOM616 - 230.55).
     g().AWG.AWG556.Ch1.shape = "rise_quintic"
-    g().AWG.AWG556.Ch1.carrier_freq_MHz = 142.944   # mj=-1 forward optimum, verified (data_20260722_164834, 94.3% exc; trap ON)
-    g().AWG.AWG556.Ch1.pulse_width_us = 6.0   # mj=-1 verified optimum
+    g().AWG.AWG556.Ch1.carrier_freq_MHz = 118.8856   # 60 G lock; was 131.78 (20 G), 142.944 (30 G mj=-1)
+    g().AWG.AWG556.Ch1.pulse_width_us = 3   # unchanged 20 G -> 60 G; was 6.0 (30 G mj=-1)
     g().AWG.AWG556.Ch1.max_amplitude_vpp = 15
-    g().AWG.AWG556.Ch1.amplitude_scale = 1
+    g().AWG.AWG556.Ch1.amplitude_scale = 0.87   # 60 G; was 0.5 (20 G), 1 (30 G)
 
-    # ---- REVERSE (Ch2) quintic de-excitation (reference quintic seeds; pw/RD re-tune pending) ----
+    # ---- REVERSE (Ch2) quintic de-excitation (60 G: delay confirmed data_20260819_095938; widths = incumbent 2/2, 08-19 width-2D pending) ----
     g().AWG.AWG556.Ch2.shape = "fall_quintic"
-    g().AWG.AWG556.Ch2.carrier_freq_MHz = 142.944   # matched to forward carrier (quintic-reverse ref convention)
-    g().AWG.AWG556.Ch2.pulse_width_us = 2   # reverse width us (556 Ch2 = 308 Ch2; seed, unverified)
+    g().AWG.AWG556.Ch2.carrier_freq_MHz = 118.8856   # 60 G, matched to forward carrier; was 131.78 (20 G), 142.944 (30 G)
+    g().AWG.AWG556.Ch2.pulse_width_us = 2   # incumbent (08-19 reverse width-2D pending); job 926: flat along MATCHED-width diagonal
     g().AWG.AWG556.Ch2.max_amplitude_vpp = 15
-    g().AWG.AWG556.Ch2.amplitude_scale = 1.0   # quintic-reverse ref seed (was FLAT-era 0.44)
+    g().AWG.AWG556.Ch2.amplitude_scale = 0.9   # 60 G (RearrangeSTIRAPScan value); was 0.51 (20 G)
     g().AWG.AWG556.Ch2.pad_time_us = 0.0
 
     g().AWG.AWG308.Ch1.shape = "fall_quintic"
     g().AWG.AWG308.Ch1.carrier_freq_MHz = 200
-    g().AWG.AWG308.Ch1.pulse_width_us = 5.7   # mj=-1 verified optimum
+    g().AWG.AWG308.Ch1.pulse_width_us = 3   # unchanged 20 G -> 60 G; was 5.7 (30 G mj=-1)
     g().AWG.AWG308.Ch1.max_amplitude_vpp = 8
-    g().AWG.AWG308.Ch1.amplitude_scale = 0.9
+    g().AWG.AWG308.Ch1.amplitude_scale = 1   # unchanged 20 G -> 60 G; was 0.9 (30 G)
     g().AWG.AWG308.Ch1.pad_time_us = 2
 
     g().AWG.AWG308.Ch2.shape = "rise_quintic"
     g().AWG.AWG308.Ch2.carrier_freq_MHz = 200
-    g().AWG.AWG308.Ch2.pulse_width_us = 2   # reverse width us (matches 556 Ch2)
+    g().AWG.AWG308.Ch2.pulse_width_us = 2   # MUST stay matched to 556 Ch2 (job 926: mismatch 4.0/1.0 collapses survival to 0.377)
     g().AWG.AWG308.Ch2.max_amplitude_vpp = 8
-    g().AWG.AWG308.Ch2.amplitude_scale = 0.95
+    g().AWG.AWG308.Ch2.amplitude_scale = 1   # 20 G; was 0.95
 
     g.runp().AWGs = ["AWG556", "AWG308"]
 
@@ -129,10 +136,18 @@ def build():
     g().QICK.template = "Sine"   # "Sine" = single tone of g().QICK.duration; "Echo" = pi/2-T/2-pi-T/2-pi/2 echo spectroscopy
     # axis 1: QICK carrier-frequency sweep (MHz).
     
-    Freq_PTS = [round(float(v), 12) for v in np.linspace(11317.8, 11319.6, 30)]   # 2026-07-23 ZOOM on dip 3 (71 3S1 mj=-1 -> 71 3P2 mj=-2, sigma-): coarse scan
+    Freq_PTS = [round(float(v), 12) for v in np.linspace(11320, 11350, 30)]   # 2026-07-23 ZOOM on dip 3 (71 3S1 mj=-1 -> 71 3P2 mj=-2, sigma-): coarse scan
    
-    g().QICK.freq = 11318.7562    
-    g().QICK.gain = 8000                             # DAC gain (nonzero to emit; 0 = silent); 20MHz Rabi, T_pi 25ns
+    # 2026-08-12: 20 G MW resonance, f0 = 11334.93 +- 0.02 MHz, from the LOW-POWER limit of the
+    # 616-revival-destruction gain ladder (gains 8000/4000/2000/1000/500 -> FWHM 15.7/3.8/1.07/0.34/0.21
+    # MHz, FWHM ~ gain^1.59). f0 SHIFTS WITH POWER: the gain-8000 centre reads 11334.33, i.e. 0.6 MHz
+    # LOW -- do not take a centre from a saturated scan. Was 11318.7562 at 30 G.
+    # !! 2026-08-19 60 G port: this is still the 20 G value -- the MW resonance moves with field.
+    # RE-LOCATE at 60 G (freq sweep, Freq_PTS above) before trusting any fixed-freq scan here.
+    g().QICK.freq = 11275.3252  #11333.48 20 G value, STALE at 60 G (see note above)
+    g().QICK.gain = 10000                             # DAC gain (nonzero to emit; 0 = silent).
+    # NOTE the "20MHz Rabi, T_pi 25ns" claim previously on this line is NOT supported: a 2026-08-12
+    # duration scan at gain 2000 (job 943) gives T_pi ~250 ns; rabi_freq below (4.825e6) is closer.
 
     # seconds -- DO NOT round(,4): sub-us second-scale values (1e-7..5e-6) all round to 0.0,
     # which zeros QICK.duration and trips the HW-min-pulse guard (see job #90). round in us if needed.
@@ -145,32 +160,42 @@ def build():
     #_WPTS = 24
     #MW_TIME_PTS = [round(float(v), 12) for s in _WSTARTS for v in np.linspace(s, s + _WSPAN, _WPTS)]
     
-    #MW_TIME_PTS = [round(float(v), 12) for v in np.linspace(0.05e-6, 0.15e-6, 24)]
-    MW_TIME_PTS = [0.1e-6, 2e-6]
+    #MW_TIME_PTS = [round(float(v), 12) for v in np.linspace(0.05e-6, 1.0e-6, 40)]
+    MW_TIME_PTS = np.concatenate([np.linspace(0.01e-6, 0.15e-6, 24), np.linspace(1.01e-6, 1.1e-6, 16), np.linspace(2.01e-6, 2.1e-6, 16)])  # 25 pts
     
     g().QICK.duration.scan(1, MW_TIME_PTS)                          # sine template: single-tone length (s)
     g().QICK.rabi_freq = 4.825e6                      # derives t_pi2 = 1/(4*f), t_pi = 2*t_pi2
-    g().QICK.wait_time = 1e-6                       # echo free-evolution T (fixed)
-    g().QICK.phase = 0.0                              # final pi/2 phase (deg)
     g.runp().QICK = True                              # opt in -> engine_run wires setup/arm/cleanup
 
-    g().Init.EOM616.Freq = 233.967e6   # mj=-1 two-photon (308) resonance
+    g().Init.EOM616.Freq = 230.4316e6   # 60 G lock (pairs with carrier 118.8856); was 236.5e6 (20 G), 233.967e6 (30 G mj=-1)
 
-    g().Pushout.VRydTrap = 1   # in-pulse trap depth (trap ON)
-    g().Pushout.BiasCoilCurrent.Ryd = 30
-    g().Pushout.STIRAPDelay = 1.0e-6   # mj=-1 verified optimum (308-first)
-    g().Pushout.STIRAPReverseDelay = -0.5e-6   # quintic reverse delay s (data_20260722_172621)
-    g().Pushout.STIRAPGap.scan(1, MW_TIME_PTS) #= 1.5e-6    #_echo_gap_s()            # sized to hold the whole spin echo
+    g().Pushout.VRydTrap = 2.0   # unchanged 20 G -> 60 G; was 1 at 30 G
+    g().Pushout.BiasCoilCurrent.Ryd = 60   # 60 G high field; was 20, 30
+    g().Pushout.STIRAPDelay = 1.333e-6   # 60 G mid-plateau (data_20260818_174505: peak 1.222, plateau to 2.0); was 1.556e-6 (20 G)
+    g().Pushout.STIRAPReverseDelay = -0.2e-6   # 60 G confirmed (data_20260819_095938: peak of -0.2..+0.3 plateau); was -0.0556e-6 (20 G)
+    g().Pushout.STIRAPGap.scan(1, MW_TIME_PTS)   #= 1.5e-6    #_echo_gap_s()            # sized to hold the whole spin echo
     g().Pushout.IfReverse = 1                        # round-trip: excite -> MW -> de-excite
     g().Pushout.IfMW = 1                             # fire TTLQickTrig in the fwd->rev gap
     g().Pushout.IfPump = 0
     g().Pushout.PumpTime = 1e-6
-    g().Pushout.Pump616Freq = round((234.444 + (233.967 - 234.089)) * 1e6, 3)   # + fwd EOM616 offset from model
-    g().Pushout.Pump556Freq = round((143.3 + (142.944 - 143.244)) * 1e6, 3)     # + fwd 556 carrier offset from model
+    g().Pushout.Pump616Freq = 282.355e6   # mj=0 pump616 (RearrangeSTIRAPScan; pumps OFF, IfPump=0)
+    g().Pushout.Pump556Freq = 143.556e6   # mj=0 pump556 (RearrangeSTIRAPScan; pumps OFF, IfPump=0)
     g().Pushout.Pump556Amp = 0.5
 
-    g().Pushout.Time369 = 2e-6
-    g().Pushout.Vy = 4
+    # ---- trap timing during the pulse / gap (ported from RearrangeSTIRAPScan 2026-08-12) ----
+    # NOTE: both knobs change the trap the atoms see INSIDE the fwd->rev gap, which is exactly where
+    # the microwave acts -- the light shift there moves, so re-verify the MW resonance after this.
+    g().Pushout.STIRAPPadTime = 2e-6   # moves the AmpSLM=0 trap-off point INSIDE the forward pulse
+    g().Pushout.SLMAOMAmpGap = 0.55    # trap depth held through the fwd->rev gap (was full depth)
+    g().Pushout.IfGatePulses = 1       # 1 = fire AWG gate pulses; 0 = the no-pulse A/B control
+
+    # ---- ionization (TTL path; renamed from Pushout.Time369 in 721b20c -- the old name is DEAD) ----
+    g().Pushout.IonizationViaDAC = 0    # 0 = TTL switch, 1 = legacy DAC electrode ramp
+    g().Pushout.TimeIonization = 0.1e-6
+    g().Pushout.TIonizationAlign = 0.5e-6
+    g().Init.VIonizationSet5to8 = 4     # DC level held by Dev1/2, asserted in InitStep; must be < 5 V
+
+    #g().Pushout.Vy = 4
 
     rp = g.runp()
     rp.warmup_kwargs.model_filename = MODEL_FILENAME
@@ -187,13 +212,18 @@ def build():
     rp.warmup_kwargs.cuda_graph = True
     rp.warmup_kwargs.derive_threshold = 0.35
 
+    # Warm-started phase-locked WGS transit frames (server-side producer) instead of pure SLMnet.
+    g().rearrange_kwargs.extras.wgs_warm = True
+    g().rearrange_kwargs.extras.wgs_pad = 2048
+    g().rearrange_kwargs.extras.wgs_iters = 3   # >= 3 (2 is the contract-quality cliff)
+
     g().rearrange_kwargs.nsteps = 50
     g().rearrange_kwargs.step_period_ms = 0.696
     g().rearrange_kwargs.protocol = "rearrange2_eviction"
     g().rearrange_kwargs.extras.overdrive = False
     g().rearrange_kwargs.extras.dynamic = False
     g().rearrange_kwargs.extras.max_step_size = 0.75
-    g().rearrange_kwargs.extras.pattern = "quadruple_no_topright"
+    g().rearrange_kwargs.extras.pattern = "quadruple_spacing"
     g().rearrange_kwargs.extras.ifEnhanced = False
     g().rearrange_kwargs.extras.precompute = False
     g().rearrange_kwargs.extras.precompute_host = False
@@ -243,12 +273,12 @@ def RearrangeMWScan(url=None, reps=3):
     if reps is not None:
         opts["rep"] = reps
     desc = (
-        "mj=-1 rearrange + STIRAP round-trip with a QICK microwave pulse in the fwd->rev gap; SCAN the "
+        "60 G high-field rearrange + STIRAP round-trip with a QICK microwave pulse in the fwd->rev gap; SCAN the "
         "microwave carrier FREQUENCY. Forward: Ch1 556 %s %.3fMHz / EOM616 %.3fMHz, pw556 %.4g/pw308 "
         "%.4gus, delay %+.4gus, VRydTrap %.4g (trap-ON). Reverse: Ch2 556 %s %.3fMHz amp %.4g, pw %.4gus, "
         "RD %+.4gus. QICK[%s]. STIRAPGap %.4gus, IfReverse=%s, IfMW=%s. Scan QICK.freq %.4f..%.4f MHz "
         "(%d pts). Metric = target-only mid-conditioned RETURN survival (group by Params) -> lineshape. "
-        "quadruple_no_topright on 33x33_feedback11."
+        "octuple_spacing on 33x33_feedback11."
         % (fwd.get("shape", "?"), fwd.get("carrier_freq_MHz", nan), eom616_mhz,
            fwd.get("pulse_width_us", nan), pw308,
            pp.get("STIRAPDelay", nan) * 1e6, pp.get("VRydTrap", nan),
@@ -268,6 +298,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit the mj=-1 rearrange+STIRAP QICK spin-echo freq scan.")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=3, help="passes over the sweep")
+    ap.add_argument("--reps", type=int, default=10, help="passes over the sweep")
     args = ap.parse_args()
     RearrangeMWScan(url=args.url, reps=args.reps)

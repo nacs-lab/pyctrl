@@ -19,18 +19,10 @@ Byte-affecting swept axis: ``Init.EOM616.Freq`` -- it sets the slow-EOM ramp tar
 duration), so every sweep point genuinely re-ramps the 616 EOM and enters the FPGA/NI bytecode
 (unlike ``Spectrum308Scan``'s ``MRabi.Freq`` microwave axis, which is inert / un-driven).
 
-The 556 push-out is held fixed on the model resonance ``RES0 + ZEEMAN_SLOPE * field_G`` (RES0 =
-the daily mj=0 calibration, expConfig ``Resonance556mj0Freq``; slope 1.178 MHz/G), with the 0.15
-push amp -- the SAME push conditions ``RydbergSpectrum556Scan`` measures the dip under, so the 556
-actually sits on the line. Override the centre with ``--green-freq-mhz`` (the freshly LOCATED dip),
-the push amp with ``--556-amp`` / the 308 amp with ``--308-amp``.
-
-FIELD BANDS (mirrors ``RydbergPushoutSurvivalSeq``'s branch): ``field_G < 31`` -> the low-field
-``RydbergPushoutStep``; ``50 <= field_G <= 80`` -> ``RydbergHighFieldPushoutStep``, which switches a
-SECOND single-pass AOM (``Freq556RydbergHF`` = 120e6) into a separate high-field 556 Rydberg path.
-That extra +120 MHz optical is reached on the DOUBLE-pass first AOM at a ``Pushout.Green.Freq``
-60 MHz LOWER, so this scan keeps the centre in low-field units and subtracts 60 MHz inside
-``build()``. 31-49 G is INVALID (the seq raises).
+The 556 push-out is held fixed at the 30 G resonance ``RES0 + ZEEMAN_SLOPE * 30`` (= 143.184 MHz;
+fitted center 143.185 MHz), with the 30 G push amp (0.4) -- the SAME push conditions under which
+that resonance was measured, so the 556 actually sits on the line. Override the push amp with
+``--green-amp`` / the 308 amp with ``--ryd308-amp`` for live iteration.
 
 The 0.5-MHz colon window ``(277:0.5:287)`` is integer-on-0.5 (exactly representable) but uses
 :func:`scan_export.matlab_colon` for consistency with the other scans; the field shift is in MHz
@@ -41,14 +33,20 @@ interpreter with pyctrl importable + zmq works.
 
 Run it (pyctrl backend must already be live at --url):
     cd pyctrl
-    python YbScans/Revival616Scan.py                       # 30 G, 616 = (210:1:260) MHz, 51 pts
-    python YbScans/Revival616Scan.py --field 60            # high-field step, 556 auto -60 MHz
+    python YbScans/Revival616Scan.py                       # 30 G, 616 = (277:0.5:287) MHz, 21 pts
     python YbScans/Revival616Scan.py --reps 5
-    python YbScans/Revival616Scan.py --556-amp 0.22        # stronger push
+    python YbScans/Revival616Scan.py --green-amp 0.22       # weaker push (Spectrum308 value)
     python YbScans/Revival616Scan.py --reps 0              # run forever
 """
 
 import argparse
+import numpy as np
+
+# MW knobs (overridden by the CLI in __main__)
+MW_GAIN = 8000
+MW_LO = 11300.0
+MW_HI = 11365.0
+MW_PTS = 27
 
 import scan_bootstrap
 scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so it's never stripped)
@@ -56,48 +54,26 @@ scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so 
 from RydbergPushoutSurvivalSeq import RydbergPushoutSurvivalSeq
 
 
-def build(field_G=30, green_amp=0.15, ryd308_amp=0.4, green_freq_mhz=None,
-          eom_lo_mhz=None, eom_hi_mhz=None, eom_step_mhz=None):
+def build(field_G=30, green_amp=0.15, ryd308_amp=0.4, green_freq_mhz=None):
     """ScanGroup for the 30 G 616-revival sweep (seq = ``RydbergPushoutSurvivalSeq``).
 
     Fixes ``Pushout.Green.Freq`` on the field-shifted 556 resonance and sweeps
-    ``Init.EOM616.Freq`` over the revival window. ``field_G`` drives the Ryd bias coil
-    (``BiasCoilCurrent.Ryd``) and selects the push-out step (< 31 G low-field, 50-80 G high-field,
-    31-49 G invalid); ``green_amp`` is the 556 Rydberg push amp (0.15, in lockstep with
-    ``RydbergSpectrum556Scan``); ``ryd308_amp`` is the 308 pulse amp (max 0.4).
+    ``Init.EOM616.Freq`` over the 30 G revival window. ``field_G`` drives the Ryd bias coil
+    (``BiasCoilCurrent.Ryd``); ``green_amp`` is the 556 Rydberg push amp (30 G default 0.4);
+    ``ryd308_amp`` is the 308 pulse amp (max 0.4).
 
     ``green_freq_mhz`` (if given) OVERRIDES the model-predicted 556 resonance ``RES0+slope*field``
-    with an explicit MHz value -- use the freshly LOCATED dip when it has drifted out of the model
-    window (e.g. 2026-06-12: measured 142.281 MHz vs model 143.184 MHz at 30 G). Give it in the
-    LOW-FIELD (first double-pass AOM) convention at every field; the 50-80 G -60 MHz high-field
-    shift is applied after it. This keeps the revival's 556 actually on the line WITHOUT retuning
-    the calibration constants on one day's drift.
+    with an explicit MHz value -- use the freshly LOCATED 30 G dip when it has drifted out of the
+    model window (e.g. 2026-06-12: measured 142.281 MHz vs model 143.184 MHz). This keeps the
+    revival's 556 actually on the line WITHOUT retuning the calibration constants on one day's drift.
     """
     from scan_group import ScanGroup
     from scan_export import matlab_colon
-    from seq_config import SeqConfig
-    from consts import Consts
 
-    # Consts() reads SeqConfig.get().consts; a freshly-launched client process has the empty default
-    # config. Load the real expConfig if it is not already active (the backend / byte oracle load it
-    # before build(); a direct ``python YbScans/Revival616Scan.py`` does not).
-    if not SeqConfig.get().consts:
-        SeqConfig.load_real()
-
-    # 556 push-out resonance (MHz): mirrors RydbergSpectrum556Scan. 0-field centre = the daily mj=0
-    # calibration (expConfig Resonance556mj0Freq); Zeeman slope from the 2026-06-10 finer push-out
-    # spectra (Lorentzian centers at 0/5/10/20/30 G, linear R^2=1.0000, slope 1.178 MHz/G).
-    RES0_MHZ = float(Consts().Resonance556mj0Freq) / 1e6
-    ZEEMAN_SLOPE_MHZ_PER_G = 1.178
-    # High-field path offset, in Pushout.Green.Freq (first, double-pass AOM) units -- see the
-    # 556-fixed block below for the derivation (120 MHz single-pass / 2).
-    HF_AOM_OFFSET_MHZ = 60.0
-
-    # 2026-08-18: the 556 centre comes from the Zeeman MODEL again (RES0 + slope * field_G), not a
-    # hard-coded 143.5368 -- so it tracks the daily mj=0 calibration at EVERY field (including the
-    # 50-80 G high-field band) instead of only 30 G, and no per-field hand-edit is needed. Mirrors
-    # the same change in RydbergSpectrum556Scan.
-    res556_mhz = RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G
+    # 556 push-out resonance (MHz): mirrors RydbergSpectrum556Scan's calibration (2026-06-10 fit).
+    # RES0_MHZ = 107.8049
+    # ZEEMAN_SLOPE_MHZ_PER_G = 1.1793
+    res556_mhz = 143.5368 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G   # 30 G -> 143.184 MHz (model)
     if green_freq_mhz is not None:
         res556_mhz = float(green_freq_mhz)   # explicit override: the located dip after drift
 
@@ -109,37 +85,36 @@ def build(field_G=30, green_amp=0.15, ryd308_amp=0.4, green_freq_mhz=None,
     # 2026-07-23: back to the mj-1 pi revival window (556 on the 30 G line; revival peak ~234 MHz).
     # 210-260 @ 1 MHz = 51 pts (daily-scan runbook). The 275-290 sigma-regime window (~282 MHz) is the
     # 07-21 sigma-pol test; DO NOT use it for mj-1 operation.
-    # 2026-08-18: the window is now overridable from the CLI (--eom-lo/--eom-hi/--eom-step) so
-    # re-bracketing a field does not need a source edit. Defaults unchanged (210:1:260). Widened
-    # to 200-260 for the 60 G re-run: the 60 G revival's flat 210-220 MHz shoulder made the
-    # full-window Lorentzian fit pull ~1.3 MHz low of the data argmax, so the low side needs more
-    # baseline to pin the wing.
     EOM_LO_MHZ, EOM_STEP_MHZ, EOM_HI_MHZ = 210, 1, 260
-    if eom_lo_mhz is not None:
-        EOM_LO_MHZ = float(eom_lo_mhz)
-    if eom_hi_mhz is not None:
-        EOM_HI_MHZ = float(eom_hi_mhz)
-    if eom_step_mhz is not None:
-        EOM_STEP_MHZ = float(eom_step_mhz)
 
     g = ScanGroup()
 
 
     # ---- swept axis: Init.EOM616.Freq (byte-affecting; slow-EOM ramp target) ----
     eom_freqs = [v * 1e6 for v in matlab_colon(EOM_LO_MHZ, EOM_STEP_MHZ, EOM_HI_MHZ)]
-    g().Init.EOM616.Freq.scan(1, eom_freqs)
+    # 2026-08-12 REVIVAL-DESTRUCTION MW CHECK AT 20 G.
+    # 616-EOM PINNED at today's measured 20 G revival peak (236.0263 MHz, scan 20260812105321).
+    # The swept axis is now the QICK microwave frequency: driving the 3S1<->3P2 transition
+    # empties the shelved Rydberg S state and DESTROYS the revival -> survival DIPS on resonance.
+    # Independent of the STIRAP round trip (this is the incoherent RydbergPushout path).
+    g().Init.EOM616.Freq = 236.0263e6
+    MW_FREQ_MHZ = [round(float(v), 6) for v in np.linspace(MW_LO, MW_HI, MW_PTS)]
+    g().QICK.template = "Sine"
+    g().QICK.freq.scan(1, MW_FREQ_MHZ)                # SWEPT dim 1
+    g().QICK.gain = MW_GAIN
+    # 2026-08-12 ROUND 2: duration MUST cover the whole push-out. Round 1 used 20 us inside a
+    # 1 ms Pushout.Time = 2% duty cycle -> max possible revival destruction ~2% = the noise floor,
+    # and the scan came back flat (0.42-0.48 over 11300-11365, max-min 1.9 sigma). The revival
+    # itself was healthy (~0.45), so that null was duty cycle, not physics.
+    # build_sine/_split_duration chunk a long tone into loop(N,[Sine]), so 1 ms is supported.
+    g().QICK.duration = 1e-3                          # == Pushout.Time: MW on for the whole window
+    g().QICK.rabi_freq = 4.825e6
+    g().QICK.wait_time = 1e-6
+    g().QICK.phase = 0.0
+    g.runp().QICK = True                              # arm the QICK; RydbergPushoutStep pulses TTLQickTrig
 
     # ---- 556 push-out fixed ON the 30 G resonance (RydbergPushoutStep: 556 Rydberg beam) ----
-    # 2026-08-18: from ~50 G up the seq takes RydbergHighFieldPushoutStep, which switches on a
-    # SECOND, single-pass AOM (``Freq556RydbergHF`` = 120e6) in a separate high-field 556 Rydberg
-    # path. That adds +120 MHz optical; the first AOM (the one this sets) is DOUBLE-pass, so the
-    # same optical frequency is reached at a Pushout.Green.Freq that is 60 MHz LOWER. Keep the model
-    # centre / ``--green-freq-mhz`` in the low-field convention (143.5-like numbers) at every field
-    # and shift here, so the caller never hand-edits it. Branch thresholds mirror
-    # RydbergPushoutSurvivalSeq (low field < 31 G, high field 50-80 G; 31-49 G is invalid).
-    if 50 <= field_G <= 80:
-        res556_mhz -= HF_AOM_OFFSET_MHZ
-    g().Pushout.Green.Freq = res556_mhz * 1e6   # model centre @ field_G (HF-shifted if 50-80 G)
+    g().Pushout.Green.Freq = res556_mhz * 1e6   # 143.184 MHz @ 30 G
     # 2026-08-03 (user directive): 0.4 @ 30 G is TOO HIGH -> 0.15 (also what every run on/before
     # 08-01 actually pushed). Kept in lockstep with RydbergSpectrum556Scan's AMP_AT_30G.
     # 30 G push amp: MUST match RydbergSpectrum556Scan (0.15 @ 30 G) -- this scan's 556 sits on the
@@ -175,18 +150,12 @@ def build(field_G=30, green_amp=0.15, ryd308_amp=0.4, green_freq_mhz=None,
 
 
 def Revival616Scan(url=None, reps=3, field_G=30, green_amp=0.15, ryd308_amp=0.4,
-                   green_freq_mhz=None, eom_lo_mhz=None, eom_hi_mhz=None,
-                   eom_step_mhz=None):
+                   green_freq_mhz=None):
     """Build + submit the 30 G 616-revival scan. Returns the queued descriptor id."""
     from yb_start_scan import ybStartScan
 
-    # Normalise the field once: the ``round(field_G)`` label + the 50-80 G band test below would
-    # otherwise see a None/str from a programmatic call. 30 G matches the --field default.
-    field_G = 30.0 if field_G is None else float(field_G)
-
     g = build(field_G=field_G, green_amp=green_amp, ryd308_amp=ryd308_amp,
-              green_freq_mhz=green_freq_mhz, eom_lo_mhz=eom_lo_mhz, eom_hi_mhz=eom_hi_mhz,
-              eom_step_mhz=eom_step_mhz)
+              green_freq_mhz=green_freq_mhz)
     npts = g().Init.EOM616.Freq.size(1)
     opts = {}
     if reps is not None:
@@ -208,9 +177,7 @@ if __name__ == "__main__":
     ap.add_argument("--reps", type=int, default=None,
                     help="passes over the sweep (0 = forever); default 3 for a short A/B run")
     ap.add_argument("--field", dest="field_G", type=float, default=None,
-                    help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 30); "
-                         "valid bands: < 31 G (low-field step) or 50-80 G (high-field step, "
-                         "556 push freq auto-shifted -60 MHz); 31-49 G raises in the seq")
+                    help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 30)")
     ap.add_argument("--556-amp", dest="green_amp", type=float, default=0.15,
                     help="556 Rydberg push-out amp (default 0.15 = the 30 G value used by "
                          "RydbergSpectrum556Scan and 556AutlerTownesScan; keep the whole 30 G "
@@ -218,16 +185,16 @@ if __name__ == "__main__":
     ap.add_argument("--308-amp", dest="ryd308_amp", type=float, default=None,
                     help="308 pulse amp, max 0.4 (default 0.4)")
     ap.add_argument("--green-freq-mhz", dest="green_freq_mhz", type=float, default=None,
-                    help="override the fixed 556 push freq in MHz, in LOW-FIELD (first "
-                         "double-pass AOM) units (else the Zeeman model, Resonance556mj0Freq + "
-                         "1.178 MHz/G * field); pass the freshly located dip when it has drifted "
-                         "out of the model. The 50-80 G -60 MHz shift is applied on top")
-    ap.add_argument("--eom-lo", dest="eom_lo_mhz", type=float, default=None,
-                    help="616-EOM sweep start in MHz (default 210)")
-    ap.add_argument("--eom-hi", dest="eom_hi_mhz", type=float, default=None,
-                    help="616-EOM sweep end in MHz (default 260)")
-    ap.add_argument("--eom-step", dest="eom_step_mhz", type=float, default=None,
-                    help="616-EOM sweep step in MHz (default 1)")
+                    help="override the fixed 556 push freq in MHz (else RES0+slope*field); "
+                         "pass the freshly located 30 G dip when it has drifted out of the model")
+    ap.add_argument("--mw-gain", type=int, default=8000, help="QICK DAC gain (power knob)")
+    ap.add_argument("--mw-lo", type=float, default=11300.0)
+    ap.add_argument("--mw-hi", type=float, default=11365.0)
+    ap.add_argument("--mw-pts", type=int, default=27)
     args = ap.parse_args()
+    MW_GAIN = args.mw_gain; MW_LO = args.mw_lo; MW_HI = args.mw_hi; MW_PTS = args.mw_pts
+    for _k in ("mw_gain", "mw_lo", "mw_hi", "mw_pts"):
+        delattr(args, _k)
+    print("MW gain %d | window %.1f-%.1f MHz, %d pts" % (MW_GAIN, MW_LO, MW_HI, MW_PTS))
     # Flag names match Revival616Scan's params; None = not passed -> use the signature default.
     Revival616Scan(**{k: v for k, v in vars(args).items() if v is not None})

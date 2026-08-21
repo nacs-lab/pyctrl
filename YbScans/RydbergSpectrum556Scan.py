@@ -47,7 +47,7 @@ scan_bootstrap.bootstrap()   # pyctrl dirs on sys.path (idempotent; explicit so 
 from RydbergPushoutSurvivalSeq import RydbergPushoutSurvivalSeq
 
 
-def build(field_G=0):
+def build(field_G=0.0, center_mhz=None, half_mhz=None, step_mhz=None):
     """ScanGroup for the high-field 556 push-out spectrum (seq = ``RydbergPushoutSurvivalSeq``).
 
     The swept ``Pushout.Green.Freq`` is centred at ``RES0 + ZEEMAN_SLOPE * field_G`` (the mj=0
@@ -90,10 +90,21 @@ def build(field_G=0):
     # half 0.75 / step 0.05 (142.65-144.15, 31 pts @ 50 kHz).
     COARSE_HALF_MHZ, COARSE_STEP_MHZ = 0.50, 0.03
     FINE_HALF_MHZ, FINE_STEP_MHZ = 0.50, 0.02
+    # High-field path offset, in Pushout.Green.Freq (first, double-pass AOM) units -- see the
+    # swept-param block below for the derivation (120 MHz single-pass / 2).
+    HF_AOM_OFFSET_MHZ = 60.0
 
-    center_mhz = 143.5 #RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G
-    half_mhz, step_mhz = (FINE_HALF_MHZ, FINE_STEP_MHZ) if field_G == 0 \
+    # 2026-08-17: the centre comes from the Zeeman MODEL again (RES0 + slope * field_G), not a
+    # hard-coded 143.5 -- so it tracks the daily mj=0 calibration (expConfig Resonance556mj0Freq)
+    # at EVERY field instead of only 30 G, and no per-field hand-edit is needed. Pass
+    # ``center_mhz`` (the ``--center/--half/--step`` CLI flags) to override, e.g. to re-target on a
+    # previously fitted dip. Defaults unchanged when not given.
+    if center_mhz is None:
+        center_mhz = RES0_MHZ + ZEEMAN_SLOPE_MHZ_PER_G * field_G
+    _half, _step = (FINE_HALF_MHZ, FINE_STEP_MHZ) if field_G == 0 \
         else (COARSE_HALF_MHZ, COARSE_STEP_MHZ)
+    half_mhz = _half if half_mhz is None else float(half_mhz)
+    step_mhz = _step if step_mhz is None else float(step_mhz)
 
     g = ScanGroup()
 
@@ -111,15 +122,24 @@ def build(field_G=0):
     # peak into 556AutlerTownesScan (--eom616), so a mismatched push amp saturates differently
     # and the fed-forward centre is wrong. 0.15 @ 30 G, 1 ms gave a deep clean dip (survival
     # 0.27-0.97, R^2 0.987) on 20260803102712.
-    AMP_AT_0G, AMP_AT_30G = 0.1, 0.15
-    g().Pushout.Green.Amp = AMP_AT_0G + (AMP_AT_30G - AMP_AT_0G) * field_G / 30.0
+    #AMP_AT_0G, AMP_AT_30G = 0.1, 0.15
+    #g().Pushout.Green.Amp = AMP_AT_0G + (AMP_AT_30G - AMP_AT_0G) * field_G / 30.0  # was hacked to 1
+    g().Pushout.Green.Amp = 0.15
     g().Pushout.Time = 1e-3
     g().Pushout.BiasCoilCurrent.Ryd = field_G      # Gauss -> Ryd coil current (30 -> 30 G)
 
     # ---- swept param: Pushout.Green.Freq, centred on the field-shifted resonance ----
     freqs = [v  * 1e6 for v in matlab_colon(center_mhz - half_mhz, step_mhz, center_mhz + half_mhz)]
-    #freqs = 143.2e6
+    # 2026-08-17: above ~60 G the seq takes RydbergHighFieldPushoutStep, which switches on a
+    # SECOND, single-pass AOM (``Freq556RydbergHF`` = 120e6) in a separate high-field 556 Rydberg
+    # path. That adds +120 MHz optical; the swept first AOM is DOUBLE-pass, so the same optical
+    # frequency is reached at a Pushout.Green.Freq that is 60 MHz LOWER. Keep ``center_mhz`` in the
+    # low-field convention (143.5-like numbers) at every field and shift here, so the caller never
+    # hand-edits the window. Branch thresholds mirror RydbergPushoutSurvivalSeq (60 < field < 130).
+    if 50 <= field_G <= 80:
+        freqs = [f - HF_AOM_OFFSET_MHZ * 1e6 for f in freqs]
     g().Pushout.Green.Freq.scan(1, freqs)
+    #g().Pushout.Green.Freq = 118.9068e6
 
     # ---- turn on the 308 UV light on resonance to see Autler-Townes splitting ---- 
     # g().Pushout.Ryd308.Amp = 0.4;
@@ -138,11 +158,14 @@ def build(field_G=0):
     #     hologram for THIS scan (writes it + holds the SLM lock + detects with
     #     that pattern's per-pattern thresholds):
     g.runp().loading_phase = "phase/33x33_feedback11.pt"   # server-side WGS phase path
-    g.runp().loading_defocus = -5                         # ANSI z4 loading defocus (rad)
+    # 2026-08-10: loading plane now comes from the per-array config
+    # (ByPattern[<pattern>].SLM.Loading.Defocus -> slm_runtime._pattern_defocus);
+    # setting g.runp().loading_defocus here would override it, so it is left unset.
     return g
 
 
-def RydbergSpectrum556Scan(url=None, reps=None, field_G=None, amp=None):
+def RydbergSpectrum556Scan(url=None, reps=None, field_G=None, amp=None,
+                           center_mhz=None, half_mhz=None, step_mhz=None):
     """Build + submit the high-field 556 spectrum scan. Returns the queued descriptor id.
 
     ``amp`` (if given) overrides the field-default ``Pushout.Green.Amp`` -- for live iteration on
@@ -150,7 +173,11 @@ def RydbergSpectrum556Scan(url=None, reps=None, field_G=None, amp=None):
     """
     from yb_start_scan import ybStartScan
 
-    g = build(field_G=field_G)
+    # Normalise the field once: field_G=None (the no-arg / programmatic call) otherwise reaches
+    # build()'s ``field_G / 30.0`` and ``round(field_G)`` as None. 30 G matches the --field default.
+    field_G = 30.0 if field_G is None else float(field_G)
+
+    g = build(field_G=field_G, center_mhz=center_mhz, half_mhz=half_mhz, step_mhz=step_mhz)
     if amp is not None:
         g().Pushout.Green.Amp = amp
     npts = g().Pushout.Green.Freq.size(1)
@@ -171,10 +198,19 @@ if __name__ == "__main__":
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
     ap.add_argument("--reps", type=int, default=3,
                     help="passes over the sweep (0 = forever); default 3 for a short A/B run")
-    ap.add_argument("--field", type=float, default=30,
+    ap.add_argument("--field", type=float, default=60,
                     help="bias field in Gauss -> Pushout.BiasCoilCurrent.Ryd (default 0)")
     ap.add_argument("--amp", type=float, default=None,
                     help="override Pushout.Green.Amp (else field-scaled 0.1 @ 0 G -> 0.4 @ 30 G; "
                          "Revival616Scan and 556AutlerTownesScan use the SAME 30 G amp)")
+    ap.add_argument("--center", type=float, default=None,
+                    help="sweep centre in MHz, in low-field (first double-pass AOM) units "
+                         "(default: the Zeeman model, Resonance556mj0Freq + 1.178 MHz/G * field); "
+                         "pass it to re-target on an already-fitted dip")
+    ap.add_argument("--half", type=float, default=None,
+                    help="sweep half-width in MHz (default 0.50)")
+    ap.add_argument("--step", type=float, default=None,
+                    help="sweep step in MHz (default 0.03 at field, 0.02 at 0 G)")
     args = ap.parse_args()
-    RydbergSpectrum556Scan(url=args.url, reps=args.reps, field_G=args.field, amp=args.amp)
+    RydbergSpectrum556Scan(url=args.url, reps=args.reps, field_G=args.field, amp=args.amp,
+                           center_mhz=args.center, half_mhz=args.half, step_mhz=args.step)

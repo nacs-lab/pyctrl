@@ -27,8 +27,8 @@ import os
 # 2026-08-10: -5.0 -> 0.0 (user directive). The loading plane is now a PER-ARRAY config value
 # (ByPattern ``SLM.Loading.Defocus``, read by :func:`_pattern_defocus`) rather than one global
 # constant, so this is just the neutral "no defocus" fallback for a pattern that has not declared
-# its plane -- not a claimed calibration. An array whose plane matters must SET it (33x33_feedback11
-# measured -2.5 the same day).
+# its plane -- not a claimed calibration. An array whose plane matters must SET it
+# (33x33_feedback11 measured -2.5 the same day, revised to -4.0 on 08-12; see expConfig ByPattern).
 #
 # ⚠ This used to encode the plane the global SLM->camera affine is calibrated against (-5), so any
 # rearrangement path that relied on the fallback would now map against a stale affine. Every
@@ -71,8 +71,9 @@ def _pattern_defocus(seq_config, pattern_name=None, default=None):
     resolved THROUGH the ByPattern overlay, else :data:`DEFAULT_LOADING_DEFOCUS`.
 
     This makes the loading plane a per-ARRAY config value instead of a module constant, so a
-    pattern whose optimum plane is not -5 can carry its own (2026-08-10: 33x33_feedback11 measured
-    -2.5, worth +0.007 survival / +0.004 per-site fidelity over -5 at ~10 SEM).
+    pattern whose optimum plane is not -5 can carry its own (33x33_feedback11 first measured -2.5
+    on 2026-08-10, revised to -4.0 on 08-12 -- the live value; see the ByPattern entry in
+    expConfig for the head-to-heads behind it).
 
     ⚠ The header's rationale for a single global -5 still holds for REARRANGEMENT: the global
     SLM->camera affine is calibrated at one plane, so moving a rearranged array's loading plane

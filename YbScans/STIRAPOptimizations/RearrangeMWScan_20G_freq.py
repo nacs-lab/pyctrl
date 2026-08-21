@@ -119,51 +119,24 @@ def build():
 
     # ---- Siglent AWG config (out-of-band; AWGManager reads g().AWG.<name>.*) ------------
     g().AWG.AWG556.Ch1.shape = "rise_quintic" 
-    #CARRIER_LIST_MHZ = [round(float(v), 4) for v in np.linspace(130.45, 133.45, 10)]  # scan dim 1 for low field
-    # 2026-08-18 round 2, RECENTRED ON THE MEASURED SINGLE-PHOTON RESONANCE. The STIRAP optimum
-    # sits near the individual resonances measured at shallow trap depth, so anchor the carrier to
-    # the 60 G 556 Rydberg spectrum rather than extrapolating the two-photon ridge: RydbergSpectrum556Scan_60G
-    # data_20260818_174135 fits centre = 118.9242 +- 0.0005 MHz (FWHM 0.505, R^2 0.964), stable all
-    # day (118.907 / 118.911 / 118.909 at 08:13 / 13:59 / 14:19). Round 1 (118.1-118.9,
-    # data_20260818_175154) put that resonance ON THE TOP EDGE, so its map climbed monotonically to
-    # the corner and the "best" cell 118.90/230.50 was a boundary value, not a maximum.
-    # EOM616 centre from the ridge at the anchor: 230.60 (round-1 interior rows) / 230.59 (11:43
-    # map) -- the two agree well inside a linewidth, so centre the 616 span on 230.55.
-    CARRIER_LIST_MHZ = [round(float(v), 4) for v in np.linspace(118.4742, 119.3742, 10)]  # scan dim 1, anchor +-0.45
-    EOM616_LIST_MHZ = [round(float(v), 4) for v in np.linspace(230.10, 231.00, 10)]       # scan dim 2
+    CARRIER_LIST_MHZ = [round(float(v), 4) for v in np.linspace(130.45, 133.45, 10)]  # scan dim 1
+    EOM616_LIST_MHZ = [round(float(v), 4) for v in np.linspace(234.5, 237.5, 10)]     # scan dim 2
 
-    # 2026-08-19 TOP-N CO-VARY VERIFY (runbook step 4, top-N form): the freq-2D
-    # (data_20260819_084955) mapped a clean diagonal ridge; its best 5 cells (5 shots each,
-    # overlapping SEMs) are re-verified together at 100 reps as a co-vary path -- carrier AND
-    # EOM616 both on dim 1 (Rule 2: analysis must re-pair by Params). Path ordered by EOM616
-    # so the 616 EOM steps stay gentle (Scramble 0). Freq-2D cell survivals: 0.017 / 0.021 /
-    # 0.022 / 0.021 / 0.004.
-    # 2026-08-19 round 2: EXACT FITTED-LINE pairs. The top-5-cells verify (data_20260819_091118,
-    # aborted at 117 shots per user -- enough) came back TIED, 0.028-0.042 across all five (the
-    # freq-2D's 0.004 cell was 5-shot noise); best (118.974, 230.50) 0.0276 +- 0.0039. Ridge line
-    # fit to the freq-2D per-row argmins over the deep rows 230.30-230.80:
-    # carrier = 118.982 + 0.814*(EOM616 - 230.55); it predicts 118.97 at 230.50 = the measured best.
-    # 2026-08-19 FORWARD LOCKED at the along-ridge floor (data_20260819_092526): the freq-2D
-    # (084955) -> top-5 verify (091118) -> fitted-line verify (091704) -> 20-pt along-ridge chain
-    # put the whole EOM 230.35-230.55 floor at survival 0.027-0.035 (tied); locked cell =
-    # (118.8856, 230.4316), 0.0267 +- 0.0042 at 20 reps (tightest SEM interior point).
-    # Ridge line for re-derivation: carrier = 118.982 + 0.814*(EOM616 - 230.55).
-    g().AWG.AWG556.Ch1.carrier_freq_MHz = 118.8856
+    g().AWG.AWG556.Ch1.carrier_freq_MHz = 131.78 #.scan(1, [float(v) for v in CARRIER_LIST_MHZ]) #143.5  
     g().AWG.AWG556.Ch1.pulse_width_us = 3 #5.0   # 2026-08-06 FIXED per user (was 6.0, the 08-03 lock)
     g().AWG.AWG556.Ch1.max_amplitude_vpp = 15   # 2026-07-16 (now HONORED by AWGManager channel-mode; was silently forced to consts default 15)
-    g().AWG.AWG556.Ch1.amplitude_scale = 0.87    # 2026-08-06 round 1: scan 0.4-1.0 @ vpp15 -> monotonic to ceiling, best=1.0 (still power-limited)
+    g().AWG.AWG556.Ch1.amplitude_scale = 0.5    # 2026-08-06 round 1: scan 0.4-1.0 @ vpp15 -> monotonic to ceiling, best=1.0 (still power-limited)
     
-    g().AWG.AWG556.Ch2.shape = "fall_quintic"
-    g().AWG.AWG556.Ch2.carrier_freq_MHz = 118.8856  # 2026-08-19 track the locked forward carrier (was 119.1)
-    # 2026-08-19 REVERSE LOCKED. Delay pre-scan (data_20260819_095938): return peak 0.9348 at
-    # -0.20 us (plateau -0.2..+0.3) -> delay kept. Width-2D 5x5 (data_20260819_100925): diagonal
-    # plateau 0.918-0.936, 556-wide/308-short corner collapses (0.53). 100-rep top-N verify
-    # (data_20260819_101841): (1.75,2.5) 0.9138 / (2.5,2.5) 0.9146 / (3.25,3.25) 0.9188 /
-    # incumbent (2.0,2.0) 0.9232 +- 0.0038 -- ALL TIED, incumbent best -> widths KEPT 2.0/2.0.
-    # Return floor ~0.92 at the locked forward pair.
-    g().AWG.AWG556.Ch2.pulse_width_us = 2.0
+    g().AWG.AWG556.Ch2.shape = "fall_quintic"   
+    g().AWG.AWG556.Ch2.carrier_freq_MHz = 131.78   
+    # 2026-08-12 REVERSE WIDTH 2D: sweep the two Ch2 pulse widths (dim 1 x dim 2).
+    PW556_REV = [round(float(v), 4) for v in np.linspace(1.0, 4.0, 5)]
+    PW308_REV = [round(float(v), 4) for v in np.linspace(1.0, 4.0, 5)]
+    g().AWG.AWG556.Ch2.pulse_width_us = 2.0   # matched-diagonal, flat 1.0-3.25 (job 926)
     g().AWG.AWG556.Ch2.max_amplitude_vpp = 15   
-    g().AWG.AWG556.Ch2.amplitude_scale = 0.9 
+    AMP556_REV = [round(float(v), 4) for v in np.linspace(0.2, 1.0, 5)]
+    AMP308_REV = [round(float(v), 4) for v in np.linspace(0.2, 1.0, 5)]
+    g().AWG.AWG556.Ch2.amplitude_scale = 0.51   # incumbent; tied with best (job 927)
     g().AWG.AWG556.Ch2.pad_time_us = 0.0
     
     g().AWG.AWG308.Ch1.shape = "fall_quintic"
@@ -175,9 +148,9 @@ def build():
     
     g().AWG.AWG308.Ch2.shape = "rise_quintic"
     g().AWG.AWG308.Ch2.carrier_freq_MHz = 200
-    g().AWG.AWG308.Ch2.pulse_width_us = 2.0  # kept -- 08-19 verify: incumbent tied-best (see Ch2 556 block)
+    g().AWG.AWG308.Ch2.pulse_width_us = 2.0   # MUST stay matched to Ch2 556 (job 926)
     g().AWG.AWG308.Ch2.max_amplitude_vpp = 8
-    g().AWG.AWG308.Ch2.amplitude_scale = 1
+    g().AWG.AWG308.Ch2.amplitude_scale = 1      # incumbent; tied with best (job 927)
 
 
     g.runp().AWGs = ["AWG556", "AWG308"]
@@ -188,29 +161,36 @@ def build():
     g().Pushout.MRabi.FreqRabi = 7.187e6
     g().Pushout.Ramsey.Phase = 0
 
+    # ---- QICK microwave (out-of-band; run loop uploads one program per swept freq) -------
+    # 2026-08-12 MW SPECTROSCOPY AT 20 G. The 30 G sigma- line (71 3S1 mj=-1 -> 71 3P2 mj=-2) sits at
+    # f0 = 11318.7 MHz. Zeeman: dE/h = (g_P*mj_P - g_S*mj_S)*1.3996 MHz/G = (1.5*-2 - 2*-1) = -1.4 MHz/G,
+    # so 30 G -> -42.0 MHz and 20 G -> -28.0 MHz => f0(20 G) ~ 11318.7 + 14.0 = 11332.7 MHz.
+    # g-factors for high-n triplets are near-pure LS so the shift is good to ~1-2 MHz, but the field
+    # calibration is the looser term -> scan +-22 MHz around the prediction on the first pass.
+    g().QICK.template = "Sine"
+    MW_FREQ_MHZ = [round(float(v), 6) for v in np.linspace(11310.0, 11355.0, 19)]   # 2.5 MHz steps
+    g().QICK.freq.scan(1, MW_FREQ_MHZ)                # SWEPT dim 1
+    g().QICK.gain = 8000                              # measured f_Rabi 4.82 MHz -> T_pi ~104 ns
+    g().QICK.duration = 0.1e-6                        # ~pi pulse; linewidth ~ Omega/2pi ~ 5 MHz
+    g().QICK.rabi_freq = 4.825e6
+    g().QICK.wait_time = 1e-6
+    g().QICK.phase = 0.0
+    g.runp().QICK = True
+
     # ---- STIRAP push-out params (STIRAPPushoutStep reads these; from STIRAPAWGScan) -----
-    g().Init.EOM616.Freq = 230.4316e6  # forward lock 2026-08-19 (pairs with carrier 118.8856)
+    g().Init.EOM616.Freq = 236.5e6 #.scan(2,[float(v) * 1e6 for v in EOM616_LIST_MHZ]) #= 234.2e6   # PAIR w/ Ch1 143.5 (offset +90.7, round 5 confirmed; degenerate line runs +1:+1)
     g().Pushout.VRydTrap = 2.0 #.scan(1, np.linspace(0.2, 2.5, 10)) #= 1.9
-    g().Pushout.BiasCoilCurrent.Ryd = 60 #30
+    g().Pushout.BiasCoilCurrent.Ryd = 20 #30
 
     # ---- post-rearrangement recool (RearrangeCool556hXStep, runs immediately before the pushout) ----
-    # 2026-08-18 17:45 on-ridge delay sweep (data_20260818_174505, post 556 power raise): peak
-    # 0.904 +- 0.011 @ 1.222 us, plateau >= 0.885 all the way to 2.0 us -- the adiabatic window is
-    # wide, so this is pinned mid-plateau while dim 1 carries the carrier sweep.
-    g().Pushout.STIRAPDelay = 1.333e-6
-    # 2026-08-19 REVERSE optimization round 1: delay pre-scan (runbook step-0 analog for the
-    # reverse pulse) at the locked forward pair -- sweep the 556<->308 Ch2 order/overlap, maximize
-    # verify-conditioned RETURN survival (forward up -> 1 us gap -> reverse down).
-    g().Pushout.STIRAPReverseDelay = -0.2e-6  # confirmed optimal 2026-08-19 (r1 pre-scan, peak of the -0.2..+0.3 plateau)
+    g().Pushout.STIRAPDelay = 1.556e-6 #1.667e-6 
+    g().Pushout.STIRAPReverseDelay = -0.0556e-6
     g().Pushout.STIRAPPadTime = 2e-6   # 2026-07-21 mj=0 quad ridge-3D optimum (308-first; window +0.6..+1.4us)
-    # 2026-08-18 Rydberg-lifetime sweep: hold in the Rydberg state for STIRAPGap, then reverse-STIRAP
-    # back down -> RETURN vs gap is the decay curve. Dense 1-100 us (5.2 us step) to resolve the fast
-    # decay + a coarse 120-200 us tail to pin the asymptote.
-
-    GAP_PTS = np.concatenate([np.linspace(0.1e-6, 50e-6, 20), np.linspace(60e-6, 150e-6, 10)])  # 25 pts
-    g().Pushout.STIRAPGap.scan(1,  GAP_PTS) #= 1e-6  # short fixed hold (forward freq-2D 2026-08-19; lifetime sweep was .scan(1, GAP_PTS))
-
-    g().Pushout.IfReverse = 1  # reverse optimization 2026-08-19 (forward locked above)
+    g().Pushout.STIRAPGap = 2e-6   # 2026-08-12 MW: must be >= the MW pulse + overhead
+    #g().Pushout.STIRAPGap.scan(1, np.linspace(1e-6, 200e-6, 30)) #= 1e-6  # short fixed hold (forward optimum). For a Rydberg-lifetime sweep: .scan(1, gap_pts)
+    
+    g().Pushout.IfReverse = 1
+    g().Pushout.IfMW = 1       # fire TTLQickTrig in the fwd->rev gap
     g().Pushout.IfPump = 0
     g().Pushout.PumpTime = 1e-6
     g().Pushout.Pump616Freq = 282.355e6   # mj=0 pump616 (pumps OFF this config)
@@ -257,7 +237,7 @@ def build():
     g().rearrange_kwargs.extras.overdrive = False
     g().rearrange_kwargs.extras.dynamic = False
     g().rearrange_kwargs.extras.max_step_size = 0.75
-    g().rearrange_kwargs.extras.pattern = "dimer_20um" #"quadruple_no_topright"  # 2026-07-10 quadruple_spacing (post optics move) -- the new default for the 33x33 array
+    g().rearrange_kwargs.extras.pattern = "double_spacing"   # 2026-08-12 reverse-STIRAP opt: 284 targets (vs 82 quadruple) for statistics #"quadruple_no_topright"  # 2026-07-10 quadruple_spacing (post optics move) -- the new default for the 33x33 array
     g().rearrange_kwargs.extras.ifEnhanced = False
     g().rearrange_kwargs.extras.precompute = False
     g().rearrange_kwargs.extras.precompute_host = False
@@ -270,16 +250,12 @@ def build():
     g().rearrange_kwargs.extras.scienceStep = "stirap"
 
     # ---- run params (runp) ---------------------------------------------------------------
-    rp.NumPerGroup = 400  # = rep x n_points (100 x 4) so the dashboard total matches the real cap
+    rp.NumPerGroup = 2000
     # Loading defocus (ANSI z4, rad) added to the base loading phase on the SLM write at scan
     # start. MATCHED to rearrange_kwargs.extras.z4 (the rearrange MODEL z4).
     rp.loading_defocus = -5
     rp.NumImages = 3 if verify else 2
-    # 0 because dim 2 sweeps Init.EOM616.Freq: scrambling makes consecutive shots jump the 616 EOM
-    # by large random amounts, which kicks the 616 laser out of lock (aborts at seq ~5-7, flat
-    # revival). A monotonic EOM sweep steps it gently and the lock holds. Set back to 1 for any
-    # scan that does NOT sweep EOM616 (it decorrelates slow drift from the swept axis).
-    rp.Scramble = 1  # EOM616 now FIXED -> scramble back on (decorrelates drift; the 0 was only for EOM sweeps)
+    rp.Scramble = 1   # ON per runbook (decorrelates drift). Set to 0 for ANY scan that sweeps EOM616 (scramble + 616-EOM sweep risks a 616 unlock). -- scramble + 616-EOM sweep risks a 616 unlock. (decorrelates drift). Set to 0 for ANY scan that sweeps EOM616 -- scramble + 616-EOM sweep risks a 616 unlock. (decorrelate drift). NOTE: scrambling the EOM616 sweep risked a 616 unlock in the Stark scans; watch the lock -- revert to 0 if it drops.
     rp.isGrid2 = 0
     rp.isInit = 0
     rp.isHC = 0
@@ -298,16 +274,7 @@ def RearrangeSTIRAPScan(url=None, reps=10):
     opts = {}
     if reps is not None:
         opts["rep"] = reps
-    did = ybStartScan(RearrangeSTIRAPSeq, g, url=url, label="RearrangeSTIRAPScan",
-                      description=(
-                          "REVERSE-STIRAP top-N width verify on dimer_20um (2026-08-19 round 3): co-vary "
-                          "(pw556Ch2, pw308Ch2) = (1.75,2.5) / (2.5,2.5) / (3.25,3.25) / incumbent "
-                          "(2.0,2.0), 100 reps each, at reverse delay -0.2 us. Width-2D "
-                          "data_20260819_100925 had these tied at 0.918-0.936 (target-masked). Forward "
-                          "LOCKED (118.8856 / 230.4316), Ch2 carrier 118.8856, IfReverse=1, gap 1 us, "
-                          "60 G. Metric = verify-conditioned target RETURN (maximize); re-pair by "
-                          "Params. Scramble 1. Imaging at the 08-19 W (det -1 MHz)."),
-                      **opts)
+    did = ybStartScan(RearrangeSTIRAPSeq, g, url=url, label="RearrangeSTIRAPScan", **opts)
     print("submitted RearrangeSTIRAPScan -> descriptor id %s (url=%s, reps=%s, verify=%s, "
           "NumImages=%d)" % (did, url or "default", reps, VERIFY_IMAGE, 3 if VERIFY_IMAGE else 2))
     return did
