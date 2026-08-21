@@ -74,7 +74,10 @@ PATTERN = "33x33_feedback11"
 PHASE_PATH = "phase/33x33_feedback11.pt"
 BAKED_ZERNIKE = [0.0, 0.0, 0.0, 0.0, 0.0]
 MODEL_FILENAME = "SLMnet/checkpoints/sinc_3x3_experiment/models/direct_flat/direct_flat_best.pth"
-DEFOCUS = -4.0
+DEFOCUS = -4.0          # historical default; override with --defocus (the 08-07 campaign uses -5)
+
+BLUE_DETUNING_MHZ = -48.0     # 2026-08-07 job 309: plateau -46..-50; -40/-42 read 0.002
+BLUE_LOADING_TIME_S = 0.467   # job 390 vs 386 A/B: 0.25 s -> fill 0.153, 0.467 s -> fill 0.378
 
 PERIOD_MS = 0.696
 HOLD_MS = 5.0                 # fixed dwell at the turnaround frame (k = nsteps)
@@ -131,7 +134,8 @@ def _image_patterns_json():
 
 
 def build(step_abs=None, nsteps_list=None, period_ms=PERIOD_MS, hold_ms=HOLD_MS,
-          piston_corr=PISTON_CORR, true_defocus=True):
+          piston_corr=PISTON_CORR, true_defocus=True, defocus=DEFOCUS,
+          img_pid=(0.80, 1.00)):
     """Build (do NOT submit) the 2-D [step_size x nsteps] ScanGroup. Returns ``(seq_name, g)``."""
     _bootstrap()
     from scan_group import ScanGroup
@@ -161,6 +165,50 @@ def build(step_abs=None, nsteps_list=None, period_ms=PERIOD_MS, hold_ms=HOLD_MS,
     rp.warmup_kwargs.derive_threshold = 0.35
 
     # ---- rearrange_kwargs: pingponggrating, TRUE-DEFOCUS depth mode --------------------
+
+    # LOADING RECOVERY (jobs 309/310): 399 blue capture had drifted off plateau -- the old
+    # -40/-42 MHz work-point read 0.002 fill. -48 MHz + 0.25 s restores 0.467. Applied as a
+    # per-scan g() override; expConfig.py is NOT modified.
+    g().BlueMOT.FreqDetuning = BLUE_DETUNING_MHZ * 1e6
+
+    # GREENMOT BIAS-X (jobs 375 + 376, 2026-08-07 05:50). expConfig holds 0.040 A (the 06/05
+    # optimum); the resonance has DRIFTED and 0.040 is now DEAD -- job 375 measured 0.002
+    # loading there against 0.309 at 0.035, and the fine scan 376 put the peak at 0.0345
+    # (0.442 loading, monotonic shoulders both sides, full width ~3 mA).
+    #
+    # THIS was the slow loading decline (0.61 -> 0.23 over 90 min). Ruled out first, by
+    # measurement rather than assumption: the 399 blue detuning (job 367 re-verified -48 as
+    # optimal, curve identical to job 309 four hours earlier), the oven (372.06 vs 372.08 C)
+    # and imaging (which was IMPROVING, d-prime 11.3). The MOT coils cooled 19.2 -> 17.3 C
+    # over the same window, which drifts the field and hence the cloud position relative to
+    # the array -- the runbook flags bias-X as a near-vertical resonance where 0.01 A is the
+    # difference between full loading and zero, and this is that failure in the wild.
+    g().GreenMOT.BiasCoilCurrent.X = 0.0343   # plateau centre (376 full stats: peak 0.0340=0.419, 0.0345=0.407, CV 0.42 both)
+    g().BlueMOT.LoadingTime = BLUE_LOADING_TIME_S
+
+    # IMAGING (jobs 331 + 340/341/342, 2026-08-07). Pinned EXPLICITLY at the documented
+    # ByPattern 33x33_feedback11 values so every descriptor records them; this is NOT a
+    # deviation from config.
+    #
+    # A 3-point A/B inside THIS sequence (static no-motion cells, 20 shots each) showed
+    # PIDSet is NOT the lever here: 0.8/1.0 -> sep 4.04 ADU / d' 6.8, 0.9/0.64 -> 3.80/6.4,
+    # 0.63/0.43 -> 3.81/6.5. Identical within noise across a 2.3x span of Img2PIDSet.
+    #
+    # THE REAL GAP IS THE SEQUENCE, NOT THE POWER. The imaging sequence
+    # (ImagingPushoutSurvivalSeq, job 331) reaches sep 7.58 ADU / d' 12.6 at the same nominal
+    # setpoint, i.e. ~2x this sequence. Prime suspects, both documented and both OUTSIDE the
+    # amps-only scope authorised for this campaign: (a) the imaging tool pins a different 556
+    # imaging cooling (h at 0.22 MHz / 0.20 vs the pattern's 0.16 / 0.13), and (b) memory
+    # gotcha-imaging-pid-held-multiround-rearrange -- the imaging PID locks once at the root
+    # BlueMOT and per-pattern PIDSet never reaches the rearrange images.
+    #
+    # CAMPAIGN IMAGING CONDITION TO QUOTE WITH EVERY RESULT: separation ~3.9 ADU, d' ~6.5,
+    # static two-image survival ~0.97, loading ~0.66. Absolute survivals sit on that floor;
+    # per-scan control normalization removes it, bare numbers do NOT. If the sequence gap is
+    # closed later, every absolute number here shifts up and the campaign should be re-quoted.
+    g().BlueMOT.Img1PIDSet = float(img_pid[0])
+    g().BlueMOT.Img2PIDSet = float(img_pid[1])
+
     rk = g().rearrange_kwargs
     rk.protocol = "pingponggrating"
     rk.step_period_ms = float(period_ms)
@@ -201,14 +249,14 @@ def build(step_abs=None, nsteps_list=None, period_ms=PERIOD_MS, hold_ms=HOLD_MS,
     rk.extras.precompute_host = True
     rk.extras.hw_sequence = False
     rk.extras.ifEnhanced = True                 # BlueLAC loading (matches live production)
-    rk.extras.z4 = DEFOCUS                      # rearrange focal plane == loading_defocus
+    rk.extras.z4 = float(defocus)               # rearrange focal plane == loading_defocus
     rk.extras.initial_pattern = PATTERN
     rk.extras.final_pattern = PATTERN
 
     # ---- run params (runp) --------------------------------------------------------------
     npts = len(steps) * len(ns)
     rp.NumPerGroup = 2000                       # ~11 passes over 187 pts
-    rp.loading_defocus = DEFOCUS
+    rp.loading_defocus = float(defocus)
     rp.NumImages = 2
     rp.Scramble = 1
     rp.isGrid2 = 0
@@ -252,6 +300,14 @@ if __name__ == "__main__":
     ap.add_argument("--corr", type=float, default=PISTON_CORR,
                     help="depth_piston_corr in rad/um under true_defocus (default %.3f)"
                          % PISTON_CORR)
+    ap.add_argument("--defocus", type=float, default=DEFOCUS,
+                    help="ANSI z4 loading defocus / rearrange focal plane (default %g). "
+                         "The 2026-08-07 axial campaign uses -5: every 08-06 run at -5 loaded "
+                         "0.50-0.60 while -4 loaded 0.11-0.26 on the same MOT and array."
+                         % DEFOCUS)
+    ap.add_argument("--img-pid", type=float, nargs=2, metavar=("IMG1","IMG2"),
+                    default=(0.80, 1.00),
+                    help="BlueMOT.Img1/Img2PIDSet (V); default = documented ByPattern")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true", help="required to submit")
     args = ap.parse_args()
@@ -260,7 +316,8 @@ if __name__ == "__main__":
            if args.step_abs else None)
     _nl = ([int(x) for x in args.nsteps_list.split(",") if x.strip()]
            if args.nsteps_list else None)
-    kw = dict(step_abs=_sa, nsteps_list=_nl, period_ms=args.period,
+    kw = dict(step_abs=_sa, nsteps_list=_nl, period_ms=args.period, defocus=args.defocus,
+              img_pid=tuple(args.img_pid),
               hold_ms=args.hold_ms, piston_corr=args.corr)
     if args.dry_run:
         _seq, _g = build(**kw)

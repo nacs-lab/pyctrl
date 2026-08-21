@@ -12,7 +12,7 @@ THE POINT
 WHY THIS RUNS ON THE PRODUCTION 33x33 ARRAY
   Single layer, so nothing else is in the field to confuse a defocus readout; a calibrated affine
   and real per-site thresholds already exist (the 2-layer array has neither -- see
-  ``_imaging_det/bootstrap_pattern_thresholds.py``); ~1068 sites per shot, split ~534/534 between
+  ``campaigns/imaging/imaging_det/bootstrap_pattern_thresholds.py``); ~1068 sites per shot, split ~534/534 between
   the two populations, so both arms are measured at full statistics simultaneously.
 
 THE OBSERVABLE AND WHY IT IS A RATIO
