@@ -216,10 +216,29 @@ class TestWriteScanConfigCalibration:
         assert cfg["boxSize"] == 9 and cfg["maskSigma"] == 2
 
     def test_pattern_detection_box_gated_override(self):
-        # Per-pattern detection-box hook: ONLY a pattern that sets boxSize/maskSigma in its
+        # Per-pattern detection-box hook: ONLY a pattern that SETS boxSize/maskSigma in its
         # expConfig ByPattern overlay differs; everything else stays at the global (9, 2).
-        assert _pattern_detection_box("2x15x15_xyoffset_5um") == (13, 3)  # defocused 2-layer array
-        assert _pattern_detection_box("33x33_uniform") == (9, 2)          # no key -> global default
+        # Derived from the live config rather than hardcoding one array's name/values --
+        # the overlay set churns with the physics campaigns (the previous hardcoded
+        # "2x15x15_xyoffset_5um" -> (13, 3) rotted when that pattern was retired).
+        import expConfig
+        by_pattern = (expConfig.build_config().get("consts", {}).get("ByPattern", {}) or {})
+        overridden = {k: v for k, v in by_pattern.items()
+                      if isinstance(v, dict) and ("boxSize" in v or "maskSigma" in v)}
+        assert overridden, "expected at least one ByPattern detection-box overlay in expConfig"
+
+        for name, ov in overridden.items():
+            box, sig = _pattern_detection_box(name)
+            assert box == ov.get("boxSize", 9), "%s: boxSize %r" % (name, box)
+            assert sig == ov.get("maskSigma", 2), "%s: maskSigma %r" % (name, sig)
+            assert (box, sig) != (9, 2), "%s: overlay must differ from the global default" % name
+
+        # A pattern that exists but sets no box key falls through to the global default.
+        plain = next((k for k, v in by_pattern.items()
+                      if isinstance(v, dict) and k not in overridden), None)
+        if plain is not None:
+            assert _pattern_detection_box(plain) == (9, 2)
+
         assert _pattern_detection_box("") == (9, 2)
         assert _pattern_detection_box("nonexistent_pattern") == (9, 2)
 

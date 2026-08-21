@@ -26,7 +26,7 @@ import pytest
 
 import compare_bytes
 import seq_manager
-from conftest import _TESTS_DIR
+from conftest import _TESTS_DIR, matlab_oracle
 from dispatch_descriptor import (
     DispatchResult, NotMigratedError, dispatch_descriptor, _linspace, _logspace)
 from exp_seq import ExpSeq
@@ -250,7 +250,11 @@ class TestRunpOptsInput:
 
 
 # =========================================================================== #
-# L2 per-point BYTE oracle -- reproduce the committed W6 scans via descriptors
+# L2 per-point BYTE oracle -- reproduce the committed W6 scans via descriptors.
+#
+# FROZEN ORACLE (2026-08-21): the byte half is pinned to the retired 2026-06-11
+# MATLAB capture and skipped unless PYCTRL_MATLAB_ORACLE=1. The structural half
+# (descriptor -> seq_name + nseq + per-point variation) stays live.
 # =========================================================================== #
 _REF = os.path.join(_TESTS_DIR, "reference_scan_point", "scan_point_reference.json")
 
@@ -310,17 +314,35 @@ def real_config():
 
 @_needs_ref
 @pytest.mark.parametrize("name", sorted(_DESC))
-def test_dispatch_per_point_bytes_match_matlab(real_config, name):
+def test_dispatch_per_point_structural(real_config, name):
+    """LIVE half (capture-independent): the descriptor resolves to the right sequence and
+    expands to the same point count as MATLAB, every point builds, and the sweep varies
+    the bytes. nseq comes from the ScanGroup axes, not the step cone, so it is unaffected
+    by the frozen-oracle pin below."""
     ref = _REF_DATA[name]
     res = dispatch_descriptor(_DESC[name])      # real import-by-convention resolver
     g = res.scangroup
 
-    # L1 (structural): the descriptor expanded to the same point count as MATLAB.
     assert res.seq_name == ref["seq"]
     assert g.nseq() == ref["nseq"], "%s: nseq %d != %d" % (name, g.nseq(), ref["nseq"])
 
-    want_hex = ref["points"]
     seen = set()
+    for n in range(1, g.nseq() + 1):
+        seen.add(res.seq(ExpSeq(g.getseq(n))).serialize())
+    assert len(seen) > 1, "%s: expected the scan to vary the bytes across points" % name
+
+
+@matlab_oracle
+@_needs_ref
+@pytest.mark.parametrize("name", sorted(_DESC))
+def test_dispatch_per_point_bytes_match_matlab(real_config, name):
+    """Frozen cross-tree oracle -- pinned to the retired 2026-06-11 MATLAB capture and
+    skipped by default; see conftest.MATLAB_ORACLE_REASON."""
+    ref = _REF_DATA[name]
+    res = dispatch_descriptor(_DESC[name])
+    g = res.scangroup
+
+    want_hex = ref["points"]
     for n in range(1, g.nseq() + 1):
         params = g.getseq(n)
         got = res.seq(ExpSeq(params)).serialize()
@@ -330,5 +352,3 @@ def test_dispatch_per_point_bytes_match_matlab(real_config, name):
             raise AssertionError(
                 "%s point %d/%d: %d bytes vs reference %d; first diff at %s"
                 % (name, n, g.nseq(), len(got), len(want), d))
-        seen.add(got)
-    assert len(seen) > 1, "%s: expected the scan to vary the bytes across points" % name

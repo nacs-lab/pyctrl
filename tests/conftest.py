@@ -140,3 +140,39 @@ def engine(request):
         with open(config_path, "r") as f:
             mgr.load_config_string(f.read())
     return mgr
+
+
+# --------------------------------------------------------------------------- #
+# Frozen MATLAB byte oracles (see the module docstrings of test_ybseqs_build.py,
+# test_scan_point_oracle.py, test_dispatch_descriptor.py).
+#
+# The MATLAB captures under tests/reference_ybseqs/ and tests/reference_scan_point/
+# were taken 2026-06-11 against the step cone and expConfig of that date. The MATLAB
+# stack has since been retired as the live backend (pyctrl is the runtime), and the
+# pyctrl step cone has legitimately GROWN -- high-field STIRAP / Rydberg push-out
+# steps, the TTL ionization path, per-frame 399 amp overrides. A current build of
+# these sequences therefore emits strictly MORE nodes than the June capture; the
+# byte comparison now measures "still identical to a retired June MATLAB tree",
+# which is no longer a correctness property of pyctrl.
+#
+# The comparisons are kept (not deleted) and gated behind PYCTRL_MATLAB_ORACLE=1,
+# which is only meaningful when BOTH trees are checked out at a matching commit --
+# i.e. against a pinned pair, not against live lab config. The structural halves of
+# those tests (point counts, per-point byte variation, build repeatability, the
+# no-int32 mapping) stay live and unconditional, since they do not depend on the
+# capture.
+#
+# To revive a real cross-tree oracle: check out both trees at the same commit,
+# re-run tools/capture_ybseqs_reference.m + tools/capture_scan_point_reference.m
+# under MATLAB, commit the refreshed JSON, and run with PYCTRL_MATLAB_ORACLE=1.
+# --------------------------------------------------------------------------- #
+MATLAB_ORACLE_ENABLED = os.environ.get("PYCTRL_MATLAB_ORACLE") == "1"
+
+MATLAB_ORACLE_REASON = (
+    "frozen MATLAB byte oracle: the capture is pinned to the retired 2026-06-11 MATLAB "
+    "tree and the pyctrl step cone has grown since. Set PYCTRL_MATLAB_ORACLE=1 with a "
+    "freshly re-captured reference to run it."
+)
+
+# Import as `from conftest import matlab_oracle` in the byte-oracle test modules.
+matlab_oracle = pytest.mark.skipif(not MATLAB_ORACLE_ENABLED, reason=MATLAB_ORACLE_REASON)

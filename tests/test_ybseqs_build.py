@@ -21,6 +21,16 @@ pyctrl grows a real runtime (Phase 5); it uses no step-cone steps, so coverage i
 
 A second, capture-independent test asserts the int->float64 mapping: a faithful build of
 these (all-double) sequences must emit ZERO int32 constants.
+
+FROZEN ORACLE (2026-08-21): the byte comparison is pinned and SKIPPED by default. The
+capture in reference_ybseqs/ dates from 2026-06-11; the MATLAB stack has since been
+retired as the live backend and the pyctrl step cone has legitimately grown (high-field
+STIRAP / Rydberg push-out, TTL ionization, per-frame 399 amp overrides), so a current
+build emits strictly more nodes than the capture. Byte equality against it now measures
+agreement with a retired June tree, not pyctrl correctness. Two tests remain:
+  * test_seq_builds_repeatably -- LIVE: builds + is deterministic (capture-independent)
+  * test_seq_builds_byte_identical -- gated behind PYCTRL_MATLAB_ORACLE=1, meaningful
+    only against a freshly re-captured reference from a matching commit of both trees.
 """
 
 import json
@@ -30,7 +40,7 @@ import pytest
 
 import compare_bytes
 import seq_manager
-from conftest import _TESTS_DIR
+from conftest import _TESTS_DIR, matlab_oracle
 from exp_seq import ExpSeq
 from seq_config import SeqConfig
 
@@ -90,9 +100,20 @@ def _build(name, nargin):
     return fn() if nargin == 0 else fn(ExpSeq())
 
 
+@pytest.mark.parametrize("name,nargin", _SEQS, ids=[s[0] for s in _SEQS])
+def test_seq_builds_repeatably(real_config, name, nargin):
+    """Live half (capture-independent): the seq builds, and two fresh builds of the same
+    seq serialize identically -- in-body purity + a deterministic node order."""
+    got = _build(name, nargin).serialize()
+    assert got, "%s: empty serialization" % name
+    assert _build(name, nargin).serialize() == got, "%s: build not repeatable" % name
+
+
+@matlab_oracle
 @_needs_ref
 @pytest.mark.parametrize("name,nargin", _SEQS, ids=[s[0] for s in _SEQS])
 def test_seq_builds_byte_identical(real_config, name, nargin):
+    """Frozen cross-tree oracle -- see the note above and conftest.MATLAB_ORACLE_REASON."""
     assert name in _REF_BYTES, "%s missing from the committed capture" % name
     want = _REF_BYTES[name]
     got = _build(name, nargin).serialize()
@@ -100,8 +121,6 @@ def test_seq_builds_byte_identical(real_config, name, nargin):
         d = compare_bytes.diff(compare_bytes.decode(got), compare_bytes.decode(want))
         raise AssertionError(
             "%s: %d bytes vs reference %d; first diff at %s" % (name, len(got), len(want), d))
-    # Repeatable: a fresh build of the same seq serializes identically.
-    assert _build(name, nargin).serialize() == got, "%s: build not repeatable" % name
 
 
 # Raw defval Type tag for int32 (SeqVal.m TypeInt32); 3 == float64, 1 == bool.

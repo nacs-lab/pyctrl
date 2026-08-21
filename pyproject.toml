@@ -20,6 +20,10 @@ testpaths = ["tests"]
 # Run engine checks explicitly with:  pytest -m needs_engine   (compile-only)
 # Run the live MATLAB differential with:  pytest -m needs_matlab  (spawns matlab -batch)
 # Run hardware checks (downtime only): pytest -m needs_hardware
+# The MATLAB per-sequence / per-point BYTE oracles are additionally PINNED and skipped by
+# default (the capture is frozen at the retired 2026-06-11 MATLAB tree; the pyctrl step cone
+# has grown since). Re-enable only against a freshly re-captured reference from a matching
+# commit of both trees:  PYCTRL_MATLAB_ORACLE=1 pytest   -- see tests/conftest.py.
 addopts = "-m 'not needs_hardware and not needs_engine and not needs_matlab'"
 markers = [
     "no_hardware: pure byte/structure math; never loads the engine or touches devices (default)",
