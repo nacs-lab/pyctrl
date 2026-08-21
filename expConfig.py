@@ -441,12 +441,19 @@ def _consts():
     #            (config.yml), must NOT equal start_ttl_chn, and must NOT be driven as an output.
     #            None = unset -> the runner SKIPS enabling (and logs once) rather than guess a
     #            line; SET it to your physical line-sync input to activate for every scan.
-    #   Raise:   True = wait for a rising edge, False = falling edge.
+    #   Raise:   True = wait for a rising edge, False = falling edge. This is the PHYSICAL edge you
+    #            get -- but only because pyctrl compensates for a firmware inversion: molecube2
+    #            maps the flag backwards relative to the gateware, so the run loop sends its
+    #            COMPLEMENT (engine_run._MOLECUBE2_TRIG_EDGE_INVERTED -- read that note before
+    #            touching either side; "fixing" molecube2 without clearing that flag double-inverts
+    #            and silently restores the bug). Verified 2026-08-16 end to end on scope
+    #            192.168.0.27: with the compensation in place, Raise=True fires on the line's
+    #            rising edge, Raise=False on the falling edge, each within one 20 us sample.
     #   Timeout: seconds. FPGA clock is 100 MHz and the bytecode timeout field is 24-bit, so the
     #            max is ~0.168 s; ~0.02 s = one 60 Hz period + margin (catches the next edge, then
     #            proceeds if the signal is absent -- it does not hang the shot).
     c["LineTrigger"] = {
-        "Enable": False,
+        "Enable": True,
         "Device": "FPGA1",
         "Channel": 0,                          # trigger-input MUX index (WaitTrigger `chn:8`). 
         # 0 = TTL in 0 = TTL channel 24 (where the 60Hz is wired), 
@@ -456,7 +463,8 @@ def _consts():
         # clock SMA10 (FMC2 clock0p)
         # TTLout24 SMA13 (FMC2 clock1n)
         # TTLout52 SMA04 (FMC 1 la32p)
-        "Raise": True,                         # True = rising edge, False = falling edge
+        "Raise": True,                         # True = rising edge, False = falling (the run loop
+                                               # inverts it for the firmware quirk; see above)
         "Timeout": 0.02,                       # seconds (~one 60 Hz period + margin)
     }
 

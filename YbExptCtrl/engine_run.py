@@ -263,8 +263,13 @@ def make_engine_run(server, camera, seq_config, log=None):
                 s = ExpSeq(seqparam)
                 seqfn(s)
                 if _lt is not None and getattr(s, "trigger_device", "") == "":  # seq may self-enable
+                    # Send the COMPLEMENT of the requested edge -- the firmware inverts it, so this
+                    # is what makes LineTrigger Raise=True actually fire on the rising edge. See
+                    # _MOLECUBE2_TRIG_EDGE_INVERTED for the evidence and how to retire this.
+                    wire_raise = (not _lt["raise_"]) if _MOLECUBE2_TRIG_EDGE_INVERTED \
+                        else _lt["raise_"]
                     s.enable_global_wait_trigger(_lt["device"], _lt["channel"],
-                                                 _lt["raise_"], _lt["timeout"])
+                                                 wire_raise, _lt["timeout"])
                 for mgr in _ttl_mgrs:                         # per-channel edge-timing managers
                     s.add_ttl_mgr(*mgr)
                 s.generate()
@@ -425,6 +430,25 @@ def _make_globals_session(scan_id, scan_name, log):
         return None
 
 
+# The FPGA firmware inverts the wait-trigger edge sense, so pyctrl sends the COMPLEMENT of the
+# edge the user asked for (applied at the ``enable_global_wait_trigger`` call in _compile_point,
+# NOT in _line_trigger_config -- the resolver keeps physical "which edge do I want" semantics).
+#
+# Why: molecube2 ``lib/pulser.h`` maps the boolean as ``trig_type = trig_raise ? 1 : 2``, but the
+# gateware (molecube-amaranth ``inst_runner.py``) decodes ``trig_lower_edge = trig_type & 1`` and
+# then waits for ``trig_ttl == trig_lower_edge`` (TRIG_INIT) followed by ``!=`` (TRIG_ARMED). So
+# trig_type 1 ("raise") selects the FALLING edge and 2 selects the RISING edge -- backwards.
+#
+# Measured 2026-08-16 on scope 192.168.0.27 (CH1 = FPGA1/TTL27, CH2 = the Channel-0 line monitor),
+# confirmed at two independent levels, each landing within one 20 us sample of the named edge:
+#   pyctrl scan   Raise=1 -> falling   Raise=0 -> rising   (runp value verified in the descriptor)
+#   test_trigger  edge=1  -> falling   edge=0  -> rising   (pulser level; no pyctrl, no libnacs)
+#
+# Retire this by fixing that ternary in molecube2 and rebuilding it on the FPGA; then set this to
+# False. Leaving both "fixes" in place would double-invert and silently restore the old behavior.
+_MOLECUBE2_TRIG_EDGE_INVERTED = True
+
+
 # Conservative 60 Hz line-trigger fallback, used ONLY if expConfig consts lacks a ``LineTrigger``
 # subtree (older snapshot / a fake seq_config in tests): OFF, so an absent config never silently
 # starts gating shots on a line edge. The operative default lives in expConfig consts
@@ -466,6 +490,10 @@ def _line_trigger_config(scangroup, seq_config, log=None):
             except Exception:  # noqa: BLE001
                 pass
         return None
+    # NOTE on ``raise_``: it is serialized faithfully (ZYNQZYNQ ver-2 trig_type 0x02 vs 0x01 ->
+    # bytecode WaitTrigger raise bit), but the deployed bitstream IGNORES it and always fires on
+    # the FALLING edge -- measured on the scope 2026-08-16, both settings identical. Do not invert
+    # it here to "fix" the polarity; see the LineTrigger block in expConfig.py for the evidence.
     return {"device": str(_runp_get(rp, "LineTriggerDevice", cfg["Device"])),
             "channel": int(channel),
             "raise_": bool(_runp_get(rp, "LineTriggerRaise", cfg["Raise"])),
