@@ -490,10 +490,11 @@ def _line_trigger_config(scangroup, seq_config, log=None):
             except Exception:  # noqa: BLE001
                 pass
         return None
-    # NOTE on ``raise_``: it is serialized faithfully (ZYNQZYNQ ver-2 trig_type 0x02 vs 0x01 ->
-    # bytecode WaitTrigger raise bit), but the deployed bitstream IGNORES it and always fires on
-    # the FALLING edge -- measured on the scope 2026-08-16, both settings identical. Do not invert
-    # it here to "fix" the polarity; see the LineTrigger block in expConfig.py for the evidence.
+    # NOTE on ``raise_``: it keeps PHYSICAL semantics here -- True means "I want the rising edge".
+    # It is serialized faithfully (ZYNQZYNQ ver-2 trig_type 0x02 vs 0x01 -> bytecode WaitTrigger
+    # raise bit), but the firmware decodes the flag BACKWARDS, so _compile_point sends its
+    # complement; see _MOLECUBE2_TRIG_EDGE_INVERTED for the mechanism and the scope evidence.
+    # Do NOT invert here as well -- that double-inverts and silently restores the bug.
     return {"device": str(_runp_get(rp, "LineTriggerDevice", cfg["Device"])),
             "channel": int(channel),
             "raise_": bool(_runp_get(rp, "LineTriggerRaise", cfg["Raise"])),
