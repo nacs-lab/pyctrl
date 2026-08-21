@@ -99,6 +99,8 @@ def _channel_alias():
     a["AmpEOM616"] = "FPGA1/DDS7/AMP"
     a["FreqAOM616"] = "FPGA1/DDS8/FREQ"
     a["AmpAOM616"] = "FPGA1/DDS8/AMP"
+    a["Freq556RydbergHF"] = "FPGA1/DDS9/FREQ"
+    a["Amp556RydbergHF"] = "FPGA1/DDS9/AMP"
     a["Freq369"] = "FPGA1/DDS12/FREQ"
     a["Amp369"] = "FPGA1/DDS12/AMP"
     a["Freq399Imag2"] = "FPGA1/DDS17/FREQ"
@@ -148,7 +150,9 @@ def _consts():
     c["Orca"] = {"ROI": [1000, 100, 2100, 2100], "ExposureTime": 0.050004}
 
     # 556nm resonance (calibrate daily by spectroscopy; 3P1 mj=0 near-magic)
-    c["Resonance556mj0Freq"] = 108.0283e6  # fit 2026-08-05 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.960, FWHM 45.1 kHz, 214 shots, scan 20260805174955, 33x33_feedback11, loading 0.60); +11.5 kHz vs 08-04 -- above the usual few-kHz daily drift, flagged to user; mj0-mj1 splitting 2.7232 MHz (mj1 105.3051 MHz, FWHM 304 kHz, R^2=0.950, scan 20260805175514). 399 scan SKIPPED by user request. USER RAISED THE 556 RYDBERG PUSH-OUT BEAM POWER ~7x mid-session -> the whole 30 G set was re-amped from 0.15 to 0.10: amp 0.057 was far too weak (dip only 0.98->0.94, R^2 0.846, scan 20260805175959) and 0.10 reproduced the 08-03 line shape (dip 0.26-0.97, FWHM 150.2 kHz vs 154 kHz, center 143.5280 MHz vs 143.5267, scan 20260805180401) -- user approved 0.10. NOTE the ~7x is on the DEDICATED Rydberg-h path only (RydbergPushoutStep opens TTL556RydbergShutter + closes all 556 MOT shutters, driving Amp556RydbergMOTh alone), NOT the zero-field PushoutStep path (MOT shutters open, Amp556MOTX + Amp556RydbergMOTh together), which is why the mj=0/mj=1 scans at Amp 0.10 were unaffected (FWHM 45/304 kHz, both normal). 616 revival peak 233.9624 MHz (R^2 0.990, survival 0.28-0.97, scan 20260805180757) but FWHM 18.5 MHz vs the 07-20 reference ~4.5 MHz = power-broadened by the stronger 556 push. was 108.0168e6 (08-04: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.953, FWHM 57.4 kHz, 219 shots, scan 20260804124801, 33x33_feedback11, loading 0.59); +5.8 kHz vs 08-03, within the usual daily drift; mj0-mj1 splitting 2.721 MHz (mj1 105.2959 MHz, FWHM 347 kHz, R^2=0.976, scan 20260804125248). 616 EXCLUDED by user request -> no 616-revival and no 556 Autler-Townes scan today (AT needs the revival peak as --eom616); 616 also read -242 MHz off / unlocked. SECOND CONSECUTIVE DAY of the same 399 outage: MCC USB DAC offline again at pre-flight (/health devices.dac=false, 399 lock engaged=true but dac_online=false, V frozen 6.1041, det +4678 MHz); DAC replugged, lock self-re-acquired to det 0.44 MHz / V 6.62, loading 0.54-0.59. Recurring 2 days running -> suspect a degrading DAC USB connection, not a one-off. was 108.0110e6 (08-03: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.961, FWHM 49.1 kHz, 246 shots, scan 20260803101205, 33x33_feedback11, loading 0.57); +1.4 kHz vs 08-01, within linewidth; mj0-mj1 splitting 2.694 MHz (mj1 105.3172 MHz, FWHM 311 kHz, scan 20260803101739). Ran after a 399 outage: the MCC USB DAC driving the 399 wavemeter-PID piezo went offline overnight, its output collapsed and 399 parked +4.64 GHz off -> zero loading (0.005) + blank Orca frames (max 395 ADU); DAC replugged 10:10, lock re-acquired at V 6.24 / det +-3 MHz, loading back to 0.59. was 108.0096e6 (08-01: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.950, FWHM 52.1 kHz, 202 shots, scan 20260801092042, 33x33_feedback11, loading 0.59); +11.8 kHz vs 07-30 -- above the usual few-kHz daily drift, flagged to user; mj0-mj1 splitting 2.720 MHz (mj1 105.2893 MHz, scan 20260801092459). was 107.9978e6 (07-30: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.968, FWHM 47.6 kHz, 208 shots, scan 20260730140307, 33x33_feedback11, loading 0.61); +16.1 kHz vs 07-29 -- above the usual few-kHz daily drift, flagged to user; mj0-mj1 splitting 2.679 MHz (mj1 105.3184 MHz, scan 20260730140731). was 107.9817e6 (07-29: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.959, FWHM 42.5 kHz, 236 shots, scan 20260729113144, 33x33_feedback11, loading 0.42); +1.7 kHz vs 07-28, within linewidth; first 200-shot run scan 20260729112300 gave 107.9883 MHz R^2=0.933, redone per auto-reps rule. was 107.9800e6 (07-28: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.955, FWHM 60.0 kHz, 246 shots, scan 20260728105509, 33x33_feedback11, loading 0.58); -2.0 kHz vs 07-27, within linewidth. was 107.9820e6 (07-27 REDO (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.964, FWHM 45.9 kHz, 208 shots, scan 20260727132532, 33x33_feedback11); -3.9 kHz vs the 12:07 fit, within linewidth. was 107.9859e6 (07-27 12:07, R^2=0.968, 460 shots, scan 20260727120744); 107.9618e6 (07-23, 33x33_feedback11); 107.9574e6 (07-22, 33x33_feedback11); 107.9501e6 (07-21, 33x33_feedback11); 107.9611e6 (07-20, 33x33_feedback11); 107.9253e6 (07-16, 33x33_feedback11); 107.9284e6 (07-14, 33x33_feedback11); 107.9054e6 (07-13, 33x33_feedback11); 107.8861e6 (07-05, 33x33_feedback9); 107.8762e6 (07-03); 107.8560e6 (07-02); 107.8448e6 (06-30); 107.8499e6 (06-29); 107.8478e6 (06-28, NEW LUT); 107.8389e6 (06-26); 107.8199e6 (06-23, 33x33_feedback9); 107.7753e6 (06-12, 47x47_uniform); 107.7673e6 (06-11); 107.7677e6 (06-10); 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
+    # fit 2026-08-18 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.952, FWHM 67.2 kHz, 205 shots, scan 20260818080342, 33x33_feedback11, loading 0.59); +17.8 kHz vs the standing 108.0600e6 (the 08-12 fit -- config was NOT updated on 08-13..08-17, so this is a ~6-day drift, ~3 kHz/day, not a one-day jump). mj0-mj1 splitting 2.6062 MHz (mj1 105.4716 MHz, FWHM 808.6 kHz, R^2=0.986, 105 shots, scan 20260818080808, stock 104.5:0.1:106.5 window, interior); +86.8 kHz vs 08-12's 2.5194, and the ~809 kHz mj=1 width is the same inhomogeneous trap-depth spread 08-11/08-12 documented (692.9 / 863.0 kHz), so the spread has still NOT come down. USER-DIRECTED SCOPE: mj=0 + mj=1 only, plus a 70 G Rydberg push-out spectrum; no 399, no 30 G set, no revival, no AT. Pre-flight: backend idle; 399 wavemeter PID engaged=true, det +1.17 MHz, DAC online, V 6.1167; 556 det +2.17 MHz; dashboard SLM-camera endpoint still 503 "no data for camera_png yet" (cache empty, not a blank SLM) so the pattern was validated by the warm-up loading rate 0.55-0.63 (627/1068 sites logical-1). was 108.0600e6  (08-12 fit; full history in the entry below)
+    # fit 2026-08-12 (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.956, FWHM 55.2 kHz, 205 shots, scan 20260812100054, 33x33_feedback11, loading 0.55); +8.9 kHz vs 08-11, within the usual daily drift. mj0-mj1 splitting 2.5194 MHz (mj1 105.5406 MHz, FWHM 863.0 kHz, R^2=0.985, 165 shots, scan 20260812100530), -144.8 kHz vs 08-11's 2.6642; mj=1 run on the WIDENED 103.8:0.1:107.0 window (33 pts) that 08-11 established, not the stock 104.5-106.5, and the fit is interior with R^2 0.985 -- the ~863 kHz width is the same inhomogeneous trap-depth spread 08-11 documented (692.9 kHz then), so the spread has NOT come back down. USER-DIRECTED SCOPE: mj=0 + mj=1 + the 30 G reference set + a NEW 20 G Rydberg set; no 399 scan. *** PUSH-INDEPENDENT ~45% SURVIVAL FLOOR IN THE RYDBERG PUSH-OUT STEP AT FIELD (new today, unexplained) ***: every high-field scan tops out at survival ~0.52-0.55 instead of the ~0.95 baseline every run through 08-07 showed, while the SAME shots' 0-field mj=0/mj=1 scans sit at 0.97 -- so it is specific to RydbergPushoutStep (TTL556RydbergShutter + Amp556RydbergMOTh), not imaging/loading (loading 0.55-0.59 all day, normal). It is NOT the 556 push power: halving the push at 30 G (amp 0.10 -> 0.05) left the off-resonant baseline flat at 0.54 -> 0.52 while the dip depth changed as expected. Ryd308.Amp defaults to 0 in expConfig, so it is not stray 308 either. Prime suspect = a 556-Rydberg-beam leak (shutter open, AOM off is not dark) or something in the bias-coil ramp; NOT diagnosed further today. Consequence: every high-field contrast below is quoted against a ~0.53 ceiling, not 0.95. THE 30 G PUSH AMP IS ALSO NOW TOO STRONG at the 08-05..08-07 operating value 0.10: it gave FWHM 307.7 kHz (vs 161.4 kHz on 08-07 at the same 0.10) and drove the dip to 0.01, i.e. saturated; 0.05 restored an unbroadened FWHM 95.6 kHz. Both amps agree on the CENTER to 5.0 kHz (143.6187 @ 0.10 / 143.6237 @ 0.05), so the center stands: 30 G dip 143.6237 MHz (FWHM 95.6 kHz, R^2=0.909 -- the modest R^2 is dip DEPTH against the 0.52 ceiling, not center uncertainty; scans 20260812100935 @ 0.10 and 20260812101355 @ 0.05), +84.6..+89.6 kHz vs 08-07's 143.5341. NEW: 20 G RYDBERG SET (user-directed; the 20 G window had to be derived, not looked up -- RydbergSpectrum556Scan hard-codes center_mhz=143.5 for 30 G and 556AutlerTownesScan hard-codes 143.4, so BOTH gained a --center/--half/--step CLI today, defaults unchanged). Window derived from TODAY's two measured points by linear Zeeman scaling: center20 = RES0 + (2/3)*(dip30 - RES0) = 108.0600 + (2/3)*35.5637 = 131.77 MHz, swept 131.22-132.22. **20 G 556 resonance = 131.8467 MHz** (FWHM 174.6 kHz, R^2=0.977, 205 shots, scan 20260812102327, push amp 0.05, window 130.85-132.85 @ 50 kHz). A first 20 G pass at amp 0.10 (scan 20260812101909) was WASHED OUT -- survival 0.00-0.34 across the whole +-0.5 MHz window, FWHM 885.8 kHz -- but still put the center at 131.8502, i.e. the two agree to 3.5 kHz. Zeeman scaling is self-consistent: 1.1893 MHz/G at 20 G vs 1.1855 MHz/G at 30 G (0.3% apart) against the 1.178 constant in the scan. **20 G 616 revival peak = 236.0263 MHz** (FWHM 14.8 MHz, R^2=0.986, 255 shots, scan 20260812105321, 556 parked on 131.8467 at amp 0.05, 308 amp 0.4; user confirmed the 616 ULE was locked before the run). That is +2.0 MHz vs the 30 G revival history (233.4-234.0), i.e. the 308 line moves only ~0.2 MHz per Gauss in EOM616 terms -- far less than the ~0.8 MHz/G a naive g=2 Rydberg Zeeman estimate gives, worth a look. Revival recovers to 0.53 = the full available ceiling, so the revival contrast is intact despite the floor. **20 G 556 AUTLER-TOWNES: dips 130.5990 MHz (FWHM 310.9 kHz) + 132.5223 MHz (FWHM 385.2 kHz), SPLITTING 1.9233 MHz**, 2-peak R^2=0.894 vs 0.205 single (decisively two-component), 429 shots, scan 20260812105931, 308 amp 0.4 parked on 236.0263 MHz, 556 probe amp 0.05, window CENTERED on the measured bare line 131.8467 +-3 MHz. Splitting 1.923 MHz at 20 G vs 1.952 (08-03) / 1.912 (08-07) at 30 G -- essentially unchanged, as expected for an AT splitting set by the 308 Rabi frequency rather than by the bias field. *** THIS RESOLVES THE OPEN QUESTION IN gotcha-556-pushout-amp-highfield-scans ***: the AT doublet MIDPOINT sits 131.5606 MHz = **-286 kHz below the bare line**, the same -335/-354 kHz offset seen on 08-01/08-03 -- but today the AT window was centered ON the measured bare line (131.8467, via the new --center flag) instead of the hard-coded 143.4, so the offset is NOT a window-centering / fit artifact. It survives a correctly centered window at a different field, which points at a real 308-induced light shift of the dressed doublet. Next test remains a --ryd308-amp sweep. NOTE also that fit_spectrum.py --peaks 2 FAILED on this doublet: its seed collapsed onto one shoulder (reported 132.2516/132.5516, splitting 0.300 MHz, R^2 0.596) even though the raw curve shows two obvious 1.9 MHz-separated dips; the numbers above come from a hand-seeded double-Lorentzian fit (figure fit_AT_20G_20260812105931.png in the scan dir). Do not trust --peaks 2 on a wide AT window without eyeballing the curve. Pre-flight: backend idle; the previous job was a 17x17_20um rearrangement scan so the SLM held a rearrangement phase -- user chose 33x33_feedback11, written with z4=-5 (base sha 8f8e2345, same as 08-07/08-11) and validated by the warm-up loading rate 0.55-0.61 since the dashboard SLM-camera endpoint still returns 503 "no data for camera_png yet". 399 wavemeter PID engaged=true, det -1.10 MHz, DAC online, V 6.043; 556 det +2.24 MHz; 616 has no lock block in yb_monitor (per 08-07, gate 616 on the ULE scope, not the wavemeter) and the user confirmed it locked. was 108.0511e6 (08-11: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.947, FWHM 40.4 kHz, 205 shots, scan 20260811141215, 33x33_feedback11, loading 0.58); +1.0 kHz vs 08-10, within linewidth. REPRODUCED: a first 205-shot run (scan 20260811140626) gave 108.0509 MHz (R^2=0.918, FWHM 59.9 kHz) -- the two agree to 0.2 kHz, so the marginal R^2 is dip DEPTH (only ~14% at this push), not center uncertainty. TODAY'S OPERATING POINT IS NOT THE ByPattern DEFAULT: user directive VServo 1.9 (vs ByPattern 3.3) and loading plane z4 -4.0 (vs ByPattern SLM.Loading.Defocus -2.5), both applied as per-scan overrides -- the config keys were NOT edited. The plane was MEASURED today at VServo 1.9, not inherited: 17-plane sweep (20260811_135519, -7..-3 step 0.25, 15 shots/plane, pooled 2-Gaussian EM) puts the quadratic vertex at -4.5 on a flat -5.25..-3.5 plateau, and a 40-shot/plane head-to-head (20260811_140133) gives dist/d' 4.37/3.07 at -4.0 vs 4.16/2.92 at -5.5 vs 3.26/2.45 at the ByPattern -2.5. (A first coarse 21-plane stack 20260811_133531 peaked at -5.5 but is CONTAMINATED -- 399 unlocked partway through it, loading 0.26-0.35 vs 0.57-0.61 in every clean run -- discard it.) *** VSLMServo IS NOT ACTUALLY MOVING THE TRAP DEPTH ***: the descriptor confirms SLM.VServo=1.9 + Init.VSLMServo=1.9 reached the sequence, yet the depth-differential |mj|=1 line sits at 105.5464 MHz (scan 20260811141715) vs 105.5606 at VServo 3.3 on 08-10 -- a 15 kHz move on a 2.5 MHz splitting -- and loading is unchanged (0.58 vs 0.61). That matches job 773's VServo sweep (loading FLAT 0.54-0.57 across 2.7-3.9), so the 532 power servo appears saturated or its setpoint is not reaching the power loop over 1.9-3.9 V. mj0-mj1 splitting 2.6642 MHz (mj1 105.3869 MHz, FWHM 692.9 kHz, R^2=0.967, 165 shots, scan 20260811142749), +174.7 kHz vs 08-10's 2.4895. mj=1 NEEDED RE-WINDOWING AND THE WIDTH IS REAL: the stock 104.5-106.5 window and a 105.5-107.6 retry both TRUNCATE the line (the latter fit 363 kHz at 105.5464 by seeing only its upper half); widening to 103.8-107.0 (~3.7 FWHM) gave 692.9 kHz, and 104.8-106.4 gave 865 kHz at the same center, i.e. truncation inflates the WIDTH while the CENTER stays put (105.3961/105.3869, 9 kHz apart). Power broadening is NOT the cause (user hypothesis, tested): amp 0.10 -> 692.9 kHz, amp 0.075 -> 642.3 kHz (-7% while the dip depth halves, center 105.4244), amp 0.05 -> NO DIP AT ALL (survival flat 0.98-0.99, R^2=0.07) -- the push-out is sharply nonlinear and 0.10 is barely above threshold. So the ~2x width vs 08-10 (692.9 vs 316.0 kHz) is INHOMOGENEOUS: the array's trap-depth distribution has roughly doubled in spread. NOTE the mj=1 push reads Amp 0.10 / 20 ms from the BUILT ScanGroup -- the runbook's "Amp 0.18" is wrong (same docstring-lies gotcha as the 30 G amps). was 108.0501e6 (08-10: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.968, FWHM 44.9 kHz, 203 shots, scan 20260810095925, 33x33_feedback11, loading 0.61); +14.7 kHz vs 08-07 -- above the usual few-kHz daily drift, flagged to user (3-day gap since 08-07, so ~5 kHz/day). mj0-mj1 splitting 2.4895 MHz (mj1 105.5606 MHz, FWHM 316.0 kHz, R^2=0.971, scan 20260810102020, 310 shots), -189.4 kHz vs 08-07's 2.6789 -- the SPLITTING NARROWED because mj=1 moved +204.1 kHz while mj=0 moved only +14.7 kHz. The mj=1 shift is REAL, not a fit artifact: a first 203-shot run (scan 20260810100930) gave 105.5718 MHz at a marginal R^2=0.931 and the re-run reproduced it to 11 kHz at R^2=0.971. mj=1 tracks trap depth (the |mj|=1 light shift is depth-differential), so a +204 kHz mj=1 move with a nearly-static mj=0 points at a TRAP-DEPTH change on 33x33_feedback11 since 08-07, not a laser/ULE drift -- worth checking VSLMServo / 532 power if it persists. ONLY the two 556 scans were run today (user asked for mj=0 + mj=1 only; no 399, no 30 G set, no revival, no AT). Pre-flight: loading 0.601, per-site d-prime median 5.32 (99% of sites >3), img1-img2 corr 0.955; 399 wavemeter PID read engaged=false with det +1.6 MHz and its lock VOLTAGE RAILED AT 8.0 V (range 2-8) -- left alone since 399 is transfer-cavity-locked (08-06), but a railed servo has no headroom and is worth a look; 556 det +1.6 MHz; 616 OFFLINE on the wavemeter (irrelevant today, no 616 scans); SLM dashboard camera endpoint still returns 503 "no data for camera_png yet" (cache empty, not a blank SLM) and the server tracks no loading-pattern name, so the pattern was reloaded blind (33x33_feedback11, z4=-5, base sha 8f8e2345 -- same as 08-07) and validated by the warm-up loading rate. TWO USER DIRECTIVES applied to the daily calibration this session: (1) the mj=1 window narrowed from 103.5-106.5 to **104.5:0.1:106.5** (21 pts, was 31) since the line has walked up and the low edge was dead range; (2) **never submit more than --reps 5** for these scans -- they converge fast and extra reps are wasted apparatus time (both changes written into Spectrum556Scan.py + daily-system-scan.md; the auto-reps memory was amended so its "add reps" advice no longer contradicts the cap -- remediate a poor fit by RE-RUNNING at reps 5, not by raising reps). was 108.0354e6 (08-07: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.973, FWHM 47.9 kHz, 202 shots, scan 20260807150200, 33x33_feedback11, loading 0.61); +7.1 kHz vs 08-06, within the usual daily drift; mj0-mj1 splitting 2.6789 MHz (mj1 105.3565 MHz, FWHM 361.2 kHz, R^2=0.959, scan 20260807150614), +27.5 kHz vs 08-06's 2.6514. 399 run at Amp2 1.0 (carrying forward 08-06): first pass 87 shots gave R^2=0.957 with only a ~9%-deep dip, re-run at reps 5 -> 145 shots, center 310.1196 MHz, FWHM 15.5 MHz, R^2=0.970 (scan 20260807153530); center moved -7.7 MHz vs 08-06's 317.8174 -- LARGE, but the 08-06 fits sat at 317.8-318.0 while today's two independent passes agree at 310.59 / 310.12 MHz, so it is reproducible within the day. 2-Lorentzian DEGENERATE again on both passes (components merged, R^2 identical to single) -- no resolvable doublet, second day running. 30 G set run at push amp 0.10 (carrying forward the 08-05 user-approved value under the raised Rydberg-h power; NOTE the scan's built-in field-scaled default is 0.15 and its --help text claims 0.4 -- both stale, see the gotcha-556-pushout-amp-highfield-scans memory): 30 G dip 143.5341 MHz (FWHM 161.4 kHz, R^2=0.987, survival 0.22-0.96, 155 shots, scan 20260807153843), -5.4 kHz vs 08-06's 143.5395 -- amp 0.10 reproduced the expected line shape, confirming the choice. 616 revival peak 233.3752 MHz (R^2=0.978, FWHM 14.9 MHz, survival 0.18-0.96, 155 shots, scan 20260807154228), -603 kHz vs 08-06's 233.9782 -- a REAL line move. IMPORTANT PROCEDURAL CORRECTION (user, 08-07): the SINGLE criterion for a 616 lock is the 616ULE SCOPE, NOT the wavemeter. The yb_monitor wavemeter read 616 at -27.5 to -36.8 MHz all session (n=20 during this scan, mean -31.7, every sample |det|>15 MHz) and that was initially -- WRONGLY -- called an unlock and used to reject this scan. 616 has NO lock block in yb_monitor (nothing servos it there, unlike 399), so its target_ghz is a stale reference number and a large, STABLE offset (sigma ~1.7 MHz) is a wavemeter reference error, not a laser excursion. Do NOT gate 616 scans on the wavemeter detuning; check the 616ULE scope. This also puts 08-06's "616 cavity cycled in and out of lock" note in doubt -- that call was made from the same wavemeter signal. The revival was RE-RUN as a reproducibility check (scan 20260807160300, 154 shots): center 233.3464 MHz, FWHM 14948.3 kHz, R^2=0.975 -- agreeing with the first run to -28.8 kHz on a 14.9 MHz feature (0.2%) with FWHM matching to 0.1 kHz. and ~155 shots is ample for this line (user: enough reps for the 616 scan). *** BOTH OF THOSE REVIVAL SCANS ARE SUSPECT / DO NOT USE: at 16:20 the user reported 616 really unlocked and the 616ULE SCOPE (192.168.0.40, ch2 Transmission / ch3 Error signal, read via the scope_control dashboard at http://<rearr-tailscale>:8600/api/scope/192.168.0.40/read) CONFIRMED IT -- CH2 flat at 1.62-1.70 V, Vpp 0.08 V, no cavity fringe; CH3 error signal dead flat at zero (Vpp 0.024 V, mean 0.0003 V) -- while CH4 showed the scan ramp live and the trigger status TD, so the scope was acquiring fine. A locked ULE shows a transmission PEAK on ch2 and a dispersive zero-crossing on ch3; both were absent. Drop time is unknown, so the -603 kHz offset vs 08-06 AND the 28.8 kHz run-to-run agreement are BOTH explained by an unlocked-but-parked cavity (a stable wrong condition reproduces just as well as a right one) -- agreement between two scans is NOT evidence of lock. The baseline tilt below is likewise suspect. The 556 AUTLER-TOWNES scan that had been submitted off the 233.3752 center was ABORTED mid-run at 152 shots (job 549) rather than keep taking data against a bad 308 park. *** The user then RE-LOCKED 616 (16:24) and directed: skip the revival re-run, go straight to AT, queued at the top. NOTE the 616ULE scope still read the SAME flat signature after the re-lock (ch2 Vpp 0.04 V at 1.68-1.72, ch3 +-0.01 V at zero) -- the user confirmed the lock regardless, so that flat ch2/ch3 view is NOT a reliable lock indicator from the dashboard read (wrong timebase/scale, or a locked cavity simply has no scan ramp); ASK for the expected signature before judging lock from this scope again. 556 AUTLER-TOWNES (scan 20260807163624, 254 shots taken / 216 fit, 308 amp 0.4 parked on the pre-lock revival 233.3752 MHz, 556 probe amp 0.10): dips 142.1268 MHz (FWHM 338.4 kHz) + 144.0391 MHz (FWHM 385.0 kHz), SPLITTING 1.912 MHz, 2-peak R^2=0.961 vs 0.236 single (decisively two-component). Splitting 1.912 vs 08-06's 1.807 and the 07-20 reference ~1.3 MHz -- still growing with the 308 Rabi frequency, consistent with the raised push power. Because the --eom616 park came from an UNLOCKED-616 revival, the 308 may sit slightly off resonance, which would only REDUCE the splitting -> treat 1.912 MHz as a LOWER BOUND. Doublet midpoint 143.083 MHz is NOT a line-center measurement (the AT scan hard-codes its 556 window center at 143.4 MHz, no CLI override, vs today's 30 G line at 143.5341). Per user direction the AT scan was aborted on FIT QUALITY rather than a fixed shot count (2-peak R^2 >= 0.93, decisively better than single, both dips interior, splitting stable across two consecutive checks): the splitting read 1.912 MHz identically at n=216 and n=252, so ~250 shots sufficed vs the runbook's 350-450. LINESHAPE TILT (user-spotted): the revival is visibly tilted, but the tilt is in the BASELINE, not the peak -- left wing (210-215 MHz) floors at 0.305 vs right wing (255-260) at 0.202, a -0.103 slope across the window, while the peak itself is only mildly asymmetric (left half-width 7.74 MHz vs right 6.70, asym -0.072). The 556 is NOT mis-set: provenance confirms Pushout.Green.Freq = 143.5341 MHz = today's fitted dip exactly, and both centers are model-robust (30 G dip Lorentzian 143.5341 vs model-free half-crossing midpoint 143.5307, only 3.4 kHz apart on a 164 kHz FWHM; revival Lorentzian 233.375 vs half-midpoint 233.480, 105 kHz on a 14.4 MHz FWHM). The sloping floor is off-resonant 616/308 loss growing toward the blue end = the same over-power that gives FWHM 14.9 MHz vs the 07-20 reference ~4.5 MHz (third day running: 08-05 18.5, 08-06 15.0, 08-07 14.9), with 308 amp pinned at its 0.4 max and the 556 push raised ~7x on 08-05. Separately the 30 G DIP is itself asymmetric (left half-width 91.2 kHz vs right 72.5, asym -0.114 -- leans red), a smaller effect that does not move the center meaningfully. UNTESTED HYPOTHESIS: dropping 308 amp (e.g. to 0.2) should collapse both the tilt and the broadening if the over-power reading is right. 399 wavemeter PID lock read engaged=false at pre-flight with det only +2.5 MHz and the DAC online; it was re-engaged (det -> 1.2 MHz, V 6.39) -- but per 08-06 the user confirmed 399 is now locked via the TRANSFER CAVITY, so the wavemeter PID may no longer be the lock authority and the engage was likely unnecessary. Loading 0.60 throughout, per-site d-prime median 5.09 (100% of sites >3). was 108.0283e6 (08-06: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.969, FWHM 51.0 kHz, 208 shots, scan 20260806110300, 33x33_feedback11, loading 0.55); UNCHANGED vs 08-05 -- delta -6.8 Hz, the flattest day-over-day yet (value kept at 108.0283e6); mj0-mj1 splitting 2.6514 MHz (mj1 105.3769 MHz, FWHM 381.3 kHz, R^2=0.948, scan 20260806110738), -71.8 kHz vs 08-05's 2.7232 MHz. 399 needed the push raised to Amp2 1.0: the standard 0.5 gave only a ~6%-deep dip at BOTH 87 and 216 shots (R^2 0.877 then 0.794 -- MORE shots made the fit WORSE, so power-limited not statistics-limited, same push-power regression the scan docstring records for 08-03); at Amp2 1.0 R^2 jumped to 0.975 (center 317.8174 MHz, FWHM 14.7 MHz, 145 shots, scan 20260806111950). 399 center reproducible across all three runs (317.9876 / 317.8557 / 317.8174 MHz) but the 2-Lorentzian fit went DEGENERATE (components merged) on every one -- no resolvable doublet today, unlike the usual ~15 MHz mj-split. 30 G set run at push amp 0.10 (user-confirmed, carrying forward 08-05's ~7x Rydberg-h power raise): 30 G dip 143.5395 MHz (FWHM 168.9 kHz, R^2=0.991, survival 0.17-0.95, 154 shots, scan 20260806112443), +11.5 kHz vs 08-05's 143.5280. 616 revival peak 233.9782 MHz (R^2=0.985, survival 0.16-0.93, 156 shots, scan 20260806112825), +15.8 kHz vs 08-05's 233.9624; FWHM 15.0 MHz -- still power-broadened vs the 07-20 reference ~4.5 MHz, second day running. 616 CAVITY CYCLED IN AND OUT OF LOCK mid-session (wavemeter det swung -23.2 -> -6.5 -> -28.2 -> -7.2 MHz over ~15 min; user confirmed unlock, then relock, then a second unlock). The revival was RE-RUN after the first relock (scan 20260806113438, 107 shots) and reproduced the center to 0.2 kHz (233.9782) with FWHM 15.5 MHz -- i.e. the 616 unlock did NOT cause the revival broadening; the ~15 MHz width is genuinely the raised-556-push power broadening, matching 08-05's 18.5 MHz. Two AT attempts died to 616 excursions (job 188 aborted at seq 31 with 616 at -28 MHz; an earlier run aborted at 86 shots); the KEPT AT run (scan 20260806113952) was polled with per-sample 616 tracking and 616 stayed in band the whole time (n=28 samples, min -14.1 max -3.7 mean -8.8 MHz, ZERO samples |det|>15 MHz). 556 AUTLER-TOWNES doublet: dips 142.4958 MHz (FWHM 330.4 kHz) + 144.3025 MHz (FWHM 407.2 kHz), SPLITTING 1.807 MHz, 2-peak R^2=0.949 vs 0.398 single (decisively two-component), 320 shots, 308 amp 0.4 parked on the measured revival 233.9782 MHz. Splitting 1.807 MHz vs the 07-20 reference ~1.3 MHz = larger 308 Rabi frequency, consistent with the raised push power. NOTE the AT scan hard-codes its 556 window center at 143.4 MHz (no CLI override) while today's 30 G line sat at 143.5395, so the doublet is ~140 kHz off-center in the window -- harmless at +-3 MHz half-width, but the doublet midpoint 143.399 MHz should NOT be read as a line-center measurement. 399 wavemeter PID lock read engaged=false at pre-flight but the USER CONFIRMED 399 IS NOW LOCKED VIA THE TRANSFER CAVITY, so the wavemeter PID is no longer the lock authority for 399 -- no DAC intervention needed today (contrast the 08-03/08-04/08-05 MCC-DAC outages). was 108.0283e6 (08-05: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.960, FWHM 45.1 kHz, 214 shots, scan 20260805174955, 33x33_feedback11, loading 0.60); +11.5 kHz vs 08-04 -- above the usual few-kHz daily drift, flagged to user; mj0-mj1 splitting 2.7232 MHz (mj1 105.3051 MHz, FWHM 304 kHz, R^2=0.950, scan 20260805175514). 399 scan SKIPPED by user request. USER RAISED THE 556 RYDBERG PUSH-OUT BEAM POWER ~7x mid-session -> the whole 30 G set was re-amped from 0.15 to 0.10: amp 0.057 was far too weak (dip only 0.98->0.94, R^2 0.846, scan 20260805175959) and 0.10 reproduced the 08-03 line shape (dip 0.26-0.97, FWHM 150.2 kHz vs 154 kHz, center 143.5280 MHz vs 143.5267, scan 20260805180401) -- user approved 0.10. NOTE the ~7x is on the DEDICATED Rydberg-h path only (RydbergPushoutStep opens TTL556RydbergShutter + closes all 556 MOT shutters, driving Amp556RydbergMOTh alone), NOT the zero-field PushoutStep path (MOT shutters open, Amp556MOTX + Amp556RydbergMOTh together), which is why the mj=0/mj=1 scans at Amp 0.10 were unaffected (FWHM 45/304 kHz, both normal). 616 revival peak 233.9624 MHz (R^2 0.990, survival 0.28-0.97, scan 20260805180757) but FWHM 18.5 MHz vs the 07-20 reference ~4.5 MHz = power-broadened by the stronger 556 push. was 108.0168e6 (08-04: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.953, FWHM 57.4 kHz, 219 shots, scan 20260804124801, 33x33_feedback11, loading 0.59); +5.8 kHz vs 08-03, within the usual daily drift; mj0-mj1 splitting 2.721 MHz (mj1 105.2959 MHz, FWHM 347 kHz, R^2=0.976, scan 20260804125248). 616 EXCLUDED by user request -> no 616-revival and no 556 Autler-Townes scan today (AT needs the revival peak as --eom616); 616 also read -242 MHz off / unlocked. SECOND CONSECUTIVE DAY of the same 399 outage: MCC USB DAC offline again at pre-flight (/health devices.dac=false, 399 lock engaged=true but dac_online=false, V frozen 6.1041, det +4678 MHz); DAC replugged, lock self-re-acquired to det 0.44 MHz / V 6.62, loading 0.54-0.59. Recurring 2 days running -> suspect a degrading DAC USB connection, not a one-off. was 108.0110e6 (08-03: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.961, FWHM 49.1 kHz, 246 shots, scan 20260803101205, 33x33_feedback11, loading 0.57); +1.4 kHz vs 08-01, within linewidth; mj0-mj1 splitting 2.694 MHz (mj1 105.3172 MHz, FWHM 311 kHz, scan 20260803101739). Ran after a 399 outage: the MCC USB DAC driving the 399 wavemeter-PID piezo went offline overnight, its output collapsed and 399 parked +4.64 GHz off -> zero loading (0.005) + blank Orca frames (max 395 ADU); DAC replugged 10:10, lock re-acquired at V 6.24 / det +-3 MHz, loading back to 0.59. was 108.0096e6 (08-01: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.950, FWHM 52.1 kHz, 202 shots, scan 20260801092042, 33x33_feedback11, loading 0.59); +11.8 kHz vs 07-30 -- above the usual few-kHz daily drift, flagged to user; mj0-mj1 splitting 2.720 MHz (mj1 105.2893 MHz, scan 20260801092459). was 107.9978e6 (07-30: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.968, FWHM 47.6 kHz, 208 shots, scan 20260730140307, 33x33_feedback11, loading 0.61); +16.1 kHz vs 07-29 -- above the usual few-kHz daily drift, flagged to user; mj0-mj1 splitting 2.679 MHz (mj1 105.3184 MHz, scan 20260730140731). was 107.9817e6 (07-29: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.959, FWHM 42.5 kHz, 236 shots, scan 20260729113144, 33x33_feedback11, loading 0.42); +1.7 kHz vs 07-28, within linewidth; first 200-shot run scan 20260729112300 gave 107.9883 MHz R^2=0.933, redone per auto-reps rule. was 107.9800e6 (07-28: Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.955, FWHM 60.0 kHz, 246 shots, scan 20260728105509, 33x33_feedback11, loading 0.58); -2.0 kHz vs 07-27, within linewidth. was 107.9820e6 (07-27 REDO (Spectrum556Scan mj=0, 0-field, Lorentzian dip R^2=0.964, FWHM 45.9 kHz, 208 shots, scan 20260727132532, 33x33_feedback11); -3.9 kHz vs the 12:07 fit, within linewidth. was 107.9859e6 (07-27 12:07, R^2=0.968, 460 shots, scan 20260727120744); 107.9618e6 (07-23, 33x33_feedback11); 107.9574e6 (07-22, 33x33_feedback11); 107.9501e6 (07-21, 33x33_feedback11); 107.9611e6 (07-20, 33x33_feedback11); 107.9253e6 (07-16, 33x33_feedback11); 107.9284e6 (07-14, 33x33_feedback11); 107.9054e6 (07-13, 33x33_feedback11); 107.8861e6 (07-05, 33x33_feedback9); 107.8762e6 (07-03); 107.8560e6 (07-02); 107.8448e6 (06-30); 107.8499e6 (06-29); 107.8478e6 (06-28, NEW LUT); 107.8389e6 (06-26); 107.8199e6 (06-23, 33x33_feedback9); 107.7753e6 (06-12, 47x47_uniform); 107.7673e6 (06-11); 107.7677e6 (06-10); 107.7552e6 (06-09); 107.7531e6 (06-09); 107.7573e6 (06-09); 107.7503e6 (06-08); 107.735e6 (06-05); 107.717e6
+    c["Resonance556mj0Freq"] = 108.0778e6
     c["Resonance399Freq"] = 310e6              # not magic; changes with trap depth
 
     # Init: 2D MOT & Zeeman, electric fields, SLM servo
@@ -177,16 +181,6 @@ def _consts():
         "BFieldRampTime": 100e-6,              # blue->green B-field ramp
         "BFieldGradient": 3,
         # fast-loading opt 2026-06-05: X was 0.039, Y was 0.27
-        # 2026-06-11 X-bias (MOT-position) LACScan 20260611112242: loading window
-        # [0.036,0.040] A, rate peak 0.038 (0.557). x-gradient corr(load,x) flips
-        # +0.27@0.038 -> -0.27@0.040 -> zero-crossing ~0.039 = MOT centered on the
-        # array (flattest gradient = best uniformity), which is also the loading-
-        # plateau center (drift-robust) with rate within ~2% of peak. X 0.040->0.039.
-        # 2026-06-21 Y-bias (vertical MOT-position) sweep on 33x33_uniform (scan
-        # 20260621_172514, _load_bias r11): corr(load,y) zero-crossing drifted UP to
-        # Y~0.281; moved Y 0.268->0.280 to null the vertical gradient (corrY
-        # -0.18@0.268 -> ~-0.05@0.280) at ~98% of peak load. X re-checked at the same
-        # time (scan 20260621_172015): 0.039 still the 0.038-0.040 viable-window center.
         "BiasCoilCurrent": {"Ryd": 0, "X": 0.035, "Y": 0.265, "Z": 0.17},
         # fast-loading opt 2026-06-05: HandoverTime was 30e-3
         "PowerBroaden": {"HandoverTime": 15e-3, "FreqDetuning": 0.7e6, "Amp": 0.8},
@@ -309,6 +303,11 @@ def _consts():
         "Blue": {"Freq": 320e6, "Amp1": 0, "Amp2": 0},  # Amp1 and Amp2 for pushout (matches Imag399.Amp1/Amp2)
         "Ryd308": {"Freq": 200e6, "Amp": 0},
         "Ionization": {"Amp": 0},              # 369 ionization-beam amp default (RydbergPushoutStep)
+        # Ryd bias coil current (A) during push-out. RydbergPushoutSurvivalSeq reads this to pick
+        # the low-field (< 31 A) vs high-field (60-130 A) push-out step, and resolves the fallback
+        # EAGERLY -- so it must exist here even though the scan always overrides it. 0 = low field,
+        # matching the literal `g.BiasCoilCurrent.Ryd(0)` in both push-out steps.
+        "BiasCoilCurrent": {"Ryd": 0},
         "STIRAP": {"delay": 1e-6, "reverse_delay": 1e-6, "gap": 10e-6},
         "MRabi": {"Freq": 4000, "Gain": 0},
         "Ramsey": {"Phase": 0},
@@ -624,7 +623,7 @@ def _consts():
             "boxSize": 13, "maskSigma": 3.5,
             # 2026-07-16 retro z4 sweep (-4..-1, scans r117-120): z4 = -2 CONFIRMED optimal
             # (d' 4.84 fid 0.9969 surv 0.9575; -3: 4.53, -1: 3.88) -- keep passing loading_defocus -2.
-            # 2026-07-16 trap-depth feedback (amp scaling, _feedback_kagome/): CV 8.84 -> 5.50 -> 3.40
+            # 2026-07-16 trap-depth feedback (amp scaling, campaigns/feedback/kagome/): CV 8.84 -> 5.50 -> 3.40
             # -> 2.98% in 3 rounds (f0 107.9428 MHz, ~314 uK, spread 1.79x -> 1.35x). KEEPER = fb3 =
             # live phase/kagome_2078_camfb.pt (+_r3.pt record; prev in phase_history/). 6 chronic
             # bad-survival sites (521,855,1083,1111,1192,1913; surv 0.56-0.86) x1.5-boosted -> 5/6
@@ -803,7 +802,44 @@ def _consts():
         # (identical .pt, sha df7dde588a54). Overlay = EXACT COPY of 33x33_feedback9. See CAMPAIGN_STATE_fb9b.md.
         "33x33_feedback11": {
             "Orca": {"ExposureTime": 0.050},  # 2026-07-29 30 ms TRIAL RUN AND REVERTED -- 50 ms KEPT. Tried 50->30 ms to cut the per-shot 399 heating budget (at 50 ms both power maps were FLAT: PIDSet r60 and DDS-amp r64 = power-saturated). 30 ms LOST decisively: the amp map stopped being flat and rose monotonically toward full power (= photon-STARVED, not saturated), and at the matched 1.0/1.0 cell / same cooling / same det -5: fid 0.9949 vs 0.9992, surv 0.9899 vs 0.9937, d' 4.74 vs ~6.4 (30 ms r66 data_20260729_175910 vs 50 ms r64 data_20260729_173122). The BEST 30 ms cell (fid 0.9954, d' 4.31) still lost to a typical 50 ms cell. Lesson: the 50 ms flatness was the GOOD regime -- saturated = all the photons we need; shortening left saturation and cost Gaussian separation without buying survival. (was 0.025 @ 07-14; 35 ms opt W 1.0/0.35, 25 ms opt W 1.3/0.25.)
+            # 2026-08-11 3.3 -> 1.9 (user directive). 1.9 was the measured operating point all
+            # of 08-11: the loading plane z4 -4.0 below was measured AT 1.9 (17-plane sweep
+            # 20260811_135519 + head-to-head 20260811_140133), and the day's 556 mj=0/mj=1
+            # scans ran there. Also note VSLMServo appears NOT to move trap depth over
+            # ~1.9-3.9 on this array (mj=1 depth-differential line moved only ~15 kHz on a
+            # 2.5 MHz splitting between 1.9 and 3.3; loading flat 0.54-0.61 across a 2.7-3.9
+            # sweep, job 773) -- the 532 power servo looks saturated or its setpoint is not
+            # reaching the power loop, so treat 1.9 as "the point we characterize at", not as
+            # a known-lower depth. (was 3.3 @ 08-10, 3.5 before that.)
             "Init": {"VSLMServo": 1.9},
+            # 2026-08-10: this array's LOADING PLANE, measured not assumed. A 21-plane z4 sweep
+            # (-10..0 step 0.5, scan 20260810_134709) peaks at -2.5 (dist 6.27 ADU, d' 4.80) vs the
+            # global -5 (5.50, 4.50), plateau -4.0..-1.5; the 100-shot head-to-head confirms it
+            # (survival 0.9911 +- 0.0004 vs 0.9841 +- 0.0006 = ~10 SEM, per-site fidelity median
+            # 0.9981 vs 0.9938). Read by slm_runtime._pattern_defocus as the DEFAULT plane for any
+            # scan that does not set runp().loading_defocus itself.
+            # ⚠ REARRANGEMENT IS NOT COVERED BY THIS. The global SLM->camera affine is calibrated at
+            # one plane (-5), so a rearranged run at -2.5 would map coordinates against a stale
+            # affine. The rearrangement scans all set rp.loading_defocus explicitly (matched to
+            # rearrange_kwargs.extras.z4), which OVERRIDES this key -- so they are unaffected and
+            # stay at their own plane until someone re-bootstraps the affine at -2.5.
+            # 2026-08-12: -2.5 -> -4.0. The -2.5 above was chosen against the GLOBAL -5; it was never
+            # compared to -4, and -4 is the plane the 08-11 and 08-12 imaging campaigns actually operate
+            # at (they pass rp.loading_defocus=-4 explicitly), so the default disagreed with practice and
+            # every scan that did NOT override -- including today's whole daily calibration -- silently
+            # imaged at the worse plane. THREE interleaved 120-shot single-point runs at the identical
+            # config (X 0.18/0.20, h 0.20/0.12, det +5, PIDset 0.80/1.00, DDS 1/1), ordered -2.5 / -4 /
+            # -2.5 so drift cannot fake it: dist 5.1 / 5.7 / 4.8 ADU, per-site d' 4.245 / 4.619 / 4.072,
+            # pooled fidelity 0.9944 / 0.9960 / 0.9928 (scans 20260812_115809, _120509, _120845). -4 beats
+            # BOTH -2.5 runs on every brightness metric; survival is tied (0.9865 / 0.9859 / 0.9827).
+            # The SPATIAL gradient is the clincher: at -2.5 the array carries a real left-right tilt
+            # (per-site fidelity -0.0073, survival -0.0120, d' -0.74 across x) that VANISHES at -4
+            # (+0.0013 / -0.0053 / +0.12). Consistent with 08-11's independent 40-shot/plane head-to-head
+            # (dist/d' 4.37/3.07 at -4.0 vs 3.26/2.45 at -2.5) and with 08-12 r904/r905 (-4 tied or better
+            # vs -5). Per-site figures at -4: fidelity median 0.9974 / mean 0.9964 / 78% >= 0.995,
+            # d' median 5.06 (99.8% > 3), survival mean 0.9859. The REARRANGEMENT caveat below still
+            # applies unchanged -- those scans set rp.loading_defocus explicitly and are unaffected.
+            "SLM": {"Loading": {"Defocus": -4.0}},  # was -2.5 (see above); global base -5
             "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
             # 2026-07-14 imaging optimization (399 now PID-servoed via Img1/Img2PIDSet;
             # DDS Imag399.Amp1/Amp2 held at 1). Beam-isolation tests showed both 399
@@ -864,8 +900,69 @@ def _consts():
                     # head-to-head r549 (data_20260803_160508) had amp 0.20 vs 0.23 statistically tied
                     # on survival (0.9941 +-0.0004 vs 0.9940 +-0.0003), so amp 0.20 was taken on its
                     # slightly better per-site d' (5.69 vs 5.48) and fidelity (0.99969 vs 0.99954).
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.23},  # imaging re-opt 2026-08-03 (was 0.19e6/0.23)
-                    "h": {"FreqDetuning": 0.22e6, "Amp": 0.20},  # imaging re-opt 2026-08-03 (was 0.19e6/0.22)
+                    # 2026-08-11 imaging re-opt at the day's operating point (VServo 1.9 / loading
+                    # plane z4 -4.0, both per-scan overrides). Coordinate ascent with the 399 hold
+                    # amps pinned at 0.3/0.3: X round 1 (20260811_150710, h at BASE 0.16/0.13 --
+                    # build_2d pins the non-swept beam from BASE consts, NOT the ByPattern overlay)
+                    # -> det 0.18 amp 0.24; h (20260811_151132, X pinned 0.18/0.24) -> det 0.14 amp
+                    # 0.20, best on BOTH survival and d'; X round 2 (20260811_151619, h pinned at
+                    # 0.14/0.20, amp grid shifted to 0.16-0.32) -> det 0.14 amp 0.24, i.e. the amp
+                    # reproduced and the detuning bounced one 0.04 step with no survival gain =
+                    # converged on a flat det 0.14-0.18 plateau, so det stays at 0.16 (plateau
+                    # centre = the incumbent value). 50-SHOT HEAD-TO-HEAD decided the h move rather
+                    # than the 6-shot grid cells: incumbent X 0.16/0.23 + h 0.22/0.20
+                    # (20260811_152029) gave survival 0.9500 +- 0.0012, d' 2.64, fidelity 0.9336;
+                    # this pair (20260811_152136) gave 0.9662 +- 0.0010, d' 3.25, fidelity 0.9625 --
+                    # +0.0162 survival (~10 SEM) at matched loading (0.653 vs 0.665).
+                    # 2026-08-12 imaging re-optimization for the rearrangement-methods campaign,
+                    # at the campaign's own operating point (z4 -4, VSLMServo 1.9, 50 ms, 0 pushout).
+                    # Order per the runbook: warm-up verify -> detuning -> loading plane -> power ->
+                    # cool X -> cool h -> 100-shot head-to-heads. Rounds r901-r910.
+                    #  * THE DETUNING WAS THE WIN, not the cooling: the in-use -4 MHz read
+                    #    fid 0.9927 / d' 3.99 / surv 0.9816 (r901, 60 shots), and a -10..+6 sweep
+                    #    (r902) plus a +1..+12 sweep at 8 reps (r903) BOTH peak at +5 MHz on a
+                    #    +3..+7 plateau, falling off hard above +8 (d' 3.2-3.4 by +11).
+                    #  * POWER IS SATURATED again: the 5x5 PIDSet map at det +5 (r906, 150 shots)
+                    #    is flat -- fidelity 0.9918-0.9967, survival 0.978-0.990 across the WHOLE
+                    #    grid -- so PIDSet stays 0.80/1.00 (mid-grid) and the "best" cell is
+                    #    max-of-25 noise at 6 shots/cell. DDS amps stay 1/1.
+                    #  * COOL X: the 5x5 map (r907) has real structure -- survival collapses toward
+                    #    high det / low amp (0.938 at 0.26/0.16) and det 0.18 is the best column at
+                    #    every amp >= 0.20. Moved 0.16/0.24 -> 0.18/0.20.
+                    #  * COOL h: the 4x5 map (r908) collapses at low det + high amp (0.27 survival
+                    #    at 0.08/0.28); good region det 0.16-0.20, amp 0.12-0.20.
+                    #  * The h choice was decided by 100-shot head-to-heads, NOT the 6-shot argmax:
+                    #    h(0.20,0.12) gave fid 0.9950 / d' 4.604 / surv 0.9824 (r909) vs
+                    #    h(0.16,0.20) fid 0.9948 / d' 4.436 / surv 0.9846 (r910) vs the old
+                    #    h(0.14,0.20) fid 0.9941 / d' 4.311 / surv 0.9839 (r904). Survival is TIED
+                    #    across all three (~1 sigma at 100 shots); h(0.20,0.12) wins on d' (+0.29)
+                    #    and fidelity, so it is taken on separation, not on survival.
+                    #  * LOADING PLANE settled empirically and kept at -4: the depth spread is
+                    #    ~1.7x tighter at -5 (mj=1 FWHM 331 vs 649 kHz, CV 5.68 vs 9.51 %, scans
+                    #    20260812_043657 vs _042758) but imaging is TIED there -- 100 shots each at
+                    #    det +5 gave -4: fid 0.9941 / d' 4.311 / surv 0.9839 (r904) vs -5: 0.9934 /
+                    #    4.303 / 0.9818 (r905). So the uniformity gain does not reach the image, and
+                    #    -4 keeps continuity with all the Fig-4-era rearrangement data.
+                    #  * STILL OPEN: d' is 4.3-4.6 against 6.2-6.8 on 08-05 with BOTH power axes
+                    #    flat and depth normal (429 uK, within 3 % of the paper's 418 and 0.3 % of
+                    #    08-11), so the residual is NOT imaging power, cooling, plane or trap depth.
+                    #    Next suspects are the collection path / beam pointing (see the
+                    #    open-imaging-psf-double-lobe memory), which is hardware, not a scan knob.
+                    # 2026-08-19 imaging re-optimization (rounds r120-r129, all 0 pushout, z4 -4,
+                    # VSLMServo 1.9, 50 ms). THE DETUNING MOVED AGAIN (see FreqDetuning below): +5 -> -1.
+                    # At det -1 the X map (r124 data_20260819_075810 + edge-extension r125 _080200) has a
+                    # clear interior optimum at MORE 556 power -- (0.18, 0.28-0.30), survival 0.992-0.993
+                    # vs 0.9858 at the incumbent (0.18, 0.20); consistent with more resonant-photon
+                    # heating at the new detuning. The h map (r126 _080433, X pinned 0.18/0.28) was FLAT
+                    # (surv 0.987-0.995), so h stays. PIDSet map at -1 (r123 _075408) flat = power still
+                    # saturated -> 0.80/1.00 kept, DDS 1/1. 100-shot head-to-head: new W 0.9932/d' 5.41
+                    # vs old W 0.9870/d' 5.05 (~10 SEM). Combined 200-shot verify (r127 _080750 +
+                    # r129 _081307): per-site fidelity median 0.99975 (99.8% >= 0.995), d' median 6.12,
+                    # survival 0.9929, spatially FLAT. The 08-12 "STILL OPEN d' 4.3-4.6" residual is
+                    # RESOLVED: it was the drifted 399 detuning, not the collection path. Low tail =
+                    # chronic shallow traps 624/625 (d' 2.5/2.8, SLM depth).
+                    "X": {"FreqDetuning": 0.18e6, "Amp": 0.28},  # 2026-08-19 (was 0.20 @ 08-12; more 556 at det -1)
+                    "h": {"FreqDetuning": 0.20e6, "Amp": 0.12},  # 2026-08-12, re-confirmed flat 08-19 (r126)
                 },
                 # 2026-08-03: +2.0 MHz, NOT the base -5e6. The 399 wavemeter-PID DAC dropped overnight,
                 # the laser parked +4.64 GHz off and was re-acquired mid-morning -- it came back on a
@@ -897,7 +994,86 @@ def _consts():
                 # chronic shallow traps 624/625/591 (survival 0.36/0.37/0.65 at d' 2.5/1.8/3.7 = SLM
                 # depth, not cooling). Confirms the 08-03 lesson: this tracks the 399 laser -- re-scan
                 # the detuning after ANY 399 frequency excursion, and don't trust a stale value.
-                "FreqDetuning": 10e6,  # imaging re-opt 2026-08-05 (was -5e6; the 08-03 +2e6 finding was never committed)
+                # 2026-08-07: +10e6 -> +2e6. Morning warm-up at the in-use +10 read pooled d' 3.5-4.1
+                # (r120 amp map data_20260807_131659, r121 PIDSet map data_20260807_131901) vs 6.2 on
+                # 08-05 -- and BOTH maps were flat, so power was not the limiter. A -8..+16 MHz sweep
+                # at 0 pushout (r122, data_20260807_132454, 147 shots) found a clean single peak with
+                # fidelity AND survival maximal at the SAME point, +2 MHz: fid 0.9982 / d' 5.36 /
+                # surv 0.9931, vs fid 0.9908 / d' 4.19 / surv 0.9784 at the in-use +10, falling off
+                # hard above (+16: fid 0.9603, d' 3.12, surv 0.9168). Plateau is -4..+4. NOTE the
+                # 08-05 sweep that picked +10 ran through the OLD imaging_round detuning path, which
+                # hardcoded Pushout.Time=0.2 s -- its survival column was a 200 ms-pushout amplified
+                # proxy, which flattened the +5..+14 region into a fake plateau; that hold is now
+                # honored from --hold (default 0 pushout), so this sweep is the honest one.
+                # Power re-measured AT +2 (saturation does not transfer across detuning): the DDS-amp
+                # map 0.4:0.15:1.0 squared (r123, data_20260807_133044, 104 shots) was flat above amp
+                # ~0.55 with only the 0.4 row/column clearly worse, and its best cell was 0.7/0.85
+                # (surv 0.9942 vs 0.9876 at the in-use 1.0/1.0). The drift-free 2x2 head-to-head
+                # (r124, data_20260807_133331) was aborted early at 25 shots, but 0.7/0.85 again came
+                # out top on survival (0.9905 vs 0.9890 at 1.0/1.0) -- best cell in BOTH scans, so
+                # adopted. CAVEAT: r124 is 25 shots and the four cells span only 0.9849-0.9905, well
+                # inside its own error bars -- the adoption rests on r123 + the repeat direction, NOT
+                # on a statistically decisive head-to-head. Re-run r124 at the full 50 reps/cell to
+                # confirm. PIDSet stays 0.80/1.00; cooling deliberately NOT re-optimized this round.
+                # Not yet done: the full head-to-head above, and a high-rep per-site/spatial verify.
+                # 2026-08-10 imaging re-optimization at the user-reported VSLMServo 3.3 (NOT the 3.5
+                # this block's Init sets -- actual on-scope depth is lower than the set value).
+                # Warm-up r700 (data_20260810_132250) read d' 3.5 / dist 3.9 ADU / survival 0.907 at
+                # the in-use config -- roughly HALF the 08-05 separation -- and its whole detuning
+                # sweep topped out at d' 3.67 at EVERY detuning. Everything from r701 on read
+                # d' 4.4-4.7. CAUSE = THE TRAP DEPTH, not the imaging power: r700 is the only scan of
+                # the day that ran at VSLMServo 3.5 (the user lowered this block to 3.3 between
+                # 13:22 and 13:26, mid-campaign -- confirmed from each scan's config snapshot), so
+                # the deeper array was decisively worse at every 399 detuning. The 08-07 DDS amps
+                # (0.7/0.85) were first blamed and that was WRONG: the drift-free 2x2 head-to-head at
+                # 3.3 (r708, data_20260810_140232, 50 reps/cell, 0.7/1.0 x 0.85/1.0) ties all four
+                # cells (fid 0.9956-0.9961, d' 4.69-4.72, surv 0.9853-0.9883), i.e. the amp axis is
+                # saturated here and 0.7/0.85 was never the regression. Amps set back to 1.0/1.0
+                # anyway (best-fidelity cell of a flat map, and it matches base); PIDSet 0.80/1.00
+                # kept -- its 5x5 map (r701, data_20260810_132551, Img1 0.4-0.8 x Img2 0.6-1.4) is
+                # likewise FLAT at fidelity 0.991-0.9965 with the in-use cell already the best.
+                # NOTE r700 is also the one scan measured at the OLD depth, so it is not comparable
+                # to the rest of the day; treat the 3.5-vs-3.3 difference as observed, not isolated
+                # (nothing else was held fixed across that edit).
+                # Detuning re-measured at the restored power (r702, data_20260810_132859, -8..+6):
+                # broad plateau -7..-1 (fid 0.995-0.996, d' 4.4, dist 5.2-5.4, surv 0.985-0.987),
+                # falling hard above +1 (d' 3.58 at +6). Took -4 = mid-plateau. This is the third
+                # large 399 detuning move in a week (+10 -> +2 -> -4); it tracks the LASER, not the
+                # atom -- re-scan it after any 399 excursion, and today's daily scan flagged the 399
+                # wavemeter PID as engaged=false with its lock voltage RAILED at 8.0 V.
+                # Cooling re-checked at det -4 and NOT moved: the X map (r703, data_20260810_133209,
+                # 7x7) and the h map (r704, data_20260810_133638, 7x7) are both FLAT -- the
+                # SEM-weighted rotated-2D-Gaussian fit fails to converge on either (R^2 ~ 0, fitted
+                # center runs off-grid), so neither has a resolvable peak. The h map's argmax
+                # (0.25, 0.17) sat ~0.6% above the in-use (0.22, 0.20), which per the runbook earns a
+                # drift-free head-to-head rather than a shrug: the 2x2 at 50 reps/cell (r705,
+                # data_20260810_134126) tied all four cells (surv 0.9864-0.9878, fid 0.9954-0.9957),
+                # so the argmax was noise and X/h both stay put.
+                # LOADING DEFOCUS is the real remaining lever and is NOT set here (each YbScans file
+                # hardcodes rp.loading_defocus = -5): a 21-plane z4 sweep at this W (-10..0 step 0.5,
+                # 168 shots, scan 20260810_134709, per-shot Otsu self-thresholding since dim planes
+                # cannot trust the registry) peaks at z4 ~ -2.5 (dist 6.27, d' 4.80) vs -5 (dist 5.50,
+                # d' 4.50), plateau -4.0..-1.5. The 100-shot head-to-head confirms it decisively:
+                # z4 -2.5 (r706, data_20260810_135225) fidelity median 0.9981 / d' 5.19 / survival
+                # 0.9911 +- 0.0004 / 86% of sites >= 0.995, vs z4 -5.0 (r707, data_20260810_135452)
+                # 0.9938 / 4.56 / 0.9841 +- 0.0006 / 40% -- a 0.0070 survival gain at ~10 SEM,
+                # spatially flat (survival delta +0.005 across x, +0.000 across y). Residual low
+                # sites are the chronic shallow traps 624/625 (d' 2.6) = SLM depth, not imaging.
+                # 2026-08-12: -4e6 -> +5e6. Fourth large 399 imaging-detuning move in a week
+                # (+10 -> +2 -> -4 -> +5): it tracks the LASER, not the atom, so re-scan it after any
+                # 399 excursion and never trust a stale value. Two independent sweeps agree -- r902
+                # (-10..+6, 5 reps) and r903 (+1..+12, 8 reps) both peak at +5 on a +3..+7 plateau --
+                # and the in-use -4 was costing ~0.5 in d' and ~1-2 % survival. See the Cool556 block
+                # above for the full round-by-round record.
+                # 2026-08-19: +5e6 -> -1e6. FIFTH large 399 detuning move (+10 -> +2 -> -4 -> +5 -> -1);
+                # it tracks the LASER -- re-scan after any 399 excursion, never trust a value >2 days old.
+                # r121 (-2..+12, data_20260819_074745) railed at its low edge (d' 5.67 at -2 vs 4.84 at
+                # the in-use +5); r122 (-10..0, _075055) resolved the interior peak: d' 5.84/5.80 at
+                # -1/0 on a -2..+1 plateau, falling both ways. Survival at -1 recovered by the Cool556.X
+                # re-opt (see above). Verify at the adopted W: d' median 6.12, fid 0.99975, surv 0.9929.
+                "FreqDetuning": -1e6,  # imaging re-opt 2026-08-19 (was +5e6 @ 08-12; d' peak -1..0)
+                "Amp1": 1.0,   # 2026-08-10 REVERTED from the 08-07 0.7 -- that value was the regression
+                "Amp2": 1.0,   # 2026-08-10 REVERTED from the 08-07 0.85 (see r700/r701 above)
             },
             "Cool556": {
                 "Time": 5e-3, "FreqDetuning": 0.14e6, "Amp": 0.08,
@@ -908,8 +1084,18 @@ def _consts():
                 # (X and h coupled; total 556 power is the lever). Peak recapture survival ~0.59 @ 30 us
                 # (loading flat ~0.58 across the grid = real cooling signal). Plateau det 0.10-0.14 x
                 # amp 0.12-0.18 flat within SEM. Notion 07/20.
-                "X": {"FreqDetuning": 0.12e6, "Amp": 0.14},  # RNR re-opt 2026-07-20 (was 0.16e6/0.14)
-                "h": {"FreqDetuning": 0.12e6, "Amp": 0.14},  # RNR re-opt 2026-07-20 (was 0.16e6/0.12)
+                # 2026-08-19 RNR re-optimization (30 us release, X<->h coordinate ascent r10-r13,
+                # 7 reps/cell, z4 -4). Both beams moved UP together -- same direction as the day's
+                # Imag399.Cool556 re-opt (more 556 power wanted): X map (r10, scan 20260819081731)
+                # peak (0.15, 0.17) 0.536+-0.006 vs 0.498 at the old (0.12, 0.14); h map (r11,
+                # 20260819082129) plateau det 0.12-0.18 x amp 0.14-0.20, its amp-edge argmax killed
+                # by the extension r12 (20260819082527: survival falls monotonically above amp 0.17)
+                # -> h (0.15, 0.17); X re-check at the new h pin (r13, 20260819082821) reproduced
+                # (0.15, 0.17) 0.544 = converged (pins match returns both ways). 100-shot drift-free
+                # head-to-head old-vs-new full config (r14 20260819083234 / r15 20260819083438):
+                # 0.4912 vs 0.5400 (+0.049, ~10 SEM) at matched loading 0.54.
+                "X": {"FreqDetuning": 0.15e6, "Amp": 0.17},  # RNR re-opt 2026-08-19 (was 0.12e6/0.14 @ 07-20)
+                "h": {"FreqDetuning": 0.15e6, "Amp": 0.17},  # RNR re-opt 2026-08-19 (was 0.12e6/0.14 @ 07-20)
             },
             # Post-rearrangement recool before STIRAPPushoutStep (RearrangeCool556hXStep). Seeded to
             # the Cool556 X/h values ABOVE, which is exactly what the 2026-08-06 A/B ran
@@ -953,17 +1139,54 @@ def _consts():
         
         # 2026-07-07: new array with 20um spacing for Rydberg
         "17x17_20um": {
-            "Orca": {"ExposureTime": 0.035},
+            "Orca": {"ExposureTime": 0.050},
+            # 2026-08-10: kept at the NORMAL loading/imaging depth. An imaging re-optimization was
+            # done at VSLMServo 3.5 and then REVERTED (user directive): the plan is to load and
+            # image at this depth and RAMP the trap up only just before the ping-pong transport
+            # step, so the imaging W must stay the one that matches THIS depth. What the 3.5 pass
+            # found, should it ever be needed: det +14e6 (vs -5e6 here), DDS amps 1.0/1.0,
+            # PIDSet 0.80/1.00, Cool556 X (0.50e6, 0.24) / h (0.62e6, 0.08), loading plane z4 -3.5,
+            # giving load 0.596 / fidelity 0.9917 / d' 3.50 / survival 0.9355 (r800-r809,
+            # data_20260810_161608 .. _164212). It never met the >=99.5% per-site fidelity gate
+            # (median 0.987, 13% of sites >= 0.995) because of a +0.032 survival gradient across y
+            # = a 399/556 beam-alignment issue on this array, which is worth fixing regardless of
+            # which depth it runs at. Note the mj=0 line sits at 107.8705 MHz here (scan
+            # 20260810_170103), NOT the 108.05 the base config carries from the 33x33.
             "Init": {"VSLMServo": 0.6},
-            "BlueMOT": {"LoadingTime": 300e-3},
+            # 2026-08-10 imaging optimized AT THE LOADING DEPTH (VSLMServo 0.6, ~400 uK) and
+            # COMMITTED here -- every scan that is not imaging_round (Spectrum556Scan, the
+            # transport scans, ...) reads this block, so leaving the W as g()-overrides meant those
+            # ran with the starved pre-ND values. Baseline with the old numbers: load 0.057,
+            # d' 2.66, survival 0.140 (r820, data_20260810_181142) -- the Imag399 block dated from
+            # 07-07, BEFORE the 07-18 ND-filter recal, so the atom-plane power was ~5x too low.
+            # det -5e6 -> -2e6 at restored power: a -12..+12 sweep (r821, data_20260810_181244)
+            # peaked at -2 (d' 2.71, survival 0.831, load 0.444), a much smaller move than the
+            # +14e6 the same array wanted at VSLMServo 3.5 -- the light shift scales with depth.
+            # COOLING was the big lever here. X (r822, data_20260810_181447, 0.06-0.34 x 0.10-0.40):
+            # survival collapses to ~0.5 at det 0.06 and peaks 0.9856 at (0.18, 0.25) -- the
+            # inherited 0.16 sat right on the cliff edge. h (r823, data_20260810_181858, with X
+            # pinned): best (0.26, 0.08) -> survival 0.9923 / fidelity 0.9963 / d' 4.30.
+            # LOADING PLANE also moves with depth: a 17-plane z4 sweep (scan 20260810_182313) peaks
+            # at -7 (dist 6.32) / -6 (d' 4.98, parabolic -6.28) vs the inherited -5 (dist 5.20),
+            # i.e. +22% separation -> -6.5. (At VSLMServo 3.5 the same array wanted -3.5.)
+            # 100-shot verify (r824, data_20260810_182553): load 0.569, per-site fidelity median
+            # 0.99829 with 85.6% of sites >= 0.995, d' median 5.28, survival 0.9865 +- 0.0015,
+            # SPATIALLY FLAT (dx -0.004, dy +0.004). NOTE the +0.032 y-gradient seen at VSLMServo
+            # 3.5 is ABSENT here, so it was depth-dependent, not the fixed beam misalignment it was
+            # first called. Survival sits just under the 99% goal only because sites 126 and 157 are
+            # dead (0.52/0.53 at d' 2.8-2.9, chronic shallow traps also worst at 3.5 V); two such
+            # sites out of 284 cost 0.34%, so the array excluding them is ~0.990.
+            "BlueMOT": {"LoadingTime": 300e-3, "Img1PIDSet": 0.8, "Img2PIDSet": 1.0},
             "GreenMOT": {"CoolDown": {"HoldTime": 150e-3}},
             "LAC": {"FreqDetuning": 0.11e6, "Amp": 0.2, "Time": 30e-3},
+            "SLM": {"Loading": {"Defocus": -6.5}},
             "Imag399": {
-                "FreqDetuning": -5e6, "Amp1": 0.11, "Amp2": 0.22,
+                "FreqDetuning": -2e6,       # 2026-08-10 (was -5e6)
+                "Amp1": 1.0, "Amp2": 1.0,   # 2026-08-10 (were 0.11/0.22 = pre-ND-recal power)
                 "Cool556": {
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
-                    "X": {"FreqDetuning": 0.16e6, "Amp": 0.26},
-                    "h": {"FreqDetuning": 0.16e6, "Amp": 0.14},
+                    "X": {"FreqDetuning": 0.18e6, "Amp": 0.25},  # 2026-08-10 (was 0.16e6/0.26)
+                    "h": {"FreqDetuning": 0.26e6, "Amp": 0.08},  # 2026-08-10 (was 0.16e6/0.14)
                 },
             },
             "Cool556": {
@@ -1128,8 +1351,10 @@ def _default_vals(consts):
     # DDS
     d["Freq556MOTX"] = 118e6
     d["Amp556MOTX"] = 0
-    d["Freq556RydbergMOTh"] = 118e6
+    d["Freq556RydbergMOTh"] = 110e6
     d["Amp556RydbergMOTh"] = 0
+    d["Freq556RydbergHF"] = 90e6
+    d["Amp556RydbergHF"] = 0
     d["FreqBlueMOT"] = 270e6
     d["AmpBlueMOT"] = 0.85
     d["Freq369"] = 250e6

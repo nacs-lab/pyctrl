@@ -24,6 +24,7 @@ from LACStep import LACStep
 from ramp_to import ramp_to
 from runtime_state import register_eom616_persistence
 from RydbergPushoutStep import RydbergPushoutStep
+from RydbergHighFieldPushoutStep import RydbergHighFieldPushoutStep
 from SLMStep import SLMStep
 
 
@@ -54,9 +55,18 @@ def RydbergPushoutSurvivalSeq(s):
     # Cool556.
     s.add_step(Cool556Step, s.C.Cool556)
 
-    # PushOut: high-field / Rydberg push-out (applies the Ryd field; 556 Rydberg beam + 308 + uW).
-    s.add_step(RydbergPushoutStep, s.C.Pushout)
-
+    # PushOut: Rydberg push-out (applies the Ryd field; 556 Rydberg beam + 308 + uW).
+    # When the Rydberg bias field is < 31 A, use the low-field Rydberg push-out step;
+    # when it's > 60 A, use the high-field Rydberg push-out step. The 31-60 A range is invalid.
+    BField = s.C.Pushout.BiasCoilCurrent.Ryd(Consts().Pushout.BiasCoilCurrent.Ryd)
+    if BField < 31:
+        s.add_step(RydbergPushoutStep, s.C.Pushout)
+    elif 80 >= BField >= 50:
+        s.add_step(RydbergHighFieldPushoutStep, s.C.Pushout)
+        # in this high field pushout step, another single-pass AOM at 120e6 Hz is enabled, and increase the pushout beam frequency by 60MHz
+    else:
+        raise ValueError(f'RydbergPushoutSurvivalSeq: BiasCoilCurrent.Ryd={BField} A is not in the valid range for Rydberg push-out.')
+    
     # Second Imag399.
     s.add_step(Imag399Step, s.C.Imag399)
 

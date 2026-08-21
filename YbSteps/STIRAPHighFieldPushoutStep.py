@@ -1,13 +1,33 @@
-"""STIRAPPushoutStep.py -- transliteration of ``matlab_new/YbSteps/STIRAPPushoutStep.m``.
+"""STIRAPHighFieldPushoutStep.py -- HIGH-FIELD (50-80 A on the Ryd bias coil) variant of
+``STIRAPPushoutStep``.
 
-``g = s.C.Pushout``. STIRAP (two-photon 556 + 308) push-out step. Applies the Ryd bias field,
-**switches the 556 + 308 AOMs from their DDS source to the Siglent AWG** (``TTL556RydAWGSwitch`` /
-``TTL308RydAWGSwitch``), opens the Rydberg shutters, lowers the trap (``VSLMservo`` ramp to
-``VRydTrap``), turns the trap fully off (``TTLSampleAndHold``/``AmpSLM``), then fires the **forward
-STIRAP** pulse (308 gate, then 556 gate, overlapped via ``STIRAP.delay``), restores the trap,
-pulses the QICK microwave (``TTLQickTrig`` for ``STIRAP.gap``), optionally fires the **reverse
-STIRAP** (556 then 308, via ``STIRAP.reverse_delay``), and finally restores trap depth / shutters /
-616 idle and zeroes the coil + the AWG switches.
+``g = s.C.Pushout``. Same STIRAP (two-photon 556 + 308) push-out as ``STIRAPPushoutStep``: applies
+the Ryd bias field, **switches the 556 + 308 AOMs from their DDS source to the Siglent AWG**
+(``TTL556RydAWGSwitch`` / ``TTL308RydAWGSwitch``), lowers the trap (``VSLMservo`` ramp to
+``VRydTrap``), turns the trap fully off (``TTLSampleAndHold`` / ``AmpSLM``), fires the **forward
+STIRAP** pulse (308 gate, then 556 gate, overlapped via ``STIRAP.delay``), restores the trap, pulses
+the QICK microwave (``TTLQickTrig`` for ``STIRAP.gap``), optionally fires the **reverse STIRAP** (556
+then 308, via ``STIRAP.reverse_delay``), ionizes (electrodes / ``TTLIonizationSwitch5to8``), and
+finally restores trap depth / shutters / 616 idle and zeroes the coil + the AWG switches.
+
+HIGH-FIELD 556 PATH (the only difference from ``STIRAPPushoutStep``; mirrors what
+``RydbergHighFieldPushoutStep`` does to ``RydbergPushoutStep``). Above ~50 G the Zeeman-shifted 556
+single-photon resonance is out of reach of the first double-pass AOM alone, so the beam is routed
+through a SECOND, SINGLE-PASS AOM on a separate high-field arm:
+  * ``Freq556RydbergHF`` = 120e6 / ``Amp556RydbergHF`` = 0.9 -- parked at the low end of its range
+    and near max amp, i.e. used as a static SWITCH (+120 MHz optical), not as a tuning element.
+  * ``TTL556RydbergShutter`` is held **CLOSED (0)** for the whole step -- that shutter sits in the
+    LOW-field arm, which must be blocked here. The high-field arm currently has **no shutter at
+    all**: its only gates are the first AOM (AWG-driven) and ``Amp556RydbergHF``.
+  * The first AOM still sets frequency + amplitude, but under STIRAP its RF comes from the **AWG**,
+    not the DDS. So the -60 MHz high-field offset that the DDS scans apply to
+    ``Pushout.Green.Freq`` (``HF_AOM_OFFSET_MHZ``, double-pass -> half of +120 MHz) must instead be
+    applied SCAN-SIDE to ``g().AWG.AWG556.Ch1/Ch2.carrier_freq_MHz``. This step cannot do it: the
+    AWG carrier is out-of-band config, not part of the byte blob.
+
+Field bands are enforced by the seq, not here: ``RearrangeSTIRAPSeq`` sends ``Bfield < 31`` to
+``STIRAPPushoutStep``, ``50 <= Bfield <= 80`` here, and raises in between (same thresholds as
+``RydbergPushoutSurvivalSeq``).
 
 AWG context: the 556/308 Gaussian pulses themselves are produced by the Siglent SDG6X AWGs
 (out-of-band, NOT in the byte blob). This step only drives the FPGA TTLs that (a) switch the AOM
@@ -16,15 +36,6 @@ external trigger). The AWG waveform for this shot is pre-stored + selected by ``
 (``ARWV NAME`` recall on fw >= 38R3, re-upload fallback otherwise) -- see ``devices/sigilent_awg``.
 
 Reads resolve config with a ``Consts()`` fallback default (``g.X.Y(Consts().Pushout...)``).
-
-Deviations from the .m (pyctrl-only): the four ``Freq/Amp_Pushout399`` + ``Freq/Amp_Pushout556``
-reads are **computed-but-unused** in the .m (the body adds literal ``0`` to ``Amp556MOTX`` /
-``Amp556RydbergMOTh``, never these), and pyctrl's config has ``Pushout.Blue.Amp1/Amp2`` (not
-``Blue.Amp``), so those dead reads are dropped -- zero byte effect. ``Time_Pushout369`` is now a
-LIVE read (2026-07-06): it sets the auto-ionization 369 pulse width (``Pushout.Time369``, default
-2e-6 = the old hardcode; the .m's own 369-pushout block stays commented out). Bare TTL ``0``/``1``
-+ the ``5*I/100`` coil math mirror ``RydbergPushoutStep`` (concrete config floats -> no
-explicit-float coercion needed).
 """
 
 from consts import Consts
@@ -32,7 +43,7 @@ from ramp_to import ramp_to
 from devices.sigilent_awg.pulse_waveform import pulse_total_us
 
 
-def STIRAPPushoutStep(s, g):
+def STIRAPHighFieldPushoutStep(s, g):
 
     Amp_SLM = g.SLMAOMAmp(Consts().SLM.AOM.Amp)
     Amp_SLM_gap = g.SLMAOMAmpGap(Consts().SLM.AOM.Amp)  # for the trap-on gap during the STIRAP pulse
@@ -127,29 +138,14 @@ def STIRAPPushoutStep(s, g):
     # Get 369 ready.
     # s.add('Amp369', Amp_Pushout369)
     # s.add('TTL369Shutter', 1)
-
-    # Turn on the 556 rydberg shutter, close the 556 MOTa shutter.
-    # 2026-08-06 LEAK-LIGHT CONTROL: IfRydShutter = 0 keeps TTL556RydbergShutter CLOSED for the whole
-    # step. The shutter is normally opened here and only closed again at the very end, i.e. the 556
-    # Rydberg path is unblocked for ~54 ms (50 ms coil settle + 1 ms ramp + 3 ms settle + pulses + gap
-    # + ionization) while the AOM's RF source is switched to the AWG and gated only by TTL556RydAWG
-    # idling low. Any AWG idle offset or RF-switch feedthrough is then resonant 556 on the atoms for
-    # 54 ms -- and 556 at amp 0.10 for just 1 ms removes 74-80% of atoms (30 G push-out, 20260805_180401),
-    # so ~2% leakage would be enough to explain the residual gap-INDEPENDENT loss. With the shutter held
-    # closed no Rydberg light can reach the atoms at all, so any loss that remains is NOT leak light.
-    # Default 1 = the normal science path (unchanged bytes).
-    # 2026-08-06 RESULT: IfRydShutter = 0 did NOT recover the loss (scan 20260806_012221 intercept
-    # 0.819 / total 0.574 vs 20260806_000351's 0.782 / 0.526 -- and that run also had 12 ms recool vs
-    # 5 ms, worth ~+0.05 on its own, so the shutter contributes ~0). 556 leak through the RYDBERG path
-    # is therefore excluded.
-    #IfRydShutter = g.IfRydShutter(1)
-    s.add('TTL556RydbergShutter', 1)
+    
+    # Turn off the low field 556 rydberg shutter, turn off the 556 MOT shutter. 
+    # The high field 556 rydberg path currently has no shutter.
+    s.add('TTL556RydbergShutter', 0)
     s.add('TTL556MOTaShutter', 0)
     s.add('TTL556MOTbShutter', 0)
     s.add('TTL556MOTcShutter', 0)
-
-
-
+    
     # Wait until the coil current settles. Scannable since 2026-08-06 (was a hardcoded 50 ms): any
     # EXPOSURE-PROPORTIONAL loss -- leak light on any path, background collisions -- scales with this
     # wait, while a fixed cost (the trap chop, the ionization pulse) does not. Safe to shorten in a
@@ -160,10 +156,13 @@ def STIRAPPushoutStep(s, g):
     # Change trap depth for Rydberg.
     V_RydTrap = g.VRydTrap(0.4)
     s.add_step(1e-3).add('VSLMservo', ramp_to(V_RydTrap))
+    s.add('Freq556RydbergHF', 120e6).add('Amp556RydbergHF', 0.9)
+
     s.wait(3e-3)  # wait for the ramp to finish
 
     # Pre-lock the 308 cavity.
     s.add('AmpAOM616', 0)
+    # The second double pass AOM is default at lower end and highest amp. It's used as a switch
     s.wait(2e-6)
     
     # Preset the DDS value for pump
@@ -207,7 +206,8 @@ def STIRAPPushoutStep(s, g):
             def _trap_on_gap(bs):
                 bs.wait(1e-6)
                 bs.add('AmpSLM', Amp_SLM_gap)
-            s.add_background(_trap_on_gap)
+            if STIRAP_Gap > 1.0e-6:
+                s.add_background(_trap_on_gap)
             
             def _strobe_trap(bs):
                 it = STIRAP_Gap / 1.6e-6
@@ -226,9 +226,13 @@ def STIRAPPushoutStep(s, g):
             #s.add_background(_strobe_trap)
 
             if If_MW:
-                s.add('TTLQickTrig', 1)
+                def _qick_trigger(bs):
+                    bs.wait(1.5e-6)  # This is for compensation of the AOM rise time
+                    bs.add('TTLQickTrig', 1)
+                    bs.wait(0.05e-6) # A short trigger
+                    bs.add('TTLQickTrig', 0)
+                s.add_background(_qick_trigger)
                 s.wait(STIRAP_Gap)
-                s.add('TTLQickTrig', 0)
             else:
                 s.wait(STIRAP_Gap)
 
@@ -339,6 +343,8 @@ def STIRAPPushoutStep(s, g):
 
     s.add('Amp556MOTX', 0)
     s.add('Amp556RydbergMOTh', 0)
+    # Close the high-field arm's ONLY gate (it has no shutter) -- matches RydbergHighFieldPushoutStep.
+    s.add('Amp556RydbergHF', 0)
 
     s.add('AmpAOM308', 0)
     s.add('AmpAOM616', Amp_AOM616Divert)
