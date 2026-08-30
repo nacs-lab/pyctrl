@@ -17,10 +17,12 @@ Import-safe with no VISA backend present (pyvisa is imported lazily inside ``AWG
 from .awg_connection import AWGConnection
 from .awg_manager import AWGManager, WAVEFORM_FIELDS
 from .gaussian_pulse_waveform import gaussian_pulse_waveform
-from .pulse_waveform import pulse_waveform, pulse_envelope, SHAPES
+from .pulse_waveform import (pulse_waveform, pulse_envelope, pulse_total_us,
+                             pulse_carrier_freq_MHz, SHAPES, CHIRP_PROFILES)
 
 __all__ = ["AWGConnection", "AWGManager", "WAVEFORM_FIELDS", "gaussian_pulse_waveform",
-           "pulse_waveform", "pulse_envelope", "SHAPES"]
+           "pulse_waveform", "pulse_envelope", "pulse_total_us", "pulse_carrier_freq_MHz",
+           "SHAPES", "CHIRP_PROFILES"]
 
 # Registry: create("sigilent_awg", resource, channel) -> an AWGConnection handle
 # (NEEDS-HARDWARE on connect()). The AWGManager is the scan-level orchestrator.

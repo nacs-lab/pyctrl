@@ -413,7 +413,9 @@ def _consts():
     # Per-channel waveform fields (fall back to these defaults): shape / carrier_freq_MHz /
     # pulse_width_us / smooth_width_us / steepness / amplitude_scale / max_amplitude_vpp, plus
     # stirap_gap / f_delay / r_delay for double_half_gaussian_* and optional trig_delay_us (per-
-    # channel burst DLAY, s->us; 0 = fire on the edge, switch does the timing).
+    # channel burst DLAY, s->us; 0 = fire on the edge, switch does the timing), plus
+    # chirp_freq_MHz / chirp_profile for the chirped_*_quintic shapes (swept carrier; inert
+    # otherwise -- chirp_freq_MHz = 0 is byte-identical to the un-prefixed shape).
     # shape gallery: pyctrl/tmp/pulse_10_examples.png ; pulse math: devices/sigilent_awg/pulse_waveform.py
     _AWG_CH_DEFAULTS_556 = {
         "carrier_freq_MHz": 143.4, "pulse_width_us": 1.437, "steepness": 3.5,
@@ -421,6 +423,10 @@ def _consts():
         "trig_delay_us": 1.5,  # per-channel burst DLAY (us); >= the box's ~1.435us floor so it is
                                # HONORED (not clamped) -> deterministic edge->output latency. The
                                # seq must add this to its post-edge waits (edge + DLAY + 3*pw).
+        # Swept carrier, read ONLY by shape = "chirped_rise_quintic" / "chirped_fall_quintic":
+        # chirp_freq_MHz = SIGNED TOTAL SPAN (final - initial, MHz) across the amplitude ramp;
+        # chirp_profile = "linear" (constant rate) | "quintic" (rate zero at both ends). 0 = off.
+        "chirp_freq_MHz": 0.0, "chirp_profile": "linear",
     }
     c["AWG556"] = {
         "resource_address": "USB0::62700::4353::SDG6XFCC900309::0::INSTR",
@@ -433,6 +439,10 @@ def _consts():
         "carrier_freq_MHz": 200, "pulse_width_us": 1.463, "steepness": 3.5,
         "amplitude_scale": 1.0, "smooth_width_us": 0.0, "max_amplitude_vpp": 5.5,
         "trig_delay_us": 1.5,  # honored burst DLAY (us); >= ~1.435us floor. See AWG556 note.
+        # Swept carrier, read ONLY by shape = "chirped_rise_quintic" / "chirped_fall_quintic":
+        # chirp_freq_MHz = SIGNED TOTAL SPAN (final - initial, MHz) across the amplitude ramp;
+        # chirp_profile = "linear" (constant rate) | "quintic" (rate zero at both ends). 0 = off.
+        "chirp_freq_MHz": 0.0, "chirp_profile": "linear",
     }
     c["AWG308"] = {
         "resource_address": "USB0::62700::4353::SDG6XFCD801391::0::INSTR",

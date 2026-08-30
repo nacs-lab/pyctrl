@@ -43,7 +43,8 @@ logger = logging.getLogger(__name__)
 WAVEFORM_FIELDS = ("shape", "carrier_freq_MHz", "pulse_width_us", "smooth_width_us",
                    "steepness", "amplitude_scale",
                    "stirap_gap", "f_delay", "r_delay",   # two-lobe STIRAP shapes
-                   "pad_time_us")                        # fall_quintic flat pre-hold
+                   "pad_time_us",                        # fall_quintic flat pre-hold
+                   "chirp_freq_MHz", "chirp_profile")    # chirped_*_quintic swept carrier
 
 # Per-channel sub-config keys (two-channel switch scheme). When a box's consts carry ``Ch1`` /
 # ``Ch2`` dicts, each is an INDEPENDENT waveform on that SDG output (``C1`` / ``C2``), armed as a

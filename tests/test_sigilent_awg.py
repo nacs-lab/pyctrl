@@ -577,6 +577,133 @@ def test_spline_ignores_steepness_and_smooth():
     assert np.allclose(a, b)
 
 
+# --------------------------------------------------------------------------- #
+# chirped spline shapes -- base envelope verbatim, swept carrier
+# --------------------------------------------------------------------------- #
+# The RearrangeSTIRAPScan forward-Stokes pulse: AWG308.Ch1, 200 MHz, pw=3, pad=2, 8 Vpp.
+_CHIRP_308 = dict(shape="chirped_fall_quintic", num_points=10000, sample_rate_MHz=2500,
+                  pulse_width_us=3.0, pad_time_us=2.0, carrier_freq_MHz=200.0,
+                  steepness=3.5, smooth_width_us=0.0, amplitude_scale=1.0,
+                  max_amplitude_vpp=8)
+
+
+def _decode_blob(binary_data):
+    """Big-endian int16 blob -> normalized float samples (what the AWG actually plays)."""
+    return np.frombuffer(binary_data, dtype=">i2").astype(float) / 32767.0
+
+
+def _heterodyne_freq_MHz(t_us, x, f0_MHz, win_pts):
+    """Measure instantaneous frequency (MHz) off real samples: mix down by f0, Hann-boxcar away
+    the 2*f0 image, unwrap, differentiate. (An FFT-Hilbert analytic signal is useless here -- the
+    AM envelope + non-periodic ends put ~1 MHz of bogus error on the result.)"""
+    z = x * np.exp(-2j * np.pi * f0_MHz * t_us)
+    k = np.hanning(win_pts)
+    k = k / k.sum()
+    z = np.convolve(z, k, mode="same")
+    return f0_MHz + np.gradient(np.unwrap(np.angle(z)), t_us) / (2.0 * np.pi)
+
+
+def test_chirp_zero_is_byte_identical_to_base_shape():
+    # chirp_freq_MHz = 0 must not perturb a single sample vs the un-prefixed shape.
+    fall = dict(_CHIRP_308)
+    base_fall, _ = pulse_waveform(dict(fall, shape="fall_quintic"))
+    for profile in ("linear", "quintic"):
+        got, info = pulse_waveform(dict(fall, chirp_freq_MHz=0.0, chirp_profile=profile))
+        assert got == base_fall
+        assert info["total_width_us"] == pytest.approx(5.0)       # pad + pw unchanged
+    rise = dict(fall, shape="chirped_rise_quintic")
+    base_rise, _ = pulse_waveform(dict(rise, shape="rise_quintic"))
+    got, info = pulse_waveform(dict(rise, chirp_freq_MHz=0.0))
+    assert got == base_rise
+    assert info["total_width_us"] == pytest.approx(3.0)           # rise has no pad
+
+
+def test_chirp_totals_and_envelope_unchanged():
+    from devices.sigilent_awg import pulse_envelope, pulse_total_us
+    assert pulse_total_us("chirped_fall_quintic", 3.0, pad_time_us=2.0) == pytest.approx(5.0)
+    assert pulse_total_us("chirped_rise_quintic", 3.0, pad_time_us=2.0) == pytest.approx(3.0)
+    for chirped, base, pad in (("chirped_fall_quintic", "fall_quintic", 2.0),
+                               ("chirped_rise_quintic", "rise_quintic", 0.0)):
+        tc, ec = pulse_envelope(chirped, 4001, 3.0, 0.0, 0.0, pad_time_us=pad)
+        tb, eb = pulse_envelope(base, 4001, 3.0, 0.0, 0.0, pad_time_us=pad)
+        assert np.array_equal(tc, tb) and np.array_equal(ec, eb)
+    # nonzero chirp still leaves the AMPLITUDE envelope alone (only the carrier moves)
+    a, _ = pulse_waveform(dict(_CHIRP_308, chirp_freq_MHz=0.0))
+    b, _ = pulse_waveform(dict(_CHIRP_308, chirp_freq_MHz=0.2))
+    xa, xb = np.abs(_decode_blob(a)), np.abs(_decode_blob(b))
+    win = 40                                                      # ~3 carrier periods
+    ea = np.convolve(xa, np.ones(win) / win, mode="same")
+    eb = np.convolve(xb, np.ones(win) / win, mode="same")
+    assert np.max(np.abs(ea - eb)) < 0.02
+
+
+def test_chirp_analytic_inst_freq_curve():
+    from devices.sigilent_awg import pulse_carrier_freq_MHz
+    _, info = pulse_waveform(dict(_CHIRP_308, chirp_freq_MHz=0.2))
+    t, f = info["t_us"], info["inst_freq_MHz"]
+    assert np.all(f[t < 2.0] == 200.0)                            # pad hold: EXACTLY the carrier
+    assert f[-1] == pytest.approx(200.2)                          # span = signed total, reached
+    assert f[np.searchsorted(t, 3.5)] == pytest.approx(200.1, abs=2e-3)   # linear: half-way
+    # quintic profile: same endpoints, zero chirp RATE at both ends of the ramp
+    fq = pulse_carrier_freq_MHz("chirped_fall_quintic", t, 3.0, 200.0,
+                                chirp_freq_MHz=0.2, chirp_profile="quintic", pad_time_us=2.0)
+    assert fq[-1] == pytest.approx(200.2) and np.all(fq[t < 2.0] == 200.0)
+    ramp = t >= 2.0
+    d = np.gradient(fq[ramp], t[ramp])
+    assert abs(d[1]) < 1e-3 and abs(d[-2]) < 1e-3                 # rate starts + ends at zero
+    dl = np.gradient(pulse_carrier_freq_MHz("chirped_fall_quintic", t, 3.0, 200.0,
+                                            chirp_freq_MHz=0.2, pad_time_us=2.0)[ramp], t[ramp])
+    assert dl[len(dl) // 2] == pytest.approx(0.2 / 3.0, rel=1e-3)  # linear: constant span/pw
+    # an unchirped shape reports a flat carrier
+    _, gi = pulse_waveform(dict(_DEFAULTS["AWG556"]))
+    assert np.all(gi["inst_freq_MHz"] == _DEFAULTS["AWG556"]["carrier_freq_MHz"])
+
+
+@pytest.mark.parametrize("profile", ["linear", "quintic"])
+def test_chirp_measured_from_uploaded_blob_matches_analytic(profile):
+    # Decode the REAL big-endian int16 blob and recover f(t) by heterodyne; it must track the
+    # analytic curve to << the 0.2 MHz span.
+    blob, info = pulse_waveform(dict(_CHIRP_308, chirp_freq_MHz=0.2, chirp_profile=profile))
+    t, x = info["t_us"], _decode_blob(blob)
+    assert x.size == info["num_points"] == 12500                  # 2500 MSa/s over 5 us
+    win = 251                                                     # ~20 carrier periods
+    meas = _heterodyne_freq_MHz(t, x, 200.0, win)
+    env = np.abs(info["waveform"])
+    ok = np.zeros(t.shape, dtype=bool)
+    ok[win:-win] = True                                           # drop the boxcar edge transients
+    ok &= np.convolve(env, np.ones(win) / win, mode="same") > 0.2  # and where the AM starves phase
+    err_kHz = np.abs(meas[ok] - info["inst_freq_MHz"][ok]) * 1e3
+    assert ok.sum() > 5000 and err_kHz.max() < 3.0        # vs a 200 kHz chirp span
+
+
+def test_chirp_profile_validation_and_key_dispatch():
+    with pytest.raises(ValueError, match="unknown chirp_profile"):
+        pulse_waveform(dict(_CHIRP_308, chirp_freq_MHz=0.2, chirp_profile="cubic"))
+    assert "chirp_freq_MHz" in WAVEFORM_FIELDS and "chirp_profile" in WAVEFORM_FIELDS
+    p = dict(_CHIRP_308, chirp_freq_MHz=0.2, chirp_profile="linear")
+    key = AWGManager._build_key(p)
+    assert "chirp_freq_MHz=0.2" in key and "chirp_profile=linear" in key
+    assert key != AWGManager._build_key(dict(p, chirp_freq_MHz=0.3))
+    assert key != AWGManager._build_key(dict(p, chirp_profile="quintic"))
+
+
+def test_setup_dedups_by_chirp_freq():
+    # a scanned chirp mints one pre-stored waveform per unique value, recalled per shot
+    seqs = [{"AWG": {"AWG556": {"chirp_freq_MHz": c}}} for c in (0.0, 0.2, 0.0, 0.4)]
+    consts = {"AWG556": dict(_DEFAULTS["AWG556"], shape="chirped_rise_quintic",
+                             chirp_freq_MHz=0.0)}
+    AWGManager.setup("AWG556", FakeScanGroup(seqs), consts=consts,
+                     connection_factory=FakeConn)
+    assert len(AWGManager._state["AWG556"]["cmd_map"]) == 3       # 0.0 / 0.2 / 0.4
+    # per-shot switch keyed on the chirp: a new value resends, a repeat skips
+    conn = AWGManager._state["AWG556"]["connection"]
+    n0 = len(conn.sent)
+    AWGManager.recall_for_seq({"AWG556": {"chirp_freq_MHz": 0.0}})   # == first seq -> skip
+    assert len(conn.sent) == n0
+    AWGManager.recall_for_seq({"AWG556": {"chirp_freq_MHz": 0.4}})   # switch -> resend
+    assert len(conn.sent) == n0 + 1
+
+
 def test_flat_shape():
     from devices.sigilent_awg import pulse_envelope
     from devices.sigilent_awg.pulse_waveform import pulse_total_us
@@ -607,6 +734,7 @@ def test_pulse_waveform_validation():
     assert set(SHAPES) == {"flat", "gaussian", "rise_gaussian", "fall_gaussian",
                            "rise_linear", "fall_linear",
                            "rise_cubic", "fall_cubic", "rise_quintic", "fall_quintic",
+                           "chirped_rise_quintic", "chirped_fall_quintic",
                            "double_half_gaussian_inner", "double_half_gaussian_outer"}
 
 
