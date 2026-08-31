@@ -5,8 +5,14 @@ Generalizes :mod:`gaussian_pulse_waveform` (the port of
 selected by the ``shape`` param (design agreed 2026-07-03; see ``pyctrl/tmp/pulse_10_examples.png``):
 
   * ``flat``           -- envelope == 1 over the whole window: a CONSTANT-amplitude carrier burst
-                          at ``carrier_freq_MHz`` for ``pulse_width_us`` (total = pw). The output
-                          peak reaches full ``max_amplitude_vpp * amplitude_scale``.
+                          at ``carrier_freq_MHz`` for ``pulse_width_us``. The output peak reaches
+                          full ``max_amplitude_vpp * amplitude_scale``.
+                          Optional ``pad_time_us`` (us, default 0) PREPENDS a hold at amplitude 1
+                          before the main window: total = pad_time_us + pulse_width_us (the same
+                          semantics as fall_quintic's pad). The envelope is 1 across BOTH halves
+                          (flat is flat), so the pad only moves the TOTAL width -- hence the DDS
+                          playback FREQ and the gate the burst needs -- and sets the f0 hold that
+                          precedes ``chirped_flat``'s sweep.
                           ``steepness`` / ``smooth_width_us`` / ``f_delay`` all IGNORED.
   * ``gaussian``       -- exp(-((x-0.5)*steepness)^2), peak mid-window (the original; default).
   * ``rise_gaussian``  -- ``exp(-((t-peak)/pw)^2)`` rising to its peak at the END; single half-
@@ -53,6 +59,19 @@ selected by the ``shape`` param (design agreed 2026-07-03; see ``pyctrl/tmp/puls
                           units MHz*us = cycles) -- NOT a stepped frequency -- so d(phase)/dt is
                           exactly the intended instantaneous frequency and the phase is continuous
                           everywhere. ``chirp_freq_MHz = 0`` reproduces the base shape BYTE-FOR-BYTE.
+  * ``chirped_flat``   -- the ``flat`` envelope (constant amplitude 1 over the whole window,
+                          total = ``pulse_width_us``) with the SAME swept carrier as the chirped
+                          splines. The ramp coordinate is ``u = clip((t-pad)/pulse_width_us, 0, 1)``
+                          with ``pad`` = ``pad_time_us`` (default 0), so the sweep spans the MAIN
+                          ``pulse_width_us`` window: the carrier sits EXACTLY at ``carrier_freq_MHz``
+                          through the pad hold, then sweeps to ``carrier_freq_MHz + chirp_freq_MHz``
+                          by t = pad + pw (frequency continuous at the junction, u = 0 there).
+                          ``pad_time_us = 0`` -> the sweep spans the whole burst.
+                          Same ``chirp_freq_MHz`` (SIGNED TOTAL SPAN, MHz)
+                          and ``chirp_profile`` fields; ``chirp_freq_MHz = 0`` reproduces ``flat``
+                          BYTE-FOR-BYTE. This is the CONSTANT-RABI frequency sweep (Landau-Zener /
+                          adiabatic rapid passage) -- the detuning moves, the drive strength does
+                          not. ``steepness`` / ``smooth_width_us`` / ``f_delay`` all IGNORED.
 
 where ``x = t/pulse_width_us`` is normalized MAIN-window time (linear + spline shapes).
 
@@ -118,6 +137,7 @@ SHAPES = {
     "fall_quintic": False,
     "chirped_rise_quintic": False,
     "chirped_fall_quintic": False,
+    "chirped_flat": False,
     "double_half_gaussian_inner": False,
     "double_half_gaussian_outer": False,
 }
@@ -135,9 +155,16 @@ DOUBLE_HALF_GAUSSIAN_SHAPES = ("double_half_gaussian_inner", "double_half_gaussi
 
 #: shapes whose CARRIER sweeps (``chirp_freq_MHz`` / ``chirp_profile``); envelope identical to the
 #: un-prefixed base shape. Every other shape ignores the two chirp fields entirely.
-CHIRPED_SHAPES = ("chirped_rise_quintic", "chirped_fall_quintic")
+CHIRPED_SHAPES = ("chirped_rise_quintic", "chirped_fall_quintic", "chirped_flat")
 
 _CHIRP_PREFIX = "chirped_"
+
+#: shapes that honor ``pad_time_us`` -- a hold at amplitude 1 PREPENDED before the main
+#: ``pulse_width_us`` window (total = pad + pw). BASE names: the ``chirped_`` variants inherit it.
+#: ``fall_quintic`` holds at its peak before falling; ``flat`` is 1 across both halves anyway, so
+#: there the pad only sets the total width -- and, for ``chirped_flat``, the f0 hold before the
+#: sweep. Every other shape IGNORES pad_time_us.
+PAD_SHAPES = ("fall_quintic", "flat")
 
 #: ``chirp_profile`` -> ``(P, Q)``. P(u) = the normalized instantaneous-frequency profile (0 -> 1
 #: across the ramp window, so f(t) = f0 + chirp*P(u)); Q = its integral with Q(0) = 0, which gives
@@ -159,6 +186,15 @@ def _base_shape(shape):
     return shape[len(_CHIRP_PREFIX):] if shape.startswith(_CHIRP_PREFIX) else shape
 
 
+def pulse_pad_us(shape, pad_time_us=0.0):
+    """Effective pad (us) for ``shape``: ``pad_time_us`` for :data:`PAD_SHAPES`, else 0.
+
+    The ONE place the "does this shape have a pad?" question is answered, so the total width, the
+    envelope, the chirp window and the plotting tool cannot drift apart. Accepts chirped names.
+    """
+    return float(pad_time_us) if _base_shape(shape) in PAD_SHAPES else 0.0
+
+
 def _chirp_profile_fns(chirp_profile):
     """``(P, Q)`` for ``chirp_profile``; raises ValueError on an unknown name."""
     try:
@@ -170,10 +206,11 @@ def _chirp_profile_fns(chirp_profile):
 
 def _chirp_ramp_u(shape, t_us, pw, pad_time_us=0.0):
     """Ramp coordinate ``u = clip((t - pad)/pw, 0, 1)`` -- 0 through the pad hold, 0 -> 1 across the
-    amplitude ramp. ``pad`` is ``pad_time_us`` for the fall (the flat pre-hold) and 0 for the rise,
-    i.e. exactly the pad the envelope uses, so the sweep starts where the ramp starts.
+    amplitude ramp. ``pad`` is :func:`pulse_pad_us` -- exactly the pad the envelope uses -- so the
+    sweep starts where the ramp starts (0 for the rise, ``pad_time_us`` for the fall and for
+    ``chirped_flat``, whose "ramp" is just its main window: u = (t-pad)/pw).
     """
-    pad = pad_time_us if _base_shape(shape) == "fall_quintic" else 0.0
+    pad = pulse_pad_us(shape, pad_time_us)
     return np.clip((np.asarray(t_us, dtype=float) - pad) / pw, 0.0, 1.0)
 
 
@@ -212,10 +249,10 @@ def pulse_total_us(shape, pulse_width_us, smooth_width_us=0.0, stirap_gap=0.0, p
         return 6.0 * pulse_width_us + stirap_gap
     if shape in ("rise_gaussian", "fall_gaussian"):
         return 3.0 * pulse_width_us
-    if shape == "fall_quintic":
-        return pulse_width_us + pad_time_us             # flat hold prepended before the quintic fall
-    if shape == "gaussian" or shape == "flat" or shape in SPLINE_SHAPES:
-        return pulse_width_us                        # flat/gaussian/splines: one window of pw
+    if shape in PAD_SHAPES:                          # fall_quintic / flat: hold prepended, then pw
+        return pulse_width_us + pad_time_us
+    if shape == "gaussian" or shape in SPLINE_SHAPES:
+        return pulse_width_us                        # gaussian/splines: one window of pw
     return pulse_width_us + smooth_width_us          # rise_linear / fall_linear
 
 
@@ -299,7 +336,7 @@ def _spline_envelope(shape, num_points, pw, pad_time_us=0.0):
         raise ValueError("pulse_width_us must be > 0 (got %g)" % pw)
     if pad_time_us < 0:
         raise ValueError("pad_time_us must be >= 0 (got %g)" % pad_time_us)
-    pad = pad_time_us if shape == "fall_quintic" else 0.0
+    pad = pulse_pad_us(shape, pad_time_us)
     total = pw + pad
     t_us = np.linspace(0.0, 1.0, int(num_points)) * total
     if pad > 0.0:
@@ -322,12 +359,16 @@ def pulse_envelope(shape, num_points, pulse_width_us, smooth_width_us, steepness
     """Envelope for ``shape`` on ``num_points`` samples. Returns ``(t_us, envelope)``.
 
     ``t_us`` runs [0, total] where total = pulse_width_us (+ smooth_width_us for rise_*/fall_*,
-    + pad_time_us for fall_quintic); t=0 is the AWG trigger. For the two-lobe STIRAP shapes total =
+    + pad_time_us for :data:`PAD_SHAPES` = fall_quintic / flat); t=0 is the AWG trigger. For the two-lobe STIRAP shapes total =
     6*pulse_width_us + stirap_gap and ``smooth_width_us``/``steepness`` are ignored (see
     :func:`_double_half_gaussian_envelope`). Pure helper -- also used by plotting/diagnostic scripts.
     """
     if shape not in SHAPES:
         raise ValueError("unknown pulse shape %r (valid: %s)" % (shape, ", ".join(sorted(SHAPES))))
+    # The chirp touches ONLY the carrier -> every chirped shape reuses its base envelope path
+    # verbatim (SPLINE_SHAPES lists both spellings, so this is a no-op for the splines; it is
+    # what routes "chirped_flat" to the "flat" branch below).
+    shape = _base_shape(shape)
     if shape in DOUBLE_HALF_GAUSSIAN_SHAPES:
         return _double_half_gaussian_envelope(shape, num_points, pulse_width_us,
                                               stirap_gap, f_delay, r_delay)
@@ -337,16 +378,21 @@ def pulse_envelope(shape, num_points, pulse_width_us, smooth_width_us, steepness
         return _spline_envelope(shape, num_points, pulse_width_us, pad_time_us)
     if smooth_width_us < 0:
         raise ValueError("smooth_width_us must be >= 0 (got %g)" % smooth_width_us)
+    if pad_time_us < 0:
+        raise ValueError("pad_time_us must be >= 0 (got %g)" % pad_time_us)
     if shape in ("gaussian", "flat"):
         smooth_width_us = 0.0                       # gaussian edges ~0; flat is a bare hold
-    total = pulse_width_us + smooth_width_us
+    # flat honors pad_time_us: a hold at amplitude 1 prepended before the main window. The
+    # envelope is 1 across both, so this only extends the TOTAL width (and, for chirped_flat,
+    # the f0 hold ahead of the sweep -- see _chirp_ramp_u). Every other shape here: pad = 0.
+    total = pulse_width_us + smooth_width_us + pulse_pad_us(shape, pad_time_us)
 
     t_norm = np.linspace(0.0, 1.0, int(num_points))
     t_us = t_norm * total
     e = np.zeros(t_us.shape)
 
     if shape == "flat":
-        e = np.ones(t_us.shape)                     # constant-amplitude carrier burst over [0, pw]
+        e = np.ones(t_us.shape)                     # constant amplitude over [0, pad + pw]
     elif shape == "gaussian":
         # x = t_norm directly (not t_us/pw): byte-exact vs the original gaussianPulseWaveform
         # (avoids the 1-ulp (t*pw)/pw round-trip for non-power-of-2 pulse widths).
@@ -390,14 +436,19 @@ def pulse_waveform(params):
                 between the two lobes; = the inner-peak separation), ``f_delay`` / ``r_delay``
                 (float, us; slide the OUTER shape's fwd/rev lobe -- + = more lead/lag, ignored by
                 the inner anchor). ``pulse_width_us`` is then the lobe 1/e half-width.
-            For ``fall_quintic`` also: ``pad_time_us`` (float >= 0, default 0 -- flat hold at
-                amplitude 1 prepended before the quintic fall; total = pad_time_us + pulse_width_us;
-                ignored by every other shape).
-            For ``chirped_rise_quintic`` / ``chirped_fall_quintic`` also: ``chirp_freq_MHz``
+            For ``fall_quintic`` and ``flat`` (:data:`PAD_SHAPES`, chirped variants included) also:
+                ``pad_time_us`` (float >= 0, default 0 -- hold at amplitude 1 prepended before the
+                main window; total = pad_time_us + pulse_width_us; ignored by every other shape).
+                For ``flat`` the envelope is 1 across both halves, so the pad moves only the total
+                width -- and the f0 hold before ``chirped_flat``'s sweep.
+            For ``chirped_rise_quintic`` / ``chirped_fall_quintic`` / ``chirped_flat`` also:
+                ``chirp_freq_MHz``
                 (float, default 0 -- the SIGNED TOTAL SPAN final-minus-initial, in MHz, swept across
                 the amplitude-ramp window; 0 = byte-identical to the un-prefixed base shape) and
                 ``chirp_profile`` (``"linear"`` (default) or ``"quintic"``, see
                 :data:`CHIRP_PROFILES`). Both are IGNORED by every other shape.
+                ``chirped_flat`` sweeps across its main window at CONSTANT amplitude (f0 held
+                through ``pad_time_us`` first, if set).
 
     Returns:
         binary_data (bytes): big-endian int16 samples, ready to append to a WVDT command.

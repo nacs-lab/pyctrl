@@ -1,10 +1,11 @@
 """plot_chirped_pulse.py -- plot the waveform ACTUALLY UPLOADED to a Siglent SDG6X channel.
 
-Diagnostic for the chirped AWG pulse shapes (``chirped_rise_quintic`` / ``chirped_fall_quintic``,
-see ``devices/sigilent_awg/pulse_waveform.py``). It does NOT re-evaluate an idealized waveform: it
-calls :func:`pulse_waveform`, takes the BIG-ENDIAN int16 blob that ``AWGConnection`` would append to
-the WVDT command, decodes it back to volts, and measures the instantaneous frequency off those
-samples. What you see is what the box plays (module the DAC/analog front end).
+Diagnostic for the chirped AWG pulse shapes (``chirped_rise_quintic`` / ``chirped_fall_quintic`` /
+``chirped_flat``, see ``devices/sigilent_awg/pulse_waveform.py``). It does NOT re-evaluate an
+idealized waveform: it calls :func:`pulse_waveform`, takes the BIG-ENDIAN int16 blob that
+``AWGConnection`` would append to the WVDT command, decodes it back to volts, and measures the
+instantaneous frequency off those samples. What you see is what the box plays (module the
+DAC/analog front end).
 
 Default example = the RearrangeSTIRAPScan forward-Stokes pulse: AWG308.Ch1, 200 MHz carrier,
 pulse_width_us=3, pad_time_us=2, amplitude_scale=1, 8 Vpp, num_points=10000 floored to
@@ -18,6 +19,7 @@ which is 5x the whole 0.2 MHz chirp span.
 Run (base anaconda python is enough -- numpy + matplotlib only, no engine, no hardware):
     python tools/plot_chirped_pulse.py
     python tools/plot_chirped_pulse.py --profile quintic --chirp 0.5 --out tmp/chirp_quintic.png
+    python tools/plot_chirped_pulse.py --shape chirped_flat --chirp 5 --out tmp/chirped_flat.png
 """
 import argparse
 import os
@@ -28,7 +30,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from devices.sigilent_awg.pulse_waveform import (pulse_waveform, pulse_envelope,  # noqa: E402
-                                                 CHIRP_PROFILES)
+                                                 pulse_pad_us, CHIRP_PROFILES)
 
 _PYCTRL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PROJECT = os.path.dirname(_PYCTRL)
@@ -64,7 +66,8 @@ def build_args():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--shape", default="chirped_fall_quintic",
-                    help="chirped_fall_quintic (default, AWG308 fwd Stokes) or chirped_rise_quintic")
+                    help="chirped_fall_quintic (default, AWG308 fwd Stokes), chirped_rise_quintic, "
+                         "or chirped_flat (constant amplitude, sweep spans the whole burst)")
     ap.add_argument("--f0", type=float, default=200.0, help="carrier_freq_MHz (default 200)")
     ap.add_argument("--chirp", type=float, default=0.2,
                     help="chirp_freq_MHz -- SIGNED TOTAL SPAN final-initial (default 0.2)")
@@ -72,7 +75,8 @@ def build_args():
                     help="chirp_profile (default linear)")
     ap.add_argument("--pw", type=float, default=3.0, help="pulse_width_us (default 3)")
     ap.add_argument("--pad", type=float, default=2.0,
-                    help="pad_time_us, fall only (default 2)")
+                    help="pad_time_us -- hold before the swept window; honored by "
+                         "chirped_fall_quintic + chirped_flat, ignored by the rise (default 2)")
     ap.add_argument("--amp-scale", type=float, default=1.0, help="amplitude_scale (default 1)")
     ap.add_argument("--vpp", type=float, default=8.0, help="max_amplitude_vpp (default 8)")
     ap.add_argument("--num-points", type=int, default=10000, help="num_points floor (default 10000)")
@@ -116,7 +120,8 @@ def main():
     ok &= mag > 0.10 * mag.max()
     err_kHz = (meas - analytic) * 1e3
 
-    pad = a.pad if a.shape == "chirped_fall_quintic" else 0.0
+    # ask the library which shapes honor pad_time_us (fall_quintic + flat); rise ignores it
+    pad = pulse_pad_us(a.shape, a.pad)
     ramp0, ramp1 = pad, pad + a.pw
 
     # AMPLITUDE envelope (info["waveform"] is the MODULATED trace, not the envelope). Scaled to the
@@ -162,10 +167,12 @@ def main():
     u_mid = 0.6                                        # still ~1/3 amplitude on a quintic fall
     t_mid = ramp0 + u_mid * a.pw
     slip_deg = 360.0 * a.chirp * a.pw * float(Q(np.array(u_mid)))
-    for ax, c, ttl in ((ax_z0, ramp0,
-                        "pad -> ramp junction: carrier still f0, NO phase step"),
+    # with no pad the left zoom is the burst START, not a pad->sweep junction
+    z0_ttl = ("burst start: carrier exactly f0" if pad == 0 else
+              "pad -> sweep junction: carrier still f0, NO phase step")
+    for ax, c, ttl in ((ax_z0, ramp0, z0_ttl),
                        (ax_z1, t_mid,
-                        "mid-ramp (u=%.1f): %+.0f deg ahead of the unchirped pulse" % (u_mid, slip_deg))):
+                        "mid-sweep (u=%.1f): %+.0f deg ahead of the unchirped pulse" % (u_mid, slip_deg))):
         m = (t >= c - ncyc) & (t <= c + ncyc)
         ax.plot(t[m], v0[m], lw=1.6, color="0.72", label="chirp = 0")
         ax.plot(t[m], v[m], lw=0.9, color="#1f77b4", marker=".", ms=2.2,

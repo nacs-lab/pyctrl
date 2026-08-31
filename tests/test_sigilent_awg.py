@@ -676,6 +676,74 @@ def test_chirp_measured_from_uploaded_blob_matches_analytic(profile):
     assert ok.sum() > 5000 and err_kHz.max() < 3.0        # vs a 200 kHz chirp span
 
 
+# The constant-amplitude LZ / adiabatic-rapid-passage burst: no amplitude ramp, the sweep spans the
+# main window. pad_time_us = 0 here -> it spans the WHOLE burst (the padded case is its own test).
+_CHIRP_FLAT = dict(shape="chirped_flat", num_points=10000, sample_rate_MHz=2500,
+                   pulse_width_us=3.0, pad_time_us=0.0, carrier_freq_MHz=200.0,
+                   steepness=3.5, smooth_width_us=0.0, amplitude_scale=1.0,
+                   max_amplitude_vpp=8)
+
+
+def test_chirped_flat_envelope_is_flat_and_zero_chirp_is_byte_identical():
+    from devices.sigilent_awg import pulse_envelope, pulse_total_us
+    # smooth_width_us / steepness inert; pad_time_us inherited from flat -> total = pad + pw
+    assert pulse_total_us("chirped_flat", 3.0, 0.7, pad_time_us=2.0) == pytest.approx(5.0)
+    for pad in (0.0, 2.0):
+        tc, ec = pulse_envelope("chirped_flat", 4001, 3.0, 0.7, 88.0, pad_time_us=pad)
+        tb, eb = pulse_envelope("flat", 4001, 3.0, 0.0, 0.0, pad_time_us=pad)
+        assert np.array_equal(tc, tb) and np.array_equal(ec, eb) and np.all(ec == 1.0)
+        base, _ = pulse_waveform(dict(_CHIRP_FLAT, shape="flat", pad_time_us=pad))
+        for profile in ("linear", "quintic"):
+            got, info = pulse_waveform(dict(_CHIRP_FLAT, pad_time_us=pad,
+                                            chirp_freq_MHz=0.0, chirp_profile=profile))
+            assert got == base                                # chirp 0 == plain flat, byte-wise
+            assert info["total_width_us"] == pytest.approx(3.0 + pad)
+
+
+def test_chirped_flat_sweeps_the_whole_burst():
+    # no pad hold: the carrier moves from the FIRST sample and lands on f0 + span at the last.
+    _, info = pulse_waveform(dict(_CHIRP_FLAT, chirp_freq_MHz=5.0))
+    t, f = info["t_us"], info["inst_freq_MHz"]
+    assert f[0] == pytest.approx(200.0) and f[-1] == pytest.approx(205.0)
+    assert f[np.searchsorted(t, 1.5)] == pytest.approx(202.5, abs=2e-3)     # linear: half-way
+    d = np.gradient(f, t)
+    assert np.allclose(d, 5.0 / 3.0, rtol=1e-6)                   # constant rate = span / pw
+    # a negative span sweeps DOWN by the same amount
+    _, dn = pulse_waveform(dict(_CHIRP_FLAT, chirp_freq_MHz=-5.0))
+    assert dn["inst_freq_MHz"][-1] == pytest.approx(195.0)
+
+
+def test_chirped_flat_pad_holds_f0_before_the_sweep():
+    # pad_time_us: the carrier sits EXACTLY at f0 through the hold, then sweeps over pw only.
+    blob, info = pulse_waveform(dict(_CHIRP_FLAT, pad_time_us=2.0, chirp_freq_MHz=5.0))
+    t, f = info["t_us"], info["inst_freq_MHz"]
+    assert info["total_width_us"] == pytest.approx(5.0)
+    assert np.all(f[t < 2.0] == 200.0)                            # hold: exactly the carrier
+    assert f[-1] == pytest.approx(205.0)                          # full span by the end
+    assert f[np.searchsorted(t, 3.5)] == pytest.approx(202.5, abs=2e-3)   # linear: half-way
+    ramp = t >= 2.0
+    assert np.allclose(np.gradient(f[ramp], t[ramp]), 5.0 / 3.0, rtol=1e-6)  # span / pw
+    # the amplitude stays flat across BOTH halves (unlike the padded fall_quintic)
+    env = np.convolve(np.abs(_decode_blob(blob)), np.ones(251) / 251, mode="same")[251:-251]
+    assert env.max() - env.min() < 0.02 * env.mean()
+
+
+@pytest.mark.parametrize("profile", ["linear", "quintic"])
+def test_chirped_flat_measured_from_uploaded_blob(profile):
+    # Decode the REAL blob: f(t) must track the analytic sweep, and the amplitude must stay flat
+    # (a chirped_* spline shape would show its ramp here).
+    blob, info = pulse_waveform(dict(_CHIRP_FLAT, chirp_freq_MHz=5.0, chirp_profile=profile))
+    t, x = info["t_us"], _decode_blob(blob)
+    assert x.size == info["num_points"] == 10000        # 3 us x 2500 MSa/s < the 10000 floor
+    win = 251                                           # ~20 carrier periods
+    ok = np.zeros(t.shape, dtype=bool)
+    ok[win:-win] = True                                 # flat envelope -> only the boxcar edges cut
+    err_kHz = np.abs(_heterodyne_freq_MHz(t, x, 200.0, win) - info["inst_freq_MHz"])[ok] * 1e3
+    assert err_kHz.max() < 30.0                         # vs a 5000 kHz span (measured ~4 kHz)
+    env = np.convolve(np.abs(x), np.ones(win) / win, mode="same")[win:-win]
+    assert env.max() - env.min() < 0.02 * env.mean()    # constant amplitude, start to end
+
+
 def test_chirp_profile_validation_and_key_dispatch():
     with pytest.raises(ValueError, match="unknown chirp_profile"):
         pulse_waveform(dict(_CHIRP_308, chirp_freq_MHz=0.2, chirp_profile="cubic"))
@@ -720,6 +788,28 @@ def test_flat_shape():
     assert info["freq_hz"] == pytest.approx(1e6 / 5.0)
 
 
+def test_flat_pad_time():
+    from devices.sigilent_awg import pulse_envelope
+    from devices.sigilent_awg.pulse_waveform import pulse_total_us, pulse_pad_us, PAD_SHAPES
+    # flat prepends a hold at amplitude 1: total = pad + pw, envelope still 1 everywhere
+    assert "flat" in PAD_SHAPES and pulse_pad_us("chirped_flat", 2.0) == 2.0
+    assert pulse_total_us("flat", 3.0, 0.7, pad_time_us=2.0) == pytest.approx(5.0)
+    t, e = pulse_envelope("flat", 5001, 3.0, 0.7, 88.0, pad_time_us=2.0)
+    assert np.all(e == 1.0) and t[-1] == pytest.approx(5.0)
+    p = dict(shape="flat", num_points=2000, pulse_width_us=3.0, carrier_freq_MHz=10.0,
+             amplitude_scale=1.0, max_amplitude_vpp=2.0)
+    _, padded = pulse_waveform(dict(p, pad_time_us=2.0))
+    assert padded["total_width_us"] == pytest.approx(5.0)
+    assert padded["freq_hz"] == pytest.approx(1e6 / 5.0)      # DDS FREQ follows the total
+    # pad = 0 (the default) is byte-identical to the un-padded flat; and since flat is flat,
+    # pad+pw is byte-identical to one plain window of the same total.
+    assert pulse_waveform(dict(p, pad_time_us=0.0))[0] == pulse_waveform(p)[0]
+    assert (pulse_waveform(dict(p, pad_time_us=2.0))[0]
+            == pulse_waveform(dict(p, pulse_width_us=5.0))[0])
+    with pytest.raises(ValueError, match="pad_time_us"):
+        pulse_waveform(dict(p, pad_time_us=-0.1))
+
+
 def test_smooth_width_ignored_for_gaussian():
     a, ia = pulse_waveform(dict(_DEFAULTS["AWG556"]))
     b, ib = pulse_waveform(dict(_DEFAULTS["AWG556"], smooth_width_us=1.0))
@@ -734,7 +824,7 @@ def test_pulse_waveform_validation():
     assert set(SHAPES) == {"flat", "gaussian", "rise_gaussian", "fall_gaussian",
                            "rise_linear", "fall_linear",
                            "rise_cubic", "fall_cubic", "rise_quintic", "fall_quintic",
-                           "chirped_rise_quintic", "chirped_fall_quintic",
+                           "chirped_rise_quintic", "chirped_fall_quintic", "chirped_flat",
                            "double_half_gaussian_inner", "double_half_gaussian_outer"}
 
 

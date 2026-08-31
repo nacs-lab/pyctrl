@@ -5,9 +5,10 @@ USB-VISA (pyvisa) driver + scan coordinator for the gated Gaussian Rydberg pulse
 ``matlab_new/YbExptCtrl/sigilentAWG/``:
 
   * :func:`pulse_waveform`          -- pure waveform generator (big-endian int16 bytes); ``shape``
-    param selects gaussian / rise_gaussian / fall_gaussian / rise_linear / fall_linear
-    (+ ``smooth_width_us`` cosine edge). :func:`gaussian_pulse_waveform` is the byte-exact
-    Gaussian-only legacy entry.
+    selects the envelope (flat / gaussian / rise_* / fall_* / spline / two-lobe STIRAP, see
+    :data:`SHAPES`), a ``chirped_`` prefix sweeps the carrier, and :data:`PAD_SHAPES` honor a
+    ``pad_time_us`` pre-hold. :func:`gaussian_pulse_waveform` is the byte-exact Gaussian-only
+    legacy entry.
   * :class:`AWGConnection`          -- one USB channel; build/send WVDT, amplitude, gated burst.
   * :class:`AWGManager`             -- batch-upload every unique waveform at scan start, switch the
     active waveform per shot (~2 ms), clean up at scan end. Process-global state.
@@ -18,11 +19,12 @@ from .awg_connection import AWGConnection
 from .awg_manager import AWGManager, WAVEFORM_FIELDS
 from .gaussian_pulse_waveform import gaussian_pulse_waveform
 from .pulse_waveform import (pulse_waveform, pulse_envelope, pulse_total_us,
-                             pulse_carrier_freq_MHz, SHAPES, CHIRP_PROFILES)
+                             pulse_carrier_freq_MHz, pulse_pad_us,
+                             SHAPES, CHIRP_PROFILES, PAD_SHAPES)
 
 __all__ = ["AWGConnection", "AWGManager", "WAVEFORM_FIELDS", "gaussian_pulse_waveform",
            "pulse_waveform", "pulse_envelope", "pulse_total_us", "pulse_carrier_freq_MHz",
-           "SHAPES", "CHIRP_PROFILES"]
+           "pulse_pad_us", "SHAPES", "CHIRP_PROFILES", "PAD_SHAPES"]
 
 # Registry: create("sigilent_awg", resource, channel) -> an AWGConnection handle
 # (NEEDS-HARDWARE on connect()). The AWGManager is the scan-level orchestrator.
