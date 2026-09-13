@@ -70,6 +70,47 @@ def stash_frame(frame_idx, img):
 
 
 # =========================================================================== #
+# no_transit -- the opt-in PURE-IMAGING control arm (2026-09-02)
+# =========================================================================== #
+def _no_transit(s1):
+    """True when this shot is the PURE-IMAGING control: two images with NOTHING between them.
+
+    Set by a scan as ``rearrange_kwargs.extras.no_transit`` (0/1, scannable like any other
+    extras axis). It is the in-job denominator a method-comparison run normalises to: no
+    ``rearrange()`` call, so zero SLM frames, zero panel writes, zero prefill and no transit
+    dwell -- the atoms simply sit in the untouched loading array between img1 and img2.
+
+    It is NOT the server's ``no_move`` (dst := src), which still plays every frame, pays the
+    prefill and writes the WGS bookend; that arm measures imaging PLUS dwell PLUS refresh. The
+    two together separate those terms (campaigns/rearr/methods CORRECTION 2026-08-13, where the
+    imaging maximum had to be reconstructed from a SEPARATE run because no in-job arm carried
+    it).
+
+    Everything BEFORE the rearrange call is deliberately left untouched on this arm -- the same
+    camera grab, the same detector, the same probability log -- so the control's denominator
+    carries the same atom selection the transport arms condition on.
+
+    Absent extra -> False -> every pre-existing seq/scan takes exactly its old path.
+    """
+    try:
+        return bool(int(float(s1.C.rearrange_kwargs.extras.no_transit(0))))
+    except Exception:  # noqa: BLE001 - absent/odd extras -> the normal transport path
+        return False
+
+
+def _pop_extra(args, name):
+    """Remove ``args['extras'][name]`` if present (lab-side-only extras never reach the server).
+
+    ``collect_kwargs`` bundles EVERY ``extras.*`` leaf into the setup_rearrangement body, so a
+    purely lab-side marker has to be dropped here: the server would either reject the unknown
+    kwarg or -- worse for an interleaved scan -- fold it into the sticky protocol cache."""
+    extras = args.get("extras")
+    if isinstance(extras, dict):
+        extras.pop(name, None)
+    return args
+
+
+# =========================================================================== #
 # pre_run -- locks + sticky per-shot setup (reg_before_start)
 # =========================================================================== #
 def pre_run(s1, *, flags=("rearrange_img1_ok",), lock_desc="rearrange compute",
@@ -167,6 +208,11 @@ def pre_run(s1, *, flags=("rearrange_img1_ok",), lock_desc="rearrange compute",
     # extras.pingpong_nsteps; a loud error if combined with the soft-start fold (both own the
     # schedule).
     args = _fold_ppg_pingpong_group(args)
+    # LAB-SIDE ONLY. The pure-imaging control arm is decided here, not on the server, so the
+    # marker is stripped before the body is built: the server never sees an unknown kwarg and
+    # the rearrange2 stream signature is untouched, which is what lets the control cell
+    # interleave shot-to-shot with the transport arms without forcing a producer rebuild.
+    _pop_extra(args, "no_transit")
     if force_n_rounds is not None:
         _ensure_extra(args, "n_rounds", int(force_n_rounds))
     args.setdefault("client_scan_id", str(ctx.scan_id))
@@ -249,6 +295,17 @@ def rearrange_round(s1, frame_idx, *, ok_flag, tag, prior_flag=None,
     # server turns into cost -- plus the surplus against the NEXT frame's pattern (the only
     # regime where the -beta*log(p) term can change the assignment). Throttled + best-effort.
     _note_probs(ctx, tag, frame_idx, probs, use_frame_pattern)
+
+    # PURE-IMAGING control arm (extras.no_transit): stage the frame and mark the round healthy
+    # WITHOUT calling rearrange(), so the SLM does literally nothing between the two images.
+    # Placed AFTER the grab/detect/log above on purpose -- the control has to carry the same
+    # atom selection as the arms it is the denominator for. See :func:`_no_transit`.
+    if _no_transit(s1):
+        _safe(ctx.server, "stage_frame", img, ctx.scan_id, _seq_id(s1))
+        setattr(s1.G, ok_flag, True)
+        if record_ok:
+            ctx.record_ok()
+        return
 
     if min_load:
         n_at = sum(1 for p in probs if p > 0.5)
@@ -378,7 +435,10 @@ def finalize(s1, *, round_flags, final_frame_idx, tag="post_run",
         # Success: optionally report the final occupancy to the server, then stage the final
         # frame and publish the whole aligned set with ONE finish_shot (FIFO ordering keeps
         # the frames aligned behind the rounds' staged frames).
-        if update and ctx.client is not None:
+        # The pure-imaging control never called rearrange(), so there is no server-side shot for
+        # update_rearrange to close: posting the final occupancy would open a phantom ledger row
+        # and poison the rearrange statistics. Its frames still stage + publish normally.
+        if update and ctx.client is not None and not _no_transit(s1):
             bits = (ctx.detect_bits_for(_frame_pattern(ctx, final_frame_idx), img)
                     if use_frame_pattern else ctx.detect_bits(img))
             if bits and bits_fn is not None:
@@ -1119,7 +1179,22 @@ def _fold_ppg_pingpong_group(args):
     extras["ppg_pp_group"] = g
     extras["ppg_pp_nsteps"] = n_total
     extras["ppg_pp_cycles"] = cycles
-    extras["ppg_pp_excursion"] = s * g
+    # Peak excursion in the step's OWN numeraire.  The grating path carries its stroke in
+    # `step_size` (um under true_defocus, knm-px lateral); the warm 3-D / model pingpong path
+    # carries a pure-axial stroke in `step_size_z` (rad of PV Z4) with `step_size` left at 0.
+    # Reporting `s * g` unconditionally logged a flat 0.0 for every warm-path run, so prefer
+    # whichever stroke is actually non-zero and say which one it was.
+    _sz = extras.get("step_size_z", 0.0)
+    try:
+        _sz = float(_sz) if not isinstance(_sz, (list, tuple)) else 0.0
+    except (TypeError, ValueError):
+        _sz = 0.0
+    if s == 0.0 and _sz != 0.0:
+        extras["ppg_pp_excursion"] = _sz * g
+        extras["ppg_pp_excursion_axis"] = "step_size_z"
+    else:
+        extras["ppg_pp_excursion"] = s * g
+        extras["ppg_pp_excursion_axis"] = "step_size"
     return args
 
 

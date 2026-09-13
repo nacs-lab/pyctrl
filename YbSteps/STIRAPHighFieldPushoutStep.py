@@ -83,6 +83,7 @@ def STIRAPHighFieldPushoutStep(s, g):
     Amp_AOM616Divert = Consts().AOM616Divert.Amp()
     
     IfPump = g.IfPump(0)
+    IfRecoveryIonization = g.IfRecoveryIonization(0)  
     Freq_Pump556 = g.Pump556Freq(143.3e6)
     Amp_Pump556 = g.Pump556Amp(0)
     Freq_Pump616 = g.Pump616Freq(234.444e6)
@@ -125,6 +126,7 @@ def STIRAPHighFieldPushoutStep(s, g):
     # Ramp the tweezer down and wait; set a B-field along Z.
     I_RydCoil = g.BiasCoilCurrent.Ryd(5)
     V_RydCoil = 5 * I_RydCoil / 100
+    s.add('TTLMultimeterTrig', 0)
     s.add('VRydCoil', V_RydCoil)
 
     # Switch the 556 + 308 AOMs from their DDS source to the AWG.
@@ -206,8 +208,12 @@ def STIRAPHighFieldPushoutStep(s, g):
             def _trap_on_gap(bs):
                 bs.wait(1e-6)
                 bs.add('AmpSLM', Amp_SLM_gap)
-            if STIRAP_Gap > 1.0e-6:
-                s.add_background(_trap_on_gap)
+            #if STIRAP_Gap > 1.0e-6:
+            #s.add_background(_trap_on_gap)
+            
+            s.wait(0.8e-6)
+            s.add('AmpSLM', Amp_SLM_gap)
+            #s.wait(0.5e-6)  # wait for the AOM rise time
             
             def _strobe_trap(bs):
                 it = STIRAP_Gap / 1.6e-6
@@ -235,9 +241,10 @@ def STIRAPHighFieldPushoutStep(s, g):
                 s.wait(STIRAP_Gap)
             else:
                 s.wait(STIRAP_Gap)
-
-            # Turn the tweezer off again for reverse STIRAP
-            s.add('AmpSLM', 0)
+            
+            s.wait(0.8e-6) # let the MW finish before turning the trap off
+            
+            s.add('AmpSLM', 0) # Turn the tweezer off again for reverse STIRAP
 
             
             if Reverse_Delay > 0:
@@ -290,6 +297,7 @@ def STIRAPHighFieldPushoutStep(s, g):
         s.add('AmpSLM', Amp_SLM)
     
     
+        
     # Turn the trap back on. but with a delay < 1.5us to compensate for the 532 AOM rise time
     def _trap_on(bs):
         bs.wait(1e-6)
@@ -298,7 +306,11 @@ def STIRAPHighFieldPushoutStep(s, g):
         bs.add('TTLSampleAndHold', 1)
     
     s.add_background(_trap_on) # Ionization happens at the same time as trap is turning on
-   
+    
+    # If we want to do recovery ionization, we want the trap to be on, wait for the gap, then do the ionization. If we don't want to do recovery ionization, we want to do the ionization without reverse STIRAP
+    if IfRecoveryIonization:
+           s.wait(STIRAP_Gap)
+           
     s.wait(1.5e-6) # The Sigilent AWG has a hard coded 1.5us delay between the pulse output and the trigger
 
     # Electrode ionization: apply the Rydberg bias field for ionization. Trigger is the pulse
@@ -368,4 +380,6 @@ def STIRAPHighFieldPushoutStep(s, g):
     s.add('TTL308RydAWGSwitch', 0)
     # zero the coil and wait for it to settle
     s.add('VRydCoil', 0)
+    s.add('TTLMultimeterTrig', 1)
     s.wait(50e-3)
+    

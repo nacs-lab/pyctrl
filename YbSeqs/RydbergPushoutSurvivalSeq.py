@@ -34,8 +34,15 @@ def RydbergPushoutSurvivalSeq(s):
     freq616global = s.new_global()
     s.C.Init.EOM616.FreqOld = freq616global
     s.add('FreqEOM616', freq616global)
-    # Slow EOM ramp. 3.0 (not 3): SeqVal operand -> must be FLOAT64.
-    time = abs((Freq_EOM616 - freq616global) * 2e-9 * 3.0) + 20e-3
+    # Slow EOM ramp. 6.0 (not 6): SeqVal operand -> must be FLOAT64.
+    # 2026-08-27 (user directive): slope factor 3.0 -> 6.0, i.e. the ramp is 2x SLOWER, for the
+    # 60 G DC-Stark E-field scan (StarkVxRevival616Scan sweeps Init.EOM616.Freq x electrode V, so
+    # every shot re-ramps the EOM; 616 had unlocked three times this session). Made permanent per
+    # user, so ALL scans on this seq (RydbergSpectrum556Scan / Revival616Scan / 556AutlerTownesScan
+    # / StarkV{x,y,z}Revival616Scan) now ramp at the slower rate. The 20 ms floor is unchanged;
+    # per-shot cost rises only with |target - previous| EOM detuning. NOTE this changes the
+    # serialized byte stream, so the EOM616 byte-equality references need re-capturing.
+    time = abs((Freq_EOM616 - freq616global) * 2e-9 * 6.0) + 20e-3
     s.add_step(time).add('FreqEOM616', ramp_to(Freq_EOM616))
 
     # server_pre_run/server_post_run (MemoryMap-free): inject freq616global <- the last 616-EOM

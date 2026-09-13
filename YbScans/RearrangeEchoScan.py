@@ -144,11 +144,12 @@ def build():
     #_STEP = (1.0 / _F_DIP) / 10.0                     # 10 samples per oscillation period
     #TIME_PTS = [round(float(v), 12) for v in np.linspace(0.01e-6, 10e-6, 30)]  # s
     #TIME_PTS = [0.01e-6, 2.5e-6, 5.0e-6, 10.0e-6, 15e-6, 20e-6]  # s
-    TIME_PTS = [0.01e-6, 0.01e-6]
+    #TIME_PTS = [0.01e-6, 0.01e-6]
+    TIME_PTS = [round(float(v), 12) for v in np.linspace(0.01e-6, 20e-6, 80)]  # s -- rerun of data_20260820_040029
     
     QICK_FREQ_MHZ = 11275.3252   # MW resonance in MHz 
-    RABI_FREQ = 24.155e6 #4.6815e6 #
-    GAIN = 5000 
+    RABI_FREQ = 4.7294e6
+    GAIN = 2000 #10000  # rerun of data_20260820_040029 (was 5000)
     PHASE = [0, 60, 120, 180, 240, 300, 360] #0.0
     
     g().QICK.template = "Echo"
@@ -161,7 +162,7 @@ def build():
 
     g().Init.EOM616.Freq = 230.4316e6   # 60 G lock (pairs with carrier 118.8856); was 233.967e6 (30 G mj=-1)
 
-    g().Pushout.VRydTrap = 0.2   # 60 G (RearrangeSTIRAPScan value); was 0.2 (30 G trap-ON)
+    g().Pushout.VRydTrap = 2   # 60 G (RearrangeSTIRAPScan value); was 0.2 (30 G trap-ON)
     g().Pushout.BiasCoilCurrent.Ryd = 60   # 60 G high field; was 30
     g().Pushout.STIRAPDelay = 1.333e-6   # 60 G mid-plateau (data_20260818_174505: peak 1.222, plateau to 2.0); was 1.0e-6 (30 G)
     g().Pushout.STIRAPReverseDelay = -0.2e-6   # 60 G confirmed (data_20260819_095938); was -0.5e-6 (30 G, data_20260722_172621)
@@ -245,7 +246,7 @@ def build():
     rp.NumPerGroup = 2000
     rp.loading_defocus = -5
     rp.NumImages = 3 if verify else 2
-    rp.Scramble = 0
+    rp.Scramble = 1
     rp.isGrid2 = 0
     rp.isInit = 0
     rp.isHC = 0

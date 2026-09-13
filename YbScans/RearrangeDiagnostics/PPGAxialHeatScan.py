@@ -67,11 +67,16 @@ RELEASE_US = [0, 0.5, 6, 12, 20, 30, 40, 55, 70, 90]
 POST_COOL_HOLD_MS = 0.5
 
 
+# Raised from the server default 5000 ms: a mid-flight cancellation leaves partial SLM
+# state (user, 2026-09-01).  Grating shots span 2.10 s median.
+ABORT_LIMIT_MS = 45000.0
+
+
 def build(mode="pseudo", direction=+1, steps=None, times_us=None, fixed_nsteps=50,
           period_ms=BASE_PERIOD_MS, out_step_max=OUT_STEP_MAX, const_nout=True,
           hold_ms=HOLD_MS, piston_corr=PISTON_CORR, ret_piston_corr=RET_PISTON_CORR,
           post_cool_hold_ms=POST_COOL_HOLD_MS, cool=False, allow_over_cap=False,
-          label_extra="", img_pid=(0.80, 1.00)):
+          label_extra="", img_pid=(0.80, 1.00), abort_limit_ms=ABORT_LIMIT_MS):
     """Build (do NOT submit) the 2-D [step x release] heat ScanGroup -> ``(seq, g, meta)``."""
     _bootstrap()
     from scan_group import ScanGroup
@@ -210,6 +215,11 @@ def build(mode="pseudo", direction=+1, steps=None, times_us=None, fixed_nsteps=5
     rk.extras.precompute = True
     rk.extras.precompute_host = True
     rk.extras.hw_sequence = False
+    # Server hard wall-clock ceiling for the WHOLE shot.  Default 5000 ms; a cancelled
+    # shot leaves partial SLM state, so this is raised (user, 2026-09-01: the aborts
+    # 'were causing cancellations that led to bad slm state').  A grating shot spans
+    # 2.10 s median, comfortably inside -- but the tail is what cancels.
+    rk.extras.abort_limit_ms = float(abort_limit_ms)
     rk.extras.ifEnhanced = True
     rk.extras.z4 = DEFOCUS
     rk.extras.initial_pattern = PATTERN
@@ -331,6 +341,8 @@ if __name__ == "__main__":
                          "the lever in this sequence.")
     ap.add_argument("--reps", type=int, default=None)
     ap.add_argument("--label", default=None)
+    ap.add_argument("--abort-limit-ms", type=float, default=ABORT_LIMIT_MS,
+                    help="server hard wall-clock shot ceiling (default %(default)s)")
     ap.add_argument("--url", default=None)
     ap.add_argument("--note", default="")
     ap.add_argument("--dry-run", action="store_true")
@@ -342,7 +354,7 @@ if __name__ == "__main__":
               out_step_max=args.out_step_max, const_nout=not args.no_const_nout,
               hold_ms=args.hold_ms, piston_corr=args.corr, ret_piston_corr=args.ret_corr,
               cool=args.cool, allow_over_cap=args.allow_over_cap, label_extra=args.note,
-              img_pid=tuple(args.img_pid))
+              img_pid=tuple(args.img_pid), abort_limit_ms=args.abort_limit_ms)
 
     if args.dry_run:
         _seq, _g, _meta = build(**kw)

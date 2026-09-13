@@ -38,6 +38,8 @@ def main():
     ap.add_argument("scan_dir")
     ap.add_argument("--j-init-mhz", type=float, default=0.48,
                     help="initial J guess in MHz (default 0.48 = the 20 um 07-24 value)")
+    ap.add_argument("--exclude-pairs", default="",
+                    help="comma-separated pair labels/indices to DROP before the ensemble and per-pair fits, e.g. 'P6' or '6'. Labels are the P<n> numbering printed above (assigned before exclusion, so they stay stable). Outputs get a _noP<n> suffix so the full-set figures are not overwritten.")
     args = ap.parse_args()
 
     import h5py
@@ -104,6 +106,28 @@ def main():
           % (len(pairs), tgt.size, np.mean(dists), np.std(dists)))
     for k, (a, b) in enumerate(pairs):
         print("  P%d: %d-%d" % (k + 1, a, b))
+
+    # ---- optional pair exclusion (--exclude-pairs) ------------------------------------
+    labels = ["P%d" % (k + 1) for k in range(len(pairs))]
+    tag = ""
+    if args.exclude_pairs.strip():
+        want = set()
+        for tok in args.exclude_pairs.split(","):
+            tok = tok.strip().upper().lstrip("P")
+            if tok:
+                want.add("P" + tok)
+        drop = [i for i, L in enumerate(labels) if L in want]
+        if not drop:
+            raise SystemExit("--exclude-pairs %r matched none of %s" % (args.exclude_pairs, labels))
+        for i in drop:
+            print("  EXCLUDING %s (%d-%d) from ensemble + per-pair fits"
+                  % (labels[i], pairs[i][0], pairs[i][1]))
+        keep_i = [i for i in range(len(pairs)) if i not in drop]
+        pairs = [pairs[i] for i in keep_i]
+        dists = [dists[i] for i in keep_i]
+        labels = [labels[i] for i in keep_i]
+        tag = "_no" + "".join(sorted(want, key=lambda x: int(x[1:])))
+        print("  -> %d pairs remain: %s" % (len(pairs), ", ".join(labels)))
 
     # ---- T axis (payload sweep; generate if absent) ---------------------------------------
     pj = os.path.join(sd, "analysis_payload.json")
@@ -275,8 +299,8 @@ def main():
         fk = fit_ss(T_us, sk[:, 0], ek[:, 0], args.j_init_mhz)
         pair_fits.append((pr, sk, ek, fk))
         if fk:
-            print("  P%d (%d-%d): J = %.1f +- %.1f kHz, tau = %.1f us, R2 = %.2f"
-                  % (k + 1, pr[0], pr[1], fk["J_MHz"] * 1e3, fk["J_err_MHz"] * 1e3,
+            print("  %s (%d-%d): J = %.1f +- %.1f kHz, tau = %.1f us, R2 = %.2f"
+                  % (labels[k], pr[0], pr[1], fk["J_MHz"] * 1e3, fk["J_err_MHz"] * 1e3,
                      fk["tau_us"], fk["r2"]))
     Js = [fk["J_MHz"] * 1e3 for _p, _s, _e, fk in pair_fits if fk]
     if Js:
@@ -302,7 +326,7 @@ def main():
                  "SS/PP centers %.2f/%.2f)" % (sid, len(pairs), A0, T1, np.nanmean(SS), np.nanmean(PP)),
                  fontsize=10)
     ax.legend(fontsize=8); ax.grid(alpha=0.25)
-    png1 = os.path.join(sd, "fit_dipolar_4state_%s.png" % sid)
+    png1 = os.path.join(sd, "fit_dipolar_4state_%s%s.png" % (sid, tag))
     fig.text(0.005, 0.005, png1, fontsize=5, color="0.4")
     fig.tight_layout(); fig.savefig(png1, dpi=130, bbox_inches="tight"); plt.close(fig)
     print("saved", png1)
@@ -353,7 +377,7 @@ def main():
                   fontsize=11)
     fig2.supxlabel("T [us]", fontsize=9); fig2.supylabel("corrected population", fontsize=9)
     fig2.tight_layout(rect=[0.01, 0.02, 1, 0.95])
-    png2 = os.path.join(sd, "fit_dipolar_perpair_%s.png" % sid)
+    png2 = os.path.join(sd, "fit_dipolar_perpair_%s%s.png" % (sid, tag))
     fig2.text(0.005, 0.005, png2, fontsize=5, color="0.4")
     fig2.savefig(png2, dpi=130, bbox_inches="tight"); plt.close(fig2)
     print("saved", png2)

@@ -116,8 +116,10 @@ def build():
     g().AWG.AWG556.Ch2.amplitude_scale = 0.9   # 60 G (RearrangeSTIRAPScan value); was 0.51 (20 G)
     g().AWG.AWG556.Ch2.pad_time_us = 0.0
 
-    g().AWG.AWG308.Ch1.shape = "fall_quintic"
+    g().AWG.AWG308.Ch1.shape = "chirped_fall_quintic"   # VERIFIED 2026-09-02 (data_20260902_140807)
     g().AWG.AWG308.Ch1.carrier_freq_MHz = 200
+    g().AWG.AWG308.Ch1.chirp_freq_MHz = 0.0            # 0 = unchirped (matches the verified run)
+    g().AWG.AWG308.Ch1.chirp_profile = "quintic"
     g().AWG.AWG308.Ch1.pulse_width_us = 3   # unchanged 20 G -> 60 G; was 5.7 (30 G mj=-1)
     g().AWG.AWG308.Ch1.max_amplitude_vpp = 8
     g().AWG.AWG308.Ch1.amplitude_scale = 1   # unchanged 20 G -> 60 G; was 0.9 (30 G)
@@ -136,7 +138,14 @@ def build():
     g().QICK.template = "Sine"   # "Sine" = single tone of g().QICK.duration; "Echo" = pi/2-T/2-pi-T/2-pi/2 echo spectroscopy
     # axis 1: QICK carrier-frequency sweep (MHz).
     
-    Freq_PTS = [round(float(v), 12) for v in np.linspace(11320, 11350, 30)]   # 2026-07-23 ZOOM on dip 3 (71 3S1 mj=-1 -> 71 3P2 mj=-2, sigma-): coarse scan
+    # 2026-09-02 ZOOM. The +-100 MHz / 2 MHz survey (data_20260902_142635, aborted 529/1010)
+    # put the line envelope at centroid 11274.1 MHz, half-depth band 11265-11277 MHz, but its
+    # point-to-point structure was ALIASED generalized-Rabi fringing (gain 10000 -> Omega/2pi
+    # ~10 MHz -> nulls every ~1 MHz, undersampled at 2 MHz). Re-scan +-8 MHz at 0.25 MHz
+    # (65 pts) with the gain dropped to a 1 us PI pulse so the lineshape is Fourier-limited
+    # (~0.8 MHz FWHM, ~3 samples across it) instead of power-broadened.
+    _F0 = 11275.3252
+    Freq_PTS = [round(float(v), 6) for v in np.arange(_F0 - 8.0, _F0 + 8.0 + 1e-9, 0.25)]
    
     # 2026-08-12: 20 G MW resonance, f0 = 11334.93 +- 0.02 MHz, from the LOW-POWER limit of the
     # 616-revival-destruction gain ladder (gains 8000/4000/2000/1000/500 -> FWHM 15.7/3.8/1.07/0.34/0.21
@@ -144,8 +153,12 @@ def build():
     # LOW -- do not take a centre from a saturated scan. Was 11318.7562 at 30 G.
     # !! 2026-08-19 60 G port: this is still the 20 G value -- the MW resonance moves with field.
     # RE-LOCATE at 60 G (freq sweep, Freq_PTS above) before trusting any fixed-freq scan here.
-    g().QICK.freq = 11275.3252  #11333.48 20 G value, STALE at 60 G (see note above)
-    g().QICK.gain = 10000                             # DAC gain (nonzero to emit; 0 = silent).
+    g().QICK.freq = _F0#.scan(1, Freq_PTS)                   # axis 1 (sole): MW carrier (MHz)
+    _GAIN = 2000   # 2026-09-03: one MW AMPLIFIER REMOVED -> gain->Rabi rescaling unknown,
+                   # run high gain to compensate. Was 2000 with the amp in.
+    g().QICK.gain = _GAIN   # discrimination pair; NOTE 2026-09-03: measured Omega/2pi = 4.42-4.47 MHz
+                            # at gain 2000 (T_pi 113 ns; jobs 1769/1793) -- the old job-943 T_pi ~250 ns
+                            # note was stale by ~2x.
     # NOTE the "20MHz Rabi, T_pi 25ns" claim previously on this line is NOT supported: a 2026-08-12
     # duration scan at gain 2000 (job 943) gives T_pi ~250 ns; rabi_freq below (4.825e6) is closer.
 
@@ -161,19 +174,50 @@ def build():
     #MW_TIME_PTS = [round(float(v), 12) for s in _WSTARTS for v in np.linspace(s, s + _WSPAN, _WPTS)]
     
     #MW_TIME_PTS = [round(float(v), 12) for v in np.linspace(0.05e-6, 1.0e-6, 40)]
-    MW_TIME_PTS = np.concatenate([np.linspace(0.01e-6, 0.15e-6, 24), np.linspace(1.01e-6, 1.1e-6, 16), np.linspace(2.01e-6, 2.1e-6, 16)])  # 25 pts
+    # 2026-09-03 gain-scaling DISCRIMINATION PAIR (MW amplitude noise vs B-field detuning; see
+    # the 09/03 Notion entry). Same window centres (~0.1/1.6/3.1 us) as job 1793 for direct
+    # comparison. x0.5 -> gain 1000, period ~452 ns, 475 ns windows at 25 ns steps;
+    # x2 -> gain 4000, period ~113 ns, the 1793 190 ns windows at 10 ns steps.
+    # MW POWER MONITOR (2026-09-03). Sensitivity to a FRACTIONAL Rabi/power change is
+    # dP/d(eps) = C(t) * Omega*t/2, which grows with t until the Gaussian envelope kills the
+    # contrast -> optimum at t = tau_g/sqrt(2) = 2.33 us, ~25x more sensitive than t_pi/2
+    # (t_pi/2 is the max of dP/dt, NOT of dP/d(eps) -- different derivative).
+    # NOT a single fixed duration: f is known only to ~+-0.1 MHz, which at 2.33 us is 1.55 rad
+    # of phase -- a lone point could land on a fringe extremum (zero sensitivity). Take a
+    # cluster about 2.33 us instead. Per time block, fit the fringe: PHASE -> Omega (MW power),
+    # AMPLITUDE -> contrast / detection fidelity. That separation is the point -- a single
+    # duration cannot tell MW noise from imaging noise.
+    # 2026-09-03 RE-CALIBRATION after removing one MW amplifier. The alias-safe survey (job 1813,
+    # 40 ns steps) MEASURED f(8000) = 0.9119 +- 0.0072 MHz, period 1097 ns -- i.e. the amp was
+    # worth a factor 19.6 in Rabi (25.8 dB in power) vs the 17.86 MHz gain 8000 would have given
+    # with it in. At 40 ns that was 27 pts/period, heavily oversampled. Resample to 120 ns:
+    # 9.1 pts/period, still 5.4 periods across 6 us, and 3x the shots per point.
+    #MW_TIME_PTS = np.arange(10, 1001, 40).astype(float) * 1e-9   # 25 pts, 40 ns step, 10-970 ns (through job 1842)
+    # 2026-09-04: MW gain + physical setup changed, expected f_Rabi ~4.5 MHz (period ~222 ns).
+    # Sampled for a proper f_Rabi + tau measurement: 20 ns step = ~11 pts/period (vs 5.6 on the
+    # 40 ns grid above) and span to 2.01 us = ~9 periods, so the damped cosine constrains tau too
+    # (job 1842's 970 ns window covered only ~0.35 tau, leaving tau unconstrained: 2.14 vs 3.97 us
+    # depending on envelope). Nyquist at 20 ns is 25 MHz, far above 4.5 MHz, so no aliasing risk.
+    MW_TIME_PTS = np.arange(10, 2011, 20).astype(float) * 1e-9    # 101 pts, 20 ns step, 10 ns - 2.01 us
     
-    g().QICK.duration.scan(1, MW_TIME_PTS)                          # sine template: single-tone length (s)
+    g().QICK.duration = 1e-6  # = 1.0e-6                        # single-tone MW on-time (s) -- 1 us
     g().QICK.rabi_freq = 4.825e6                      # derives t_pi2 = 1/(4*f), t_pi = 2*t_pi2
     g.runp().QICK = True                              # opt in -> engine_run wires setup/arm/cleanup
 
     g().Init.EOM616.Freq = 230.4316e6   # 60 G lock (pairs with carrier 118.8856); was 236.5e6 (20 G), 233.967e6 (30 G mj=-1)
 
-    g().Pushout.VRydTrap = 2.0   # unchanged 20 G -> 60 G; was 1 at 30 G
-    g().Pushout.BiasCoilCurrent.Ryd = 60   # 60 G high field; was 20, 30
-    g().Pushout.STIRAPDelay = 1.333e-6   # 60 G mid-plateau (data_20260818_174505: peak 1.222, plateau to 2.0); was 1.556e-6 (20 G)
+    g().Pushout.VRydTrap = 2 #2.0   # unchanged 20 G -> 60 G; was 1 at 30 G
+    g().Pushout.BiasCoilCurrent.Ryd.scan(1, np.linspace(50, 60, 11))   # 60 G high field; was 20, 30
+    g().Pushout.STIRAPDelay = 1.35e-6   # VERIFIED 2026-09-02 (data_20260902_140807, transfer 0.948); was 1.333e-6
     g().Pushout.STIRAPReverseDelay = -0.2e-6   # 60 G confirmed (data_20260819_095938: peak of -0.2..+0.3 plateau); was -0.0556e-6 (20 G)
-    g().Pushout.STIRAPGap.scan(1, MW_TIME_PTS)   #= 1.5e-6    #_echo_gap_s()            # sized to hold the whole spin echo
+    # 1 us, matching the 2026-09-02 forward verification. NOTE the 1.5 us wait inside
+    # _qick_trigger is a CALIBRATED MW-trigger-to-STIRAP-pulse offset, and _AWG_ch_switch
+    # carries the same 1.5 us -- MW and the reverse Ch2 switch stay aligned to each other
+    # independently of STIRAPGap, so it does NOT set a lower bound on the gap.
+    # FIXED gap (2026-09-03 rule): constant Rydberg hold for every point, so hold decay drops
+    # out of the envelope instead of co-scanning with MW time (the 1769/1793 confound).
+    g().Pushout.STIRAPGap = 1e-6 # = 6.5e-6   # FIXED, and >= the longest MW duration (6 us) so the pulse
+                                     # still plays inside the fwd->rev gap
     g().Pushout.IfReverse = 1                        # round-trip: excite -> MW -> de-excite
     g().Pushout.IfMW = 1                             # fire TTLQickTrig in the fwd->rev gap
     g().Pushout.IfPump = 0
@@ -234,7 +278,7 @@ def build():
     rp.NumPerGroup = 2000
     rp.loading_defocus = -5
     rp.NumImages = 3 if verify else 2
-    rp.Scramble = 1
+    rp.Scramble = 0
     rp.isGrid2 = 0
     rp.isInit = 0
     rp.isHC = 0

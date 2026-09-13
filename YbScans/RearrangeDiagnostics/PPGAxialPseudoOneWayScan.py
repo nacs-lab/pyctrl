@@ -249,11 +249,12 @@ def _bootstrap():
             sys.path.insert(0, p)
 
 
-def _image_patterns_json():
+def _image_patterns_json(pattern=None, phase_path=None):
     """Both camera frames are the SAME array at the SAME place -- the pseudo-one-way triangle ends
     at displacement 0, which IS the stored WGS phase. Name = the phase-file BASENAME (what the
     detection registry + expConfig ByPattern are keyed by)."""
-    it = {"name": PATTERN, "base_phase_path": PHASE_PATH, "order": "col",
+    it = {"name": pattern or PATTERN, "base_phase_path": phase_path or PHASE_PATH,
+          "order": "col",
           "legacy_zerniked": False}
     return json.dumps([it, dict(it)])
 
@@ -286,7 +287,8 @@ def build(direction=+1, mode="nsteps", steps=None, nsteps_list=None, period_mult
           fixed_nsteps=50, period_ms=BASE_PERIOD_MS,
           out_step_max=OUT_STEP_MAX, hold_ms=HOLD_MS, piston_corr=PISTON_CORR,
           ret_piston_corr=RET_PISTON_CORR, allow_over_cap=False, label_extra="",
-          img_pid=(0.80, 1.00), xcool=None, hcool=None, img_det=IMAG_DETUNING_MHZ):
+          img_pid=(0.80, 1.00), xcool=None, hcool=None, img_det=IMAG_DETUNING_MHZ,
+          inherit_loading=False, pattern=None, phase_path=None):
     """Build (do NOT submit) the 2-D pseudo-one-way ScanGroup. Returns ``(seq_name, g, meta)``.
 
     ``direction`` is the direction of the TESTED (return) move: +1 = +z, -1 = -z. The commanded
@@ -315,6 +317,10 @@ def build(direction=+1, mode="nsteps", steps=None, nsteps_list=None, period_mult
             "one, or pass allow_over_cap=True and say so in the run description."
             % (peak, PEAK_MAX_UM))
 
+    # Array override (added 2026-09-01): the 17x17_20um axial series needs a different
+    # pattern, and the depth knob spans 56x there vs 1.8x on 33x33_feedback11.
+    pattern = pattern or PATTERN
+    phase_path = phase_path or PHASE_PATH
     seq_name = "RearrangeCommSeq"
     g = ScanGroup()
     g().rearrange_kwargs.extras.n_rounds = 1
@@ -322,8 +328,8 @@ def build(direction=+1, mode="nsteps", steps=None, nsteps_list=None, period_mult
     # ---- warmup_kwargs (runp; forwarded ONCE at dequeue with reset_params) -----------------
     rp = g.runp()
     rp.warmup_kwargs.model_filename = MODEL_FILENAME
-    rp.warmup_kwargs.initial_phase = PHASE_PATH
-    rp.warmup_kwargs.final_phase = PHASE_PATH
+    rp.warmup_kwargs.initial_phase = phase_path
+    rp.warmup_kwargs.final_phase = phase_path
     rp.warmup_kwargs.extras.grid_rotation = 90
     rp.warmup_kwargs.extras.initial_phase_zernike = list(BAKED_ZERNIKE)
     rp.warmup_kwargs.extras.final_phase_zernike = list(BAKED_ZERNIKE)
@@ -340,7 +346,15 @@ def build(direction=+1, mode="nsteps", steps=None, nsteps_list=None, period_mult
     # LOADING RECOVERY (jobs 309/310): 399 blue capture had drifted off plateau -- the old
     # -40/-42 MHz work-point read 0.002 fill. -48 MHz + 0.25 s restores 0.467. Applied as a
     # per-scan g() override; expConfig.py is NOT modified.
-    g().BlueMOT.FreqDetuning = BLUE_DETUNING_MHZ * 1e6
+    # 2026-08-31: `inherit_loading` SKIPS this whole block.  The constants below were measured
+    # 2026-08-07..09; the 399 blue detuning walks ~6 MHz/day and the GreenMOT bias-X resonance is
+    # near-vertical (0.01 A = full loading vs zero, per the runbook).  A session that has just
+    # re-tuned loading -- as 08-31 did, `33x33_feedback11 loading recovery 08-31: GreenMOT bias
+    # X x Y grid` -- leaves the CURRENT optimum in expConfig / the ByPattern overlay, and g()
+    # BEATS that overlay, so pinning 3-week-old constants would silently overwrite a fresh
+    # calibration with a stale one.  Inheriting runs the scan in the state the rig is actually in.
+    if not inherit_loading:
+        g().BlueMOT.FreqDetuning = BLUE_DETUNING_MHZ * 1e6
 
     # GREENMOT BIAS-X (jobs 375 + 376, 2026-08-07 05:50). expConfig holds 0.040 A (the 06/05
     # optimum); the resonance has DRIFTED and 0.040 is now DEAD -- job 375 measured 0.002
@@ -354,9 +368,10 @@ def build(direction=+1, mode="nsteps", steps=None, nsteps_list=None, period_mult
     # over the same window, which drifts the field and hence the cloud position relative to
     # the array -- the runbook flags bias-X as a near-vertical resonance where 0.01 A is the
     # difference between full loading and zero, and this is that failure in the wild.
-    g().GreenMOT.BiasCoilCurrent.X = BLUE_BIAS_X_A   # 08-08 job 594: rate plateau AND x-gradient null
-    g().BlueMOT.LoadingTime = BLUE_LOADING_TIME_S
-    g().LAC.Time = LAC_TIME_S                        # 08-09 user request: 30 -> 35 ms
+    if not inherit_loading:
+        g().GreenMOT.BiasCoilCurrent.X = BLUE_BIAS_X_A   # 08-08 job 594: rate plateau + x-grad null
+        g().BlueMOT.LoadingTime = BLUE_LOADING_TIME_S
+        g().LAC.Time = LAC_TIME_S                        # 08-09 user request: 30 -> 35 ms
 
     # IMAGING (jobs 331 + 340/341/342, 2026-08-07). Pinned EXPLICITLY at the documented
     # ByPattern 33x33_feedback11 values so every descriptor records them; this is NOT a
@@ -521,8 +536,8 @@ def build(direction=+1, mode="nsteps", steps=None, nsteps_list=None, period_mult
     rk.extras.hw_sequence = False
     rk.extras.ifEnhanced = True
     rk.extras.z4 = DEFOCUS
-    rk.extras.initial_pattern = PATTERN
-    rk.extras.final_pattern = PATTERN
+    rk.extras.initial_pattern = pattern
+    rk.extras.final_pattern = pattern
 
     # ---- run params ---------------------------------------------------------------------------
     rp.NumPerGroup = 100000                   # upper bound; --reps sets the pass count
@@ -533,7 +548,7 @@ def build(direction=+1, mode="nsteps", steps=None, nsteps_list=None, period_mult
     rp.isInit = 0
     rp.isHC = 0
     rp.useScanLongSlmLock = 1
-    rp.imagePatternsJson = _image_patterns_json()
+    rp.imagePatternsJson = _image_patterns_json(pattern, phase_path)
 
     meta = dict(mode=mode, direction=direction, steps=steps, nsteps_list=nsteps_list,
                 period_mults=period_mults, fixed_nsteps=fixed_nsteps, period_ms=period_ms,
@@ -687,6 +702,14 @@ if __name__ == "__main__":
                          "measured 2026-08-09 rounds 103/104. Pass the old -5.0 to reproduce a "
                          "pre-boundary run.")
     ap.add_argument("--note", default="", help="appended verbatim to the run description")
+    ap.add_argument("--pattern", default=None,
+                    help="loading pattern name (default %s)" % PATTERN)
+    ap.add_argument("--phase-path", default=None, dest="phase_path",
+                    help="server-side phase file (default %s)" % PHASE_PATH)
+    ap.add_argument("--inherit-loading", action="store_true",
+                    help="do NOT pin the 08-07/08-09 blue-detuning / bias-X / LoadingTime / "
+                         "LAC.Time g() overrides; run in whatever state the rig is currently "
+                         "calibrated to (use after a fresh loading re-tune)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true", help="required to submit")
     args = ap.parse_args()
@@ -701,7 +724,8 @@ if __name__ == "__main__":
               label_extra=args.note, img_pid=tuple(args.img_pid),
               xcool=tuple(args.xcool) if args.xcool else None,
               hcool=tuple(args.hcool) if args.hcool else None,
-              img_det=args.img_det)
+              img_det=args.img_det, inherit_loading=args.inherit_loading,
+              pattern=args.pattern, phase_path=args.phase_path)
 
     if args.dry_run:
         _seq, _g, _meta = build(**kw)

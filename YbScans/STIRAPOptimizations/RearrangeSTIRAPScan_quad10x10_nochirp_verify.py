@@ -1,4 +1,12 @@
-"""RearrangeSTIRAPScan.py -- STIRAP push-out survival on a REARRANGED array.
+"""RearrangeSTIRAPScan_quad10x10_nochirp_verify.py -- RE-RUN of the 2026-08-30 no-chirp
+BASELINE VERIFY on quad_10x10 (job 1605, data_20260830_183152, S = 0.4351 +- 0.0027).
+
+A byte-for-byte replay of that fixed point: chirp_freq_MHz = 0 scalar, Init.EOM616 = 228.830 MHz
+scalar, AWG556 Ch1 carrier = 118.150 MHz, pattern quad_10x10, no swept params, --reps 100.
+A separate file so the in-place ladder_spacing config in RearrangeSTIRAPScan.py is not clobbered.
+The built params are asserted identical to 183152's logged ScanGroup base before submitting.
+
+STIRAP push-out survival on a REARRANGED array.
 
 Builds the hybrid ScanGroup (seq = ``RearrangeSTIRAPSeq``): the SLM-rearrangement prologue of
 SLMRearrangementScan (load LOADING pattern -> img1 -> rearrange to TARGET) followed by
@@ -130,14 +138,8 @@ def build():
     # dimer_40um REDO forward lock: co-vary argmin (data_20260828_124812), 0.0709 +- 0.0139;
     # broad floor (6 pts within 1 SEM), ridge from freq-2D data_20260828_121858.
     CARRIER_LIST_MHZ = None  # locked below
-    # 2026-09-10: Rydberg state switched 71 3S1 -> 66 3S1, so EVERY pre-09-10 frequency
-    # lock above is void. Both 556 carriers reset to today's MEASURED 60 G 556 resonance
-    # 119.0363 (scan 20260910174224, FWHM 127 kHz, R^2 0.994, push amp 0.08). The ridge fit
-    # carrier = 119.1565 + 0.926*(EOM616 - 230.55) is a LOCAL 71 3S1 linearization -- do NOT
-    # extrapolate it across the state change. Two-photon optimum still needs a fresh freq-2D.
-    # was: Ch1 118.1133 / Ch2 118.5326 (71 3S1, 08-28 dimer co-vary argmins).
-    g().AWG.AWG556.Ch1.carrier_freq_MHz = 119.2863
-    g().AWG.AWG556.Ch1.pulse_width_us.scan(2, [1.0000, 1.4000, 1.8000, 2.2000, 2.6000, 3.0000, 3.4000, 3.8000, 4.2000, 4.6000, 5.0000])
+    g().AWG.AWG556.Ch1.carrier_freq_MHz = 118.1500   # quad_10x10 lock (data_20260830_183152)
+    g().AWG.AWG556.Ch1.pulse_width_us = 3
     g().AWG.AWG556.Ch1.max_amplitude_vpp = 15
     g().AWG.AWG556.Ch1.amplitude_scale = 0.87  # 08-06 amp scan monotonic to ceiling (power-limited)
 
@@ -145,14 +147,16 @@ def build():
     # dimer_40um reverse: sweep data_20260828_054718 was pure noise (~22 events/pt, no
     # peak) -- reverse params ADOPTED from the clean geometries (offset +0.09; delay
     # mid-range), NOT measured on this pattern.
-    g().AWG.AWG556.Ch2.carrier_freq_MHz = 119.0363  # was 118.5326 (71 3S1); on resonance pending freq-2D
+    g().AWG.AWG556.Ch2.carrier_freq_MHz = 118.5428
     g().AWG.AWG556.Ch2.pulse_width_us = 2.0  # widths 2.0/2.0 kept (08-19 top-N verify tied-best)
     g().AWG.AWG556.Ch2.max_amplitude_vpp = 15
     g().AWG.AWG556.Ch2.amplitude_scale = 0.9
     g().AWG.AWG556.Ch2.pad_time_us = 0.0
 
-    g().AWG.AWG308.Ch1.shape = "fall_quintic"
+    g().AWG.AWG308.Ch1.shape = "chirped_fall_quintic"
     g().AWG.AWG308.Ch1.carrier_freq_MHz = 200
+    g().AWG.AWG308.Ch1.chirp_freq_MHz = 0.0   # NO chirp (the incumbent); byte-identical to fall_quintic
+    g().AWG.AWG308.Ch1.chirp_profile = "quintic"
     g().AWG.AWG308.Ch1.pulse_width_us = 3
     g().AWG.AWG308.Ch1.max_amplitude_vpp = 8  # amp saturated by 7.5 (07-15)
     g().AWG.AWG308.Ch1.amplitude_scale = 1
@@ -186,21 +190,17 @@ def build():
     #g().Init.EOM616.Freq.scan(1, np.asarray(FREQ_EOM616_INIT_MHZ) * 1e6)
     #g().Pushout.EOM616.Freq.Final.scan(1, np.asarray(FREQ_EOM616_FINAL_MHZ) * 1e6)
     EOM616_LIST_MHZ = None  # locked below
-    # 2026-09-10 (66 3S1): EOM616 on today's MEASURED 308 revival 343.839 MHz
-    # (scan 20260910213014, FWHM 6.7 MHz; the 17:54 fit gave 343.9459 at FWHM 20.1 MHz --
-    # peak stable, line NARROWED as the 308 coupling fell over the evening).
-    # was 228.7775e6 (71 3S1 every_other lock; that state's revival sat ~229-230 MHz).
-    g().Init.EOM616.Freq = 344.7190e6
-    #g().Pushout.EOM616.Freq.Final = 229.6655e6  # UNUSED (chirp disabled in step)
+    g().Init.EOM616.Freq = 228.83e6   # quad_10x10 stored 616 lock
+    g().Pushout.EOM616.Freq.Final = 229.6655e6  # UNUSED (chirp disabled in step)
 
     g().Pushout.VRydTrap = 2.0
     g().Pushout.BiasCoilCurrent.Ryd = 60
 
-    g().Pushout.STIRAPDelay.scan(1, np.array([0.4000, 0.6000, 0.8000, 1.0000, 1.2000, 1.4000, 1.6000, 1.8000, 2.0000, 2.2000, 2.4000]) * 1e-6)
-    g().Pushout.STIRAPReverseDelay = 1.7500e-6
+    g().Pushout.STIRAPDelay = 1.3500e-6
+    g().Pushout.STIRAPReverseDelay = 0.0000e-6
     g().Pushout.STIRAPPadTime = 2e-6  # 07-21 mj=0 quad ridge-3D optimum
     # lifetime: forward -> hold STIRAPGap -> reverse; RETURN vs gap = decay curve.
-    GAP_PTS = np.geomspace(0.1e-6, 50e-6, 20)
+    GAP_PTS = np.geomspace(0.1e-6, 500e-6, 30)
     g().Pushout.STIRAPGap = 1e-6 #.scan(1, GAP_PTS)
 
     g().Pushout.IfReverse = 0
@@ -246,7 +246,7 @@ def build():
     g().rearrange_kwargs.extras.overdrive = False
     g().rearrange_kwargs.extras.dynamic = False
     g().rearrange_kwargs.extras.max_step_size = 0.75
-    g().rearrange_kwargs.extras.pattern = "quad_10x10"  # chain
+    g().rearrange_kwargs.extras.pattern = "quad_10x10"
     g().rearrange_kwargs.extras.ifEnhanced = False
     g().rearrange_kwargs.extras.precompute = False
     g().rearrange_kwargs.extras.precompute_host = False
@@ -257,7 +257,7 @@ def build():
     g().rearrange_kwargs.extras.scienceStep = "stirap"  # "rnr" = RnR alternative
 
     # ---- run params (runp) ---------------------------------------------------------------
-    rp.NumPerGroup = 20  # chain
+    rp.NumPerGroup = 30  # chain
     rp.loading_defocus = -5  # ANSI z4 (rad) on the loading phase; MATCH rearrange_kwargs.extras.z4
     rp.NumImages = 3 if verify else 2
     # MUST be 0 whenever EOM616 is swept (random EOM jumps kick the 616 out of lock); 1 otherwise.
@@ -272,7 +272,7 @@ def build():
     return g
 
 
-def RearrangeSTIRAPScan(url=None, reps=10):
+def RearrangeSTIRAPScan(url=None, reps=100):
     """Build + SUBMIT the scan to the running pyctrl backend. Returns the descriptor id."""
     from yb_start_scan import ybStartScan
 
@@ -280,14 +280,13 @@ def RearrangeSTIRAPScan(url=None, reps=10):
     opts = {}
     if reps is not None:
         opts["rep"] = reps
-    did = ybStartScan(RearrangeSTIRAPSeq, g, url=url, label="RearrangeSTIRAPScan",
+    did = ybStartScan(RearrangeSTIRAPSeq, g, url=url, label="RearrangeSTIRAPScan_quad10x10_nochirp_verify",
                       description=(
-                          "GEOMETRY CAMPAIGN 08-28, dimer_40um step 7/7 (step-6 tau "
-                          "unmeasurable at this fill): RECOVERY manifold lifetime, "
-                          "IfRecoveryIonization=1, IfReverse=0, gap 0.1-500 us 30 log pts x 20 "
-                          "reps at the fwd lock. Recovery curve, SHOT-TO-SHOT errors."),
+                          "quad_10x10 no-chirp baseline RE-RUN of data_20260830_183152: "
+                          "chirp_freq_MHz = 0, no swept params, 556 = 118.1500 MHz, "
+                          "EOM616 = 228.8300 MHz, %s reps." % reps),
                       **opts)
-    print("submitted RearrangeSTIRAPScan -> descriptor id %s (url=%s, reps=%s, verify=%s, "
+    print("submitted RearrangeSTIRAPScan_quad10x10_nochirp_verify -> descriptor id %s (url=%s, reps=%s, verify=%s, "
           "NumImages=%d)" % (did, url or "default", reps, VERIFY_IMAGE, 3 if VERIFY_IMAGE else 2))
     return did
 
@@ -296,7 +295,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit RearrangeSTIRAPScan to the pyctrl backend.")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=10,
+    ap.add_argument("--reps", type=int, default=100,
                     help="passes over the sweep (0 = forever)")
     args = ap.parse_args()
     RearrangeSTIRAPScan(url=args.url, reps=args.reps)

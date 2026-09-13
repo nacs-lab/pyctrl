@@ -58,8 +58,48 @@ def LACScan(url=None, reps=None):
     # ONLY via config, or deliberately here with a dated comment saying why. ***
 
     # ---- ACTIVE sweep -----------------------------------------------------
-    #g().GreenMOT.BiasCoilCurrent.X.scan(1, np.linspace(0.0335, 0.0375, 9))
-    #g().GreenMOT.BiasCoilCurrent.Y.scan(2, np.linspace(0.218, 0.258, 11))
+    # 2026-08-31: loading degraded (run 20260831105226 on 33x33_feedback11: mean 0.28 at the
+    # ByPattern LoadingTime 0.6 s -- i.e. DEEP in saturation yet only 0.28 -- CV 48%,
+    # corr(load,x) = -0.68). A strong x gradient + a low ceiling is the MOT-position signature,
+    # so re-map the GreenMOT bias X x Y plane WIDE around the committed X 0.0353 / Y 0.244
+    # rather than refining around it (the 08-27 fit is untrusted: it ran at a saturated 0.8 s).
+    # Round 1 (scan 20260831110657, aborted at 56 shots = 1 shot/pt -- enough: the contrast is
+    # dead-vs-0.5, far above shot noise). X is a RAZOR cliff: alive only 0.032-0.036, peak
+    # 0.034 (load 0.50 at Y 0.25), and 0.002-0.005 (dead) at X <= 0.030 or >= 0.038. The in-use
+    # X 0.0353 sits ON the upper flank (0.036 -> 0.084), which is the low ceiling + corr_x -0.67
+    # gradient seen all morning. Y is broad, peak ~0.25 (0.23 -> 0.41, 0.27 -> 0.31, 0.31 -> 0.02).
+    # Round 2 = zoom: 0.5 mA in X across the live window, 15 mA in Y around the peak.
+    # Round 2 (scan 20260831110858, 174 shots): rate max X 0.0340 / Y 0.235 = 0.435 +/- 0.011,
+    # corr_x nulls at X 0.0342, corr_y at Y 0.238 -> committed X 0.0340 / Y 0.2375 to expConfig.
+    #g().GreenMOT.BiasCoilCurrent.X.scan(1, np.linspace(0.0325, 0.0375, 11))   # 0.5 mA step
+    #g().GreenMOT.BiasCoilCurrent.Y.scan(2, np.linspace(0.220, 0.280, 5))      # 15 mA step
+    # VERIFY (scan 20260831111519, 40 shots at the committed point): load 0.471 +/- 0.010,
+    # CV 23%, corr_x -0.10, corr_y -0.19, no dead sites.
+    # Round 3 = fine re-map AROUND the committed point (X 0.25 mA, Y 7.5 mA) to confirm the
+    # peak is interior at this resolution and to trim the residual corr_y -0.19.
+    # Round 3 (scan 20260831122607, 180 shots, 12:26): the map MOVED. Rate EDGE-PINNED at the
+    # top X (0.035 -> 0.586) and corr_x now nulls at X ~0.0350, vs X 0.0342 at 11:09 -- a +0.8 mA
+    # shift of the optimum in ~1.3 h. In between, job 1619 (RydbergSpectrum556Scan_60G) drove the
+    # 60 G Ryd coil, so coil heating / residual field is the prime suspect for the walk.
+    # Round 4 = extend X upward to find the turnover; Y is broad and near-nulled (corr_y ~0 at
+    # 0.2365-0.2375), so spend the shots on X.
+    # Round 4 (scan 20260831123108): interior peak X 0.0355 / Y 0.2375 = 0.590, vertices
+    # X 0.03545 / Y 0.2394 -> committed X 0.0354 / Y 0.2390 to expConfig.
+    #g().GreenMOT.BiasCoilCurrent.X.scan(1, np.linspace(0.0345, 0.0385, 9))     # 0.5 mA step
+    #g().GreenMOT.BiasCoilCurrent.Y.scan(2, [0.230, 0.2375, 0.245])             # 7.5 mA, 3 pts
+    # VERIFY: no sweep -- single point straight from expConfig.
+    # 2026-09-01 21:20 loading recovery: loading went bimodal/near-zero at the committed X 0.0354
+    # (jobs 1724/1725, 3-350 loaded of 1068 shot-to-shot) while jobs 1722/1723 minutes earlier
+    # loaded 0.43-0.45 with a g() pin at X 0.03441 -> the razor X optimum has walked again.
+    # Round 1 = 1-D X re-map across the whole live window at the committed Y 0.239.
+    # Round 1 (scan 20260901212010, job 1728, 52 shots, 4/pt): interior peak X 0.0355 = 0.583
+    # (4 reps 0.563/0.581/0.588/0.601, no dips), corr_x AND corr_y null there (+0.03/-0.02),
+    # CV 44%; FW ~2.5 mA (0.0340 -> 0.34, 0.0370 -> 0.21). The committed X 0.0354 IS the peak ->
+    # NO CHANGE. So the 1724/1725 collapse was not a MOT walk: plain TweezerLoadingSeq loads 0.58
+    # at the committed point while the RnR seq under the aborting warm-WGS precompute read
+    # 3-350/1068. Imaging check job 1729 (ImagingPushoutSurvivalSeq, 0 pushout, 60 shots):
+    # load 0.524, S 0.9921 +- 0.0006, per-site d' 6.75/7.00, fidelity 0.9995 -> imaging healthy.
+    #g().GreenMOT.BiasCoilCurrent.X.scan(1, np.linspace(0.0320, 0.0380, 13))    # 0.5 mA step
 
     # ---- MENU: other sweeps / pins, uncomment as needed -------------------
     # Loading params normally come from expConfig (base GreenMOT.BiasCoilCurrent,
@@ -67,7 +107,7 @@ def LACScan(url=None, reps=None):
     # overrode LoadingTime during rounds 4/5 on 2026-08-27. Re-comment when done.
     #
     # BlueMOT (capture / timing)
-    g().BlueMOT.LoadingTime.scan(1, np.linspace(0.2, 0.8, 12)) #= 0.8      # 2026-07-15 long blue load; 08-27 work-point was 0.28
+    #g().BlueMOT.LoadingTime.scan(1, np.linspace(0.2, 0.8, 12)) #= 0.8      # 2026-07-15 long blue load; 08-27 work-point was 0.28  [08-31: OFF -- LoadingTime comes from ByPattern (0.6 s)]
     #g().BlueMOT.LoadingTime = 0.30
     #g().BlueMOT.LoadingTime.scan(1, np.linspace(0.05, 0.50, 12))   # 0a cliff curve
     #g().BlueMOT.FreqDetuning = -44e6   # the speed lever (plateau -44..-48 on feedback9)
@@ -130,9 +170,14 @@ def LACScan(url=None, reps=None):
         # rep=0 -> run forever; rep>=1 -> that many passes; omit -> StackNum from NumPerGroup.
         opts["rep"] = reps
 
-    desc = ("33x33_feedback11 (z4=-5) loading opt: GreenMOT bias X x Y grid at the committed "
-            "LoadingTime work-point, img1 only. Reads loading RATE + UNIFORMITY (CV, x/y gradient) "
-            "per cell.")
+    desc = ("33x33_feedback11 loading recovery 09-01 evening, Round 1: GreenMOT bias X 1-D re-map "
+            "0.0320-0.0380 @ 0.5 mA at the committed Y 0.239 (img1 only, TweezerLoadingSeq, no rearrange). "
+            "Jobs 1722/1723 loaded 0.43-0.45 with a g() pin at X 0.03441; the committed X 0.0354 (jobs 1724/1725) "
+            "read 3-350 loaded of 1068 shot-to-shot -> the razor X optimum walked again. Loading sagged through job 1723 "
+            "(0.48 -> 0.37, more sub-0.15 shots) and job 1724/1725 read 3-350 loaded of 1068 shot-to-shot "
+            "(bimodal) with all 1724 shots dropped in the SLM precompute abort. Oven 368 C, 399/556 wavemeter flat. "
+            "This run separates a physical loading problem from the rearrange-abort path: per-shot loading, "
+            "bimodality, CV, x/y gradient.")
     did = ybStartScan("TweezerLoadingSeq", g, url=url, label="LACScan",
                       description=desc, **opts)
     # print("submitted LACScan sweep (%d pts %.3f..%.3f A) -> descriptor id %s (url=%s)"

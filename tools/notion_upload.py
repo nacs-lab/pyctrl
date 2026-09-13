@@ -86,14 +86,25 @@ def main():
     H = {"Authorization": "Bearer " + token, "Notion-Version": NOTION_VERSION}
 
     if args.list:
-        r = requests.get("%s/blocks/%s/children?page_size=100" % (API, page), headers=H, timeout=30)
-        if r.status_code >= 400:
-            sys.exit("LIST FAILED %s: %s" % (r.status_code, r.text[:400]))
-        for b in r.json().get("results", []):
-            t = b.get("type")
-            rich = b.get(t, {}).get("rich_text", []) if isinstance(b.get(t), dict) else []
-            snip = "".join(x.get("plain_text", "") for x in rich)[:70].replace("\n", " ")
-            print("%s  %-18s %s" % (b["id"], t, snip))
+        # paginate: a long day-page has far more than the 100-block API page size
+        cursor, n = None, 0
+        while True:
+            url = "%s/blocks/%s/children?page_size=100" % (API, page)
+            if cursor:
+                url += "&start_cursor=%s" % cursor
+            r = requests.get(url, headers=H, timeout=30)
+            if r.status_code >= 400:
+                sys.exit("LIST FAILED %s: %s" % (r.status_code, r.text[:400]))
+            j = r.json()
+            for b in j.get("results", []):
+                t = b.get("type")
+                rich = b.get(t, {}).get("rich_text", []) if isinstance(b.get(t), dict) else []
+                snip = "".join(x.get("plain_text", "") for x in rich)[:70].replace("\n", " ")
+                print("%4d  %s  %-18s %s" % (n, b["id"], t, snip))
+                n += 1
+            if not j.get("has_more"):
+                break
+            cursor = j.get("next_cursor")
         return
 
     # gather image specs (positional + manifest)
