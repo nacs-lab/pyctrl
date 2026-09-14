@@ -148,6 +148,8 @@ def STIRAPHighFieldPushoutStep(s, g):
     s.add('TTL556MOTbShutter', 0)
     s.add('TTL556MOTcShutter', 0)
     
+    s.add('Freq556RydbergHF', 120e6).add('Amp556RydbergHF', 0.9)
+    
     # Wait until the coil current settles. Scannable since 2026-08-06 (was a hardcoded 50 ms): any
     # EXPOSURE-PROPORTIONAL loss -- leak light on any path, background collisions -- scales with this
     # wait, while a fixed cost (the trap chop, the ionization pulse) does not. Safe to shorten in a
@@ -158,7 +160,6 @@ def STIRAPHighFieldPushoutStep(s, g):
     # Change trap depth for Rydberg.
     V_RydTrap = g.VRydTrap(0.4)
     s.add_step(1e-3).add('VSLMservo', ramp_to(V_RydTrap))
-    s.add('Freq556RydbergHF', 120e6).add('Amp556RydbergHF', 0.9)
 
     s.wait(3e-3)  # wait for the ramp to finish
 

@@ -394,7 +394,7 @@ def _consts():
     }
 
     # 616 AOM diverted/idle amplitude (RydbergPushoutStep restores this after pushout)
-    c["AOM616Divert"] = {"Amp": 0.15}
+    c["AOM616Divert"] = {"Amp": 0.12}
 
     # SLM trap modulation
     c["SLMTrapModulation"] = {
