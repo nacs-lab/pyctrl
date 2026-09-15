@@ -27,6 +27,9 @@ if ROOT not in sys.path:
 import numpy as np
 from scipy.optimize import curve_fit
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _detection_health import detection_health, format_health, run_provenance, format_provenance
+
 from yb_analysis.analysis.unpack import unpack_scan_logicals
 from yb_analysis.analysis.probabilities import prob11_site_resolved
 
@@ -88,11 +91,33 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("scan", help="scan_id (e.g. 20260630144109) or a scan_dir path")
     ap.add_argument("--min-sep", type=float, default=0.6, help="min dip separation (MHz) for seeding")
+    ap.add_argument("--max-shots", type=int, default=None,
+                    help="fit only the FIRST N shots of the scan (e.g. 200). The scan sweeps its "
+                         "points in order, so a truncated fit is a partial-rep fit; the plot is "
+                         "saved with a _firstN suffix so the full-scan plot survives")
     ap.add_argument("--no-plot", action="store_true")
+    ap.add_argument("--bare", type=float, default=None,
+                    help="bare (un-dressed) line center in MHz, swept-axis -- prints the doublet "
+                         "midpoint offset, the symmetry check that the doublet really is AT dressing")
+    ap.add_argument("--min-shots-per-pt", type=float, default=12.0,
+                    help="advisory shots/pt target (default 12; low is only a warning when the fit "
+                         "is otherwise resolved -- see GATES)")
+    ap.add_argument("--optical-factor", type=float, default=2.0,
+                    help="swept-axis -> optical multiplier. The swept Pushout.Green.Freq AOM is "
+                         "DOUBLE-pass, so optical = 2x swept, and it is the OPTICAL splitting that "
+                         "equals Omega_308/2pi. Use 1.0 only for a single-pass axis.")
     args = ap.parse_args()
 
     scan_dir = _resolve_dir(args.scan)
     scan, sid, sid_arr, l1, l2, nshot = _snapshot(scan_dir)
+    if args.max_shots is not None:
+        if args.max_shots < 1:
+            raise SystemExit("--max-shots must be >= 1")
+        if args.max_shots > nshot:
+            print("  NOTE: --max-shots %d > %d shots in the scan; using all of them"
+                  % (args.max_shots, nshot))
+        nshot = min(nshot, args.max_shots)
+        sid_arr, l1, l2 = sid_arr[:nshot], l1[:nshot], l2[:nshot]
     sp, logic1, logic2, reps = unpack_scan_logicals(scan, seq_ids=sid_arr, logicals_img1=l1, logicals_img2=l2)
     sp = np.asarray(sp, float)
     x = sp.reshape(sp.shape[0], -1)[:, 0] / 1e6      # MHz
@@ -114,24 +139,102 @@ def main():
     lo = [0, 0, x.min(), 0.05, 0, x.min(), 0.05]
     hi = [1.2, 1.5, x.max(), span, 1.5, x.max(), span]
     try:
-        p, _ = curve_fit(_double_dip, xf, yf, p0=p0, bounds=(lo, hi), maxfev=40000)
+        p, pcov = curve_fit(_double_dip, xf, yf, p0=p0, bounds=(lo, hi), maxfev=40000)
     except Exception as e:
         raise SystemExit("double-dip fit failed: %s" % e)
     r2 = 1 - np.sum((yf - _double_dip(xf, *p)) ** 2) / np.sum((yf - yf.mean()) ** 2)
 
-    # order the two components by center
-    comps = sorted([(p[2], abs(p[3])), (p[5], abs(p[6]))], key=lambda c: c[0])
-    c1, w1 = comps[0]; c2, w2 = comps[1]
-    split = abs(c2 - c1)
+    # Parameter errors. The fit is UNWEIGHTED, so curve_fit already scales pcov by the residual
+    # variance (ssr/(n-p)); sqrt(diag(pcov)) is therefore the residual-scaled standard error -- the
+    # same number a bootstrap gives (verified 2026-09-15: pcov 0.0024 vs an 800-sample bootstrap
+    # 0.0025 MHz on this splitting). So DO NOT hand-roll a bootstrap; these are the errors to quote.
+    perr = np.sqrt(np.diag(pcov))
 
-    print("AT scan %s | %d shots, %d pts, window %.2f-%.2f MHz, loading ~%.2f"
-          % (sid, nshot, xf.size, x.min(), x.max(), float(np.nanmean(M))))
-    print("  dip1 = %.4f MHz (FWHM %.0f kHz) | dip2 = %.4f MHz (FWHM %.0f kHz)"
-          % (c1, w1 * 1e3, c2, w2 * 1e3))
-    print("  AT SPLITTING = %.4f MHz   R^2 = %.3f%s"
-          % (split, r2, "   *** LOW R^2 -- check the plot / --min-sep ***" if r2 < 0.7 else ""))
-    out = {"scan_id": sid, "n_shots": nshot, "dip1_MHz": c1, "dip2_MHz": c2,
-           "fwhm1_kHz": w1 * 1e3, "fwhm2_kHz": w2 * 1e3, "splitting_MHz": split, "r_squared": r2}
+    # order the two components by center, carrying their errors
+    comps = sorted([(p[2], abs(p[3]), p[1], perr[2], perr[3]),
+                    (p[5], abs(p[6]), p[4], perr[5], perr[6])], key=lambda c: c[0])
+    c1, w1, A1, ec1, ew1 = comps[0]
+    c2, w2, A2, ec2, ew2 = comps[1]
+    split = abs(c2 - c1)
+    esplit = float(np.hypot(ec1, ec2))
+
+    resid = yf - _double_dip(xf, *p)
+    resid_std = float(np.std(resid))
+    shots_per_pt = float(nshot) / xf.size
+    loading = float(np.nanmean(logic1))
+    avg_surv = float(np.nanmean(M))
+    mean_fwhm = 0.5 * (w1 + w2)
+    resolution = split / mean_fwhm if mean_fwhm > 0 else float("inf")
+    depth_sigma = (min(A1, A2) / resid_std) if resid_std > 0 else float("inf")
+    edge_margin = min(c1 - x.min(), x.max() - c2)
+    W_LO = 0.05  # the width lower bound used in `lo` above
+
+    # --- detection health (never fatal: the fit stands even if this cannot be read)
+    health = detection_health(scan_dir, sid, scan_json=scan, n_shots=nshot)
+
+    # --- gates: the five that decide whether the FIT itself is sound
+    gates = [("R2>=0.95", r2 >= 0.95, "R2 %.3f" % r2),
+             ("resolved>=2xFWHM", resolution >= 2.0, "%.1fx FWHM" % resolution),
+             ("depth>=5sigma", depth_sigma >= 5.0, "%.0fsigma" % depth_sigma),
+             ("not-edge-pinned", edge_margin >= 0.05 * span, "%.2f MHz margin" % edge_margin),
+             ("widths-off-bound", min(w1, w2) > 1.01 * W_LO, "min FWHM %.0f kHz" % (min(w1, w2) * 1e3))]
+    fit_ok = all(ok for _, ok, _ in gates)
+    # shots/pt is ADVISORY: the guideline exists to get the doublet resolved, so a low count does not
+    # condemn a fit that is already resolved with significant depth. Never escalate on this alone.
+    shots_ok = shots_per_pt >= args.min_shots_per_pt
+
+    k = args.optical_factor
+    print("AT scan %s | %d shots, %d pts (%.1f shots/pt), window %.2f-%.2f MHz"
+          % (sid, nshot, xf.size, shots_per_pt, x.min(), x.max()))
+    print("  " + format_provenance(run_provenance(scan_dir, sid, scan_json=scan)))
+    print("  loading %.2f | avg survival %.2f | off-resonant baseline %.3f"
+          % (loading, avg_surv, p[0]))
+    print("  dip1 = %.4f +/- %.4f MHz (FWHM %.0f +/- %.0f kHz, depth %.3f)"
+          % (c1, ec1, w1 * 1e3, ew1 * 1e3, A1))
+    print("  dip2 = %.4f +/- %.4f MHz (FWHM %.0f +/- %.0f kHz, depth %.3f)"
+          % (c2, ec2, w2 * 1e3, ew2 * 1e3, A2))
+    print("  AT SPLITTING (swept axis) = %.4f +/- %.4f MHz   R^2 = %.3f%s"
+          % (split, esplit, r2, "   *** LOW R^2 -- check the plot / --min-sep ***" if r2 < 0.7 else ""))
+    if k != 1.0:
+        print("  OPTICAL (x%g, double-pass AOM) = %.4f +/- %.4f MHz  == Omega_308/2pi"
+              % (k, split * k, esplit * k))
+        print("     ^ the SWEPT number is the splitting trend; the OPTICAL number is the Rabi"
+              " frequency -- never mix them. COMPARE ONLY LIKE-FOR-LIKE: a splitting is only"
+              " comparable across runs with the SAME window/center, the same 308 park"
+              " (Init.EOM616.Freq) and the same Ryd308.Amp -- a different park can be a"
+              " different Rydberg state entirely, and Omega is state-dependent.")
+    mid = 0.5 * (c1 + c2)
+    if args.bare is not None:
+        print("  midpoint %.4f MHz = %+.0f kHz vs the bare line %.4f (%+.0f kHz optical)"
+              " -- AT symmetry OK if |offset| << FWHM"
+              % (mid, (mid - args.bare) * 1e3, args.bare, (mid - args.bare) * k * 1e3))
+    else:
+        print("  midpoint %.4f MHz  (pass --bare <bare-dip-MHz> for the AT symmetry check)" % mid)
+    print("  " + format_health(health))
+    print("  GATES: " + " | ".join("%s %s" % (lbl, "PASS" if ok else "FAIL") for lbl, ok, _ in gates)
+          + " || shots/pt %.1f %s" % (shots_per_pt, "OK" if shots_ok else "LOW(advisory)"))
+    if fit_ok:
+        print("  VERDICT: TRUST -- all fit gates pass%s" % (
+            "" if shots_ok else
+            ". shots/pt is below the %.0f/pt guideline, but the doublet is resolved at %.1fx FWHM"
+            " with %.0fsigma depths, so the fit is sound -- do NOT re-scan for statistics alone"
+            % (args.min_shots_per_pt, resolution, depth_sigma)))
+    else:
+        print("  VERDICT: CHECK -- failed: %s. Investigate before trusting this."
+              % ", ".join(lbl for lbl, ok, _ in gates if not ok))
+    out = {"scan_id": sid, "n_shots": nshot, "shots_per_pt": shots_per_pt,
+           "dip1_MHz": c1, "dip1_err_MHz": ec1, "dip2_MHz": c2, "dip2_err_MHz": ec2,
+           "fwhm1_kHz": w1 * 1e3, "fwhm1_err_kHz": ew1 * 1e3,
+           "fwhm2_kHz": w2 * 1e3, "fwhm2_err_kHz": ew2 * 1e3,
+           "splitting_MHz": split, "splitting_err_MHz": esplit,
+           "optical_factor": k, "splitting_optical_MHz": split * k,
+           "splitting_optical_err_MHz": esplit * k, "midpoint_MHz": mid,
+           "midpoint_offset_kHz": (None if args.bare is None else (mid - args.bare) * 1e3),
+           "r_squared": r2, "resolution_x_fwhm": resolution, "depth_sigma": depth_sigma,
+           "baseline": float(p[0]), "loading": loading, "avg_survival": avg_surv,
+           "edge_margin_MHz": edge_margin, "health": health,
+           "gates": {lbl: bool(ok) for lbl, ok, _ in gates},
+           "shots_per_pt_ok": bool(shots_ok), "verdict": ("TRUST" if fit_ok else "CHECK")}
     print("JSON " + json.dumps(out))
 
     if not args.no_plot:
@@ -153,7 +256,8 @@ def main():
                      % (sid, c1, c2, split, nshot), fontsize=9)
         ax.legend(fontsize=8)
         fig.tight_layout()
-        png = os.path.join(scan_dir, "at_avg_doublefit_%s.png" % sid)
+        suffix = "" if args.max_shots is None else "_first%d" % nshot
+        png = os.path.join(scan_dir, "at_avg_doublefit_%s%s.png" % (sid, suffix))
         fig.savefig(png, bbox_inches="tight")
         print("  saved %s" % png)
 

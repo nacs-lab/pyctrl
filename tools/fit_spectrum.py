@@ -72,11 +72,26 @@ def main():
                     help="unit the swept axis is ALREADY in (default Hz, converted to MHz for "
                          "display). Pass 'MHz' for axes stored in MHz (e.g. QICK.freq) so the "
                          "plot/prints use the values as-is instead of dividing by 1e6")
+    ap.add_argument("--min-r2", type=float, default=0.93,
+                    help="R^2 gate for the VERDICT line (default 0.93; the daily runbook wants "
+                         ">=0.95 on the narrow 556 mj=0 line and >=0.93 on the broad ones)")
+    ap.add_argument("--min-shots-per-pt", type=float, default=2.0,
+                    help="advisory shots/pt target (default 2, which is where these core "
+                         "resonance lines converge). Low is a WARNING only -- it never flips the "
+                         "verdict on a line that is already fitted with significant depth")
+    ap.add_argument("--optical-factor", type=float, default=1.0,
+                    help="multiplier from the swept axis to OPTICAL frequency, applied to a "
+                         "--peaks 2 splitting. The 556 Rydberg push-out AOM is DOUBLE-pass, so "
+                         "pass 2 for an Autler-Townes scan (better: use fit_at_splitting.py). "
+                         "Default 1 = report the swept axis as-is")
     args = ap.parse_args()
 
     import numpy as np
     from yb_analysis.analysis.run_analysis import analyze_scan
     from yb_analysis.analysis.fittings.lorentzian import fit_lorentzian, fit_double_lorentzian
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _detection_health import (detection_health, format_health,
+                                   run_provenance, format_provenance)
 
     sid = _latest_scan_id() if args.scan == "latest" else args.scan
     # 'full' -> force the whole array (site_mask=False); omit -> pattern default.
@@ -132,6 +147,94 @@ def main():
     if args.ref is not None:
         print("  delta from ref %.4f MHz = %+.1f kHz" % (args.ref / xs, (center - args.ref) / fk))
 
+    # ---- uncertainties + quality gates ------------------------------------------------
+    # pcov comes back from a sigma=yerr, absolute_sigma=True fit, so it believes the supplied
+    # error bars literally. On these array-averaged spectra `survival_sem` (per-site binomial)
+    # UNDER-reports the real point scatter, which shows up as chi2_red >> 1 -- so scale the
+    # errors by sqrt(chi2_red). That reproduces what a bootstrap gives (verified 2026-09-15).
+    nfree = max(len(x) - 4, 1)
+    resid = y - fit["model"](x, *fit["params"])
+    resid_std = float(np.std(resid))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        chi2_red = float(np.nansum((resid / ye) ** 2) / nfree) if np.all(ye > 0) else float("nan")
+    scale = np.sqrt(chi2_red) if np.isfinite(chi2_red) and chi2_red > 1 else 1.0
+    perr = np.sqrt(np.diag(fit["pcov"])) * scale
+    amp = abs(fit["params"][1])
+    depth_sigma = amp / resid_std if resid_std > 0 else float("inf")
+    shots_per_pt = (float(d.get("n_shots") or 0) / len(x)) if len(x) else 0.0
+    print("  center err +/- %.1f kHz | FWHM err +/- %.1f kHz | depth %.3f (%.0fsigma) | "
+          "chi2_red %.1f%s | %.1f shots/pt"
+          % (perr[2] / fk, perr[3] / fk, amp, depth_sigma, chi2_red,
+             " (errors scaled by sqrt)" if scale > 1 else "", shots_per_pt))
+
+    _fid = sid[:8] + "_" + sid[8:]
+    print("  " + format_provenance(run_provenance(scan_dir, _fid)))
+    h = detection_health(scan_dir, _fid, n_shots=d.get("n_shots"))
+    print("  " + format_health(h))
+
+    gates = [("R2>=%.2f" % args.min_r2, r2 >= args.min_r2, "R2 %.3f" % r2),
+             ("depth>=5sigma", depth_sigma >= 5.0, "%.0fsigma" % depth_sigma),
+             ("not-edge-pinned", not edge, "%.3f-%.3f window" % (x.min() / xs, x.max() / xs)),
+             ("detection-healthy", bool(h["healthy"]) if h else True,
+              (("d' %.1f" % h["dprime_median"]) if h else "unknown (not gated)"))]
+    fit_ok = all(ok for _, ok, _ in gates)
+    shots_ok = shots_per_pt >= args.min_shots_per_pt
+    print("  GATES: " + " | ".join("%s %s" % (lbl, "PASS" if ok else "FAIL")
+                                   for lbl, ok, _ in gates)
+          + " || shots/pt %.1f %s" % (shots_per_pt,
+                                      "OK" if shots_ok else "LOW(advisory)"))
+    _verdict = "TRUST" if fit_ok else "CHECK"
+    if fit_ok:
+        print("  VERDICT: TRUST -- all fit gates pass%s"
+              % ("" if shots_ok else
+                 ". shots/pt below the %.0f/pt target, but the line is fitted at %.0fsigma depth"
+                 " with R2 %.3f, so the CENTER is sound -- do not re-scan for statistics alone"
+                 % (args.min_shots_per_pt, depth_sigma, r2)))
+    else:
+        failed = [lbl for lbl, ok, _ in gates if not ok]
+        # A LOW R^2 on its own is usually lineshape mismatch, not bad data: the 556 lines are
+        # array-averaged and closer to Gaussian than Lorentzian, and the runbook's own note is
+        # that the fitted CENTER -- the only thing we calibrate -- is model-independent. So when
+        # R^2 is the sole failure and the line is deep, interior, and pinned down to a small
+        # fraction of its own width, the center stands and there is nothing to re-scan.
+        center_tight = perr[2] < 0.15 * fwhm
+        if failed == ["R2>=%.2f" % args.min_r2] and center_tight:
+            print("  VERDICT: TRUST-CENTER -- R2 %.3f is below %.2f, but that is LINESHAPE"
+                  " mismatch, not bad data: depth %.0fsigma, interior, center pinned to"
+                  " +/-%.1f kHz = %.0f%% of the FWHM. These array-averaged 556 lines are closer"
+                  " to Gaussian than Lorentzian and the fitted CENTER is model-independent, so"
+                  " the center is sound -- do NOT re-scan. (Check the plot if you want the"
+                  " shape itself.)"
+                  % (r2, args.min_r2, depth_sigma, perr[2] / fk, 100.0 * perr[2] / fwhm))
+            _verdict = "TRUST-CENTER"
+        else:
+            print("  VERDICT: CHECK -- failed: %s" % ", ".join(failed))
+    # Self-explaining CHECK vs one that needs investigation (see fit_map.py for the rationale).
+    _detection_bad = bool(h) and not h["healthy"]
+    _edge_only = (not fit_ok) and all(
+        ok for lbl, ok, _ in gates if lbl not in ("not-edge-pinned",))
+    if _verdict in ("TRUST", "TRUST-CENTER"):
+        _esc, _why_esc = False, "verdict is %s" % _verdict
+    elif _detection_bad:
+        _esc, _why_esc = True, ("detection is SUSPECT (d' %.1f, fill %.2f) -- a data-quality "
+                                "problem, possibly for the troubleshooter"
+                                % (h["dprime_median"], h["fill_median"]))
+    elif _edge_only:
+        _esc, _why_esc = False, ("the line is EDGE-PINNED -- a window-placement failure with an "
+                                 "obvious fix (re-centre the window on the line). Report that "
+                                 "and stop")
+    else:
+        _esc, _why_esc = True, ("the LINESHAPE itself failed a gate (R^2 / depth) with a tight "
+                                "window and healthy detection -- that needs a look, not a re-scan")
+    print("  ESCALATE: %s -- %s" % ("YES" if _esc else "no", _why_esc))
+
+    out.update({"escalate": bool(_esc), "escalate_reason": _why_esc,
+                "center_err_Hz": float(perr[2]), "fwhm_err_Hz": float(perr[3]),
+                "chi2_red": chi2_red, "err_scale": float(scale), "depth": float(amp),
+                "depth_sigma": float(depth_sigma), "shots_per_pt": shots_per_pt,
+                "health": h, "gates": {lbl: bool(ok) for lbl, ok, _ in gates},
+                "shots_per_pt_ok": bool(shots_ok), "verdict": _verdict})
+
     # Optional second model: a double Lorentzian dip (two-component / mj-split lines).
     dfit = None
     if args.peaks == 2 and args.mode == "peak":
@@ -145,13 +248,33 @@ def main():
         else:
             c1, c2 = dfit["centers"]
             w1, w2 = dfit["widths"]
+            # errors, scaled the same way as the single fit
+            dresid = y - dfit["model"](x, *dfit["params"])
+            dfree = max(len(x) - 7, 1)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                dchi2 = (float(np.nansum((dresid / ye) ** 2) / dfree)
+                         if np.all(ye > 0) else float("nan"))
+            dscale = np.sqrt(dchi2) if np.isfinite(dchi2) and dchi2 > 1 else 1.0
+            dperr = np.sqrt(np.diag(dfit["pcov"])) * dscale
+            # params order: [y0, A1, x01, w1, A2, x02, w2]; centers are sorted, so match by value
+            e_lo, e_hi = (dperr[2], dperr[5]) if dfit["params"][2] <= dfit["params"][5] \
+                else (dperr[5], dperr[2])
+            esplit = float(np.hypot(e_lo, e_hi))
             out["double"] = {"center1_Hz": float(c1), "fwhm1_Hz": float(w1),
                              "center2_Hz": float(c2), "fwhm2_Hz": float(w2),
-                             "splitting_Hz": dfit["splitting"], "r_squared": dfit["r_squared"]}
-            print("  [2 Lorentzian] peak1 = %.4f MHz (FWHM %.1f kHz) | peak2 = %.4f MHz (FWHM %.1f kHz)"
-                  % (c1 / xs, w1 / fk, c2 / xs, w2 / fk))
-            print("                 splitting = %.3f MHz   R^2 = %.3f  (vs %.3f single)"
-                  % (dfit["splitting"] / xs, dfit["r_squared"], r2))
+                             "center1_err_Hz": float(e_lo), "center2_err_Hz": float(e_hi),
+                             "splitting_Hz": dfit["splitting"],
+                             "splitting_err_Hz": esplit, "chi2_red": dchi2,
+                             "r_squared": dfit["r_squared"]}
+            print("  [2 Lorentzian] peak1 = %.4f +/- %.4f MHz (FWHM %.1f kHz) | "
+                  "peak2 = %.4f +/- %.4f MHz (FWHM %.1f kHz)"
+                  % (c1 / xs, e_lo / xs, w1 / fk, c2 / xs, e_hi / xs, w2 / fk))
+            print("                 splitting = %.4f +/- %.4f MHz   R^2 = %.3f  (vs %.3f single)"
+                  % (dfit["splitting"] / xs, esplit / xs, dfit["r_squared"], r2))
+            if args.optical_factor != 1.0:
+                print("                 OPTICAL (x%g) = %.4f +/- %.4f MHz"
+                      % (args.optical_factor, dfit["splitting"] * args.optical_factor / xs,
+                         esplit * args.optical_factor / xs))
 
     try:
         import matplotlib
