@@ -88,6 +88,10 @@ def main():
     ap.add_argument("--no-plot", action="store_true")
     ap.add_argument("--min-shots-per-pt", type=float, default=5.0)
     ap.add_argument("--recache", action="store_true")
+    ap.add_argument("--observable", choices=("auto", "survival", "loading"), default="auto",
+                    help="what to optimise. 'auto' (default) uses survival when the run has it "
+                         "and falls back to LOADING for single-image runs (a loading or MOT "
+                         "optimisation has no survival at all)")
     args = ap.parse_args()
 
     os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
@@ -103,10 +107,33 @@ def main():
     d = analyze_scan(sid, include_per_site=False, include_diag_aggregate=False,
                      force_recache=args.recache)
     s = d["summary"]
-    y = np.asarray(s["survival_mean"], float)
-    e = np.asarray(s.get("survival_sem_pershot") or [], float)
-    nsh = np.asarray(s.get("survival_n_shots") or [], float)
+    surv = np.asarray(s["survival_mean"], float)
     ld = np.asarray(s.get("loading_rate") or [], float)
+
+    # Pick the observable. A loading / MOT optimisation is a single-image run: it has no
+    # survival at all, and survival_mean comes back all-NaN. Fitting that used to crash in
+    # nanargmin; the right observable there is the LOADING rate.
+    obs = args.observable
+    if obs == "auto":
+        obs = "survival" if np.isfinite(surv).sum() >= 3 else "loading"
+    if obs == "survival":
+        y = surv
+        e = np.asarray(s.get("survival_sem_pershot") or [], float)
+        nsh = np.asarray(s.get("survival_n_shots") or [], float)
+        obs_label = "survival (P11)"
+    else:
+        y = ld
+        e = np.asarray(s.get("loading_sem_pershot") or s.get("loading_rate_sem") or [], float)
+        nsh = np.asarray(s.get("loading_n_shots") or s.get("survival_n_shots") or [], float)
+        obs_label = "loading rate"
+    if np.isfinite(y).sum() < 3:
+        raise SystemExit(
+            "no usable observable: survival has %d finite points and loading %d. This run may be "
+            "empty, aborted, or of a kind that carries neither -- nothing to optimise here."
+            % (int(np.isfinite(surv).sum()), int(np.isfinite(ld).sum())))
+    if obs == "loading" and not args.maximize:
+        print("  NOTE: optimising LOADING and minimising it -- for a loading/MOT optimisation you "
+              "almost certainly want --maximize.")
 
     shape = tuple(len(a[1]) for a in axes)
     if y.size != int(np.prod(shape)):
@@ -148,6 +175,10 @@ def main():
 
     # ---------------------------------------------------------------- report
     dims = "x".join(str(n) for n in shape)
+    print("  observable: %s%s" % (obs_label,
+          "" if args.observable != "auto" else
+          ("  (auto: survival is all-NaN here, so this is a single-image run)"
+           if obs == "loading" else "")))
     print("%s map %s | %s shots, %s = %d pts (%.1f shots/pt)"
           % ("2-D" if len(shape) == 2 else "1-D", fid, d.get("n_shots"), dims, y.size,
              shots_per_pt))
@@ -158,14 +189,14 @@ def main():
         if a[2]:
             print("       ^ CO-VARYING on this axis: %s -- the optimum below is a point on that "
                   "path, NOT an independent optimum in each parameter" % ", ".join(a[2]))
-    if ld.size:
-        print("  loading %.2f-%.2f | survival %.3f-%.3f"
-              % (np.nanmin(ld), np.nanmax(ld), np.nanmin(Y), np.nanmax(Y)))
+    if ld.size and np.isfinite(ld).any():
+        print("  loading %.2f-%.2f | %s %.3f-%.3f"
+              % (np.nanmin(ld), np.nanmax(ld), obs_label, np.nanmin(Y), np.nanmax(Y)))
     print("  " + format_health(health))
     print("")
     at = ",  ".join("%s %.4f" % (disp[k][1], disp[k][0][i]) for k, i in enumerate(idx))
     print("  %s = %.3f +/- %.3f  at  %s"
-          % ("MAX survival" if args.maximize else "MIN survival", best, best_err, at))
+          % (("MAX " if args.maximize else "MIN ") + obs_label, best, best_err, at))
     print("  within 2 sigma of it: %d of %d points%s"
           % (n_tied, y.size, "" if n_tied <= 1 else
              "  <- the optimum is NOT a single point"))
@@ -195,13 +226,25 @@ def main():
         print("  *** NO STRUCTURE: survival spans only %.3f across the whole map against a typical "
               "point error of %.3f -- that is noise, not a feature. DO NOT report an optimum. ***"
               % (span_y, noise))
+    # An optimisation is only meaningful if the observable reached a usable value SOMEWHERE.
+    # Healthy tweezer loading is ~0.3-0.6 (yb-basic); a grid whose best point is ~0.002 did not
+    # load anywhere, and its "optimum" is the best of nothing.
+    loading_floor = 0.05
+    dead_loading = bool(obs == "loading" and np.nanmax(Y) < loading_floor)
+    if dead_loading:
+        print("  *** NOTHING LOADED: the best point on this grid reaches loading %.4f, far below "
+              "the ~0.3-0.6 healthy band. No setting in this window loads atoms, so the 'optimum' "
+              "is the best of nothing. Fix loading first -- this is not an optimisation result. ***"
+              % np.nanmax(Y))
     comp = scan_completeness(scan_dir, fid, d.get("n_shots"), scan_json=js)
     if comp and comp[2] < 0.5:
         print("  NOTE: this run is %d of %d scheduled shots (%.0f%% complete) -- the gates are "
               "reading an unfinished scan" % (comp[0], comp[1], 100 * comp[2]))
 
     resolved = n_tied <= max(3, y.size // 10)
-    gates = [("interior (bracketed)", interior, "" if interior else "optimum on a window edge"),
+    gates = [("observable usable", not dead_loading,
+              ("max loading %.4f" % np.nanmax(Y)) if obs == "loading" else "n/a"),
+             ("interior (bracketed)", interior, "" if interior else "optimum on a window edge"),
              ("optimum constrained", opt_constrained,
               ("+/-%.3f" % best_err) if opt_constrained else "no error bar"),
              ("structure present", modulated, "span %.3f vs noise %.3f" % (span_y, noise)),
@@ -214,6 +257,16 @@ def main():
           + " || shots/pt %.1f %s" % (shots_per_pt, "OK" if shots_ok else "LOW"))
     if ok and shots_ok:
         print("  VERDICT: TRUST -- the optimum is interior and resolved.")
+    elif dead_loading:
+        print("  VERDICT: CHECK -- NOTHING LOADED anywhere on this grid (best %.4f). There is no "
+              "optimum to report; fix loading before reading anything off this scan."
+              % np.nanmax(Y))
+    elif not modulated:
+        print("  VERDICT: CHECK -- NO STRUCTURE: the surface is flat within noise, so no optimum "
+              "is established here. Move the window onto the feature, or add shots.")
+    elif not opt_constrained:
+        print("  VERDICT: CHECK -- the best point has NO ERROR BAR, so no optimum is established. "
+              "Add shots before reading anything off this map.")
     elif not interior:
         print("  VERDICT: CHECK -- the optimum sits on a WINDOW EDGE, so the true optimum is"
               " probably OUTSIDE this grid. Extend or shift the window along that axis before"
@@ -234,6 +287,12 @@ def main():
     escalate = detection_bad
     if ok and shots_ok:
         why_esc = "verdict is TRUST"
+    elif dead_loading:
+        escalate = False
+        why_esc = ("nothing loaded anywhere on this grid (best %.4f vs a ~0.3-0.6 healthy band). "
+                   "That is a loading/apparatus problem upstream of this scan, not something to "
+                   "read an optimum from -- if loading was healthy when this ran, it belongs to "
+                   "the troubleshooter" % np.nanmax(Y))
     elif comp and comp[2] < 0.5:
         escalate = False
         why_esc = ("the run is only %.0f%% complete (%d of %d scheduled shots) -- that alone "
@@ -262,7 +321,7 @@ def main():
 
     out = {"scan_id": sid, "ndim": len(shape), "shape": list(shape),
            "escalate": bool(escalate), "escalate_reason": why_esc,
-           "n_shots": d.get("n_shots"), "shots_per_pt": shots_per_pt,
+           "observable": obs, "n_shots": d.get("n_shots"), "shots_per_pt": shots_per_pt,
            "axes": [a[0] for a in axes],
            "covarying": {a[0]: a[2] for a in axes if a[2]},
            "best": float(best),
@@ -284,7 +343,7 @@ def main():
                 x1, lab1 = disp[1]
                 fig, ax = plt.subplots(figsize=(7.5, 6), dpi=130)
                 im = ax.pcolormesh(x1, x0, Y, shading="nearest", cmap="viridis")
-                fig.colorbar(im, ax=ax, label="survival (P11)")
+                fig.colorbar(im, ax=ax, label=obs_label)
                 ax.plot(x1[idx[1]], x0[idx[0]], "r*", ms=16, mec="w", label="best %.3f" % best)
                 if n_tied > 1:
                     ax.plot(x1[tied[:, 1]], x0[tied[:, 0]], "w.", ms=4, alpha=0.8,
@@ -305,7 +364,7 @@ def main():
                     ax.axvspan(x0[tied[:, 0].min()], x0[tied[:, 0].max()], color="C1", alpha=0.15,
                                label="within 2$\\sigma$ (%d pts)" % n_tied)
                 ax.set_xlabel(lab0)
-                ax.set_ylabel("survival (P11)")
+                ax.set_ylabel(obs_label)
                 ax.legend(fontsize=8)
             ax.set_title("%s  %s, %.1f shots/pt  ->  %s"
                          % (fid, dims, shots_per_pt, out["verdict"]), fontsize=9)
