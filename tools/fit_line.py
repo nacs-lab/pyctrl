@@ -160,6 +160,16 @@ def main():
     scan_dir, fid = _scan_dir(args.scan)
     js = _run_json(scan_dir, fid)
     name = _scan_name(js)
+
+    # A run that never wrote a data file produced no shots at all. Say that plainly -- the
+    # analysis layer otherwise raises "failed to load scan data" from three frames down.
+    if not (os.path.exists(os.path.join(scan_dir, "data_%s.h5" % fid))
+            or os.path.exists(os.path.join(scan_dir, "data_%s.mat" % fid))):
+        print("fit_line: %s | NO DATA" % (name or "<unknown scan name>"))
+        print("  The scan directory holds only the descriptor -- there is no .h5/.mat, so this run "
+              "never wrote a shot. It was submitted and then died, or was cancelled before the "
+              "first frame. Nothing to fit; check the backend log for why it produced no data.")
+        return 2
     axes = _axes(js)
     n_ax = len(axes)
 
