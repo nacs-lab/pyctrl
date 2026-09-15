@@ -94,7 +94,8 @@ def main():
     from yb_analysis.analysis.fittings.lorentzian import fit_lorentzian, fit_double_lorentzian
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _detection_health import (detection_health, format_health,
-                                   run_provenance, format_provenance, scan_completeness)
+                                   run_provenance, format_provenance, scan_completeness,
+                                   loading_health, format_loading)
 
     sid = _latest_scan_id() if args.scan == "latest" else args.scan
     # 'full' -> force the whole array (site_mask=False); omit -> pattern default.
@@ -174,6 +175,8 @@ def main():
     print("  " + format_provenance(run_provenance(scan_dir, _fid)))
     h = detection_health(scan_dir, _fid, n_shots=d.get("n_shots"))
     print("  " + format_health(h))
+    lh = loading_health(ld)
+    print("  " + format_loading(lh))
 
     # depth_sigma is amp/resid_std, so a fit that interpolates its points (resid_std -> 0)
     # reports inf and would "pass" a significance gate while meaning nothing. Degenerate = FAIL.
@@ -186,7 +189,9 @@ def main():
               "window -- the fit did not constrain it. DO NOT report this centre as the line. ***"
               % (perr[2] / fk, 100 * perr[2] / fwhm if fwhm else float("nan"),
                  100 * perr[2] / span))
-    gates = [("R2>=%.2f" % args.min_r2, r2 >= args.min_r2, "R2 %.3f" % r2),
+    gates = [("atoms loaded", not (lh and lh["dead"]),
+              ("loading %.4f" % lh["mean"]) if lh else "unknown"),
+             ("R2>=%.2f" % args.min_r2, r2 >= args.min_r2, "R2 %.3f" % r2),
              ("depth>=5sigma", depth_meaningful and depth_sigma >= 5.0,
               ("%.0fsigma" % depth_sigma) if depth_meaningful else "degenerate (resid ~ 0)"),
              ("centre constrained", center_constrained,
@@ -201,7 +206,11 @@ def main():
           + " || shots/pt %.1f %s" % (shots_per_pt,
                                       "OK" if shots_ok else "LOW(advisory)"))
     _verdict = "TRUST" if fit_ok else "CHECK"
-    if fit_ok:
+    if lh and lh["dead"]:
+        print("  VERDICT: CHECK -- NO ATOMS LOADED (%.4f). Report no fit from this run."
+              % lh["mean"])
+        _verdict = "CHECK"
+    elif fit_ok:
         print("  VERDICT: TRUST -- all fit gates pass%s"
               % ("" if shots_ok else
                  ". shots/pt below the %.0f/pt target, but the line is fitted at %.0fsigma depth"
@@ -236,7 +245,12 @@ def main():
     _detection_bad = bool(h) and not h["healthy"]
     _edge_only = (not fit_ok) and all(
         ok for lbl, ok, _ in gates if lbl not in ("not-edge-pinned",))
-    if _verdict in ("TRUST", "TRUST-CENTER"):
+    if lh and lh["dead"]:
+        _esc, _why_esc = True, ("NO ATOMS -- loading %.4f. The fit is measuring the "
+                                "false-positive rate, not a line. This indicts the apparatus "
+                                "(SLM pattern / LUT / MOT): hand it to yb:troubleshooting"
+                                % lh["mean"])
+    elif _verdict in ("TRUST", "TRUST-CENTER"):
         _esc, _why_esc = False, "verdict is %s" % _verdict
     elif _detection_bad:
         _esc, _why_esc = True, ("detection is SUSPECT (d' %.1f, fill %.2f) -- a data-quality "

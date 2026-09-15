@@ -37,7 +37,8 @@ if ROOT not in sys.path:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _detection_health import (detection_health, format_health,      # noqa: E402
-                               run_provenance, format_provenance, scan_completeness)
+                               run_provenance, format_provenance, scan_completeness,
+                               loading_health, format_loading)
 
 DATA = r"D:\OneDrive - Harvard University\Documents - Yb\Data"
 
@@ -193,6 +194,8 @@ def main():
         print("  loading %.2f-%.2f | %s %.3f-%.3f"
               % (np.nanmin(ld), np.nanmax(ld), obs_label, np.nanmin(Y), np.nanmax(Y)))
     print("  " + format_health(health))
+    lh = loading_health(ld if ld.size else Y)
+    print("  " + format_loading(lh))
     print("")
     at = ",  ".join("%s %.4f" % (disp[k][1], disp[k][0][i]) for k, i in enumerate(idx))
     print("  %s = %.3f +/- %.3f  at  %s"
@@ -229,8 +232,16 @@ def main():
     # An optimisation is only meaningful if the observable reached a usable value SOMEWHERE.
     # Healthy tweezer loading is ~0.3-0.6 (yb-basic); a grid whose best point is ~0.002 did not
     # load anywhere, and its "optimum" is the best of nothing.
+    # Judge "did anything load" by the RIGHT statistic for the scan's purpose:
+    #   * a LOADING optimisation is SEARCHING for a setting that loads, so most of the grid is
+    #     legitimately near zero. Use the BEST point -- mean loading would call a successful
+    #     optimisation dead just because most of its grid failed.
+    #   * a SURVIVAL scan should have loaded at EVERY point, so use the mean.
     loading_floor = 0.05
-    dead_loading = bool(obs == "loading" and np.nanmax(Y) < loading_floor)
+    if obs == "loading":
+        dead_loading = bool(np.nanmax(Y) < loading_floor)
+    else:
+        dead_loading = bool(lh and lh["dead"])
     if dead_loading:
         print("  *** NOTHING LOADED: the best point on this grid reaches loading %.4f, far below "
               "the ~0.3-0.6 healthy band. No setting in this window loads atoms, so the 'optimum' "

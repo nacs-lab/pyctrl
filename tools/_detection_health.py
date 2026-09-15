@@ -177,3 +177,53 @@ def scan_completeness(scan_dir, sid, n_shots, scan_json=None):
         return int(n_shots), int(planned), float(n_shots) / float(planned)
     except Exception:
         return None
+
+
+# --------------------------------------------------------------------------------------------
+# Loading health: were there atoms at all?
+# --------------------------------------------------------------------------------------------
+# A survival fit on an array that never loaded is not a weak measurement, it is a measurement of
+# the false-positive rate -- and it still produces a plausible-looking dip, which is why this has
+# fooled people. The daily-system-scan runbook records the two classic causes: a blank/wrong SLM
+# pattern (loading ~0.005-0.014) and a missing SLM LUT (~0.02), against a healthy 0.3-0.6.
+#
+# Thresholds are deliberately generous at the bottom so a REARRANGED array -- where loading is
+# computed over the full grid while the science happens on a target subset, and legitimately
+# reads 0.2-0.45 -- is never flagged.
+LOADING_DEAD = 0.05     # below this: no atoms. Any survival number is noise.
+LOADING_LOW = 0.15      # below this: suspicious, worth saying out loud.
+LOADING_HEALTHY = 0.3   # the normal band is ~0.3-0.6.
+
+
+def loading_health(loading):
+    """Judge whether a run loaded atoms at all. `loading` is a per-point array or a scalar."""
+    try:
+        arr = np.atleast_1d(np.asarray(loading, float))
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return None
+        mean, lo, hi = float(np.mean(arr)), float(np.min(arr)), float(np.max(arr))
+        state = ("dead" if mean < LOADING_DEAD else
+                 "low" if mean < LOADING_LOW else
+                 "ok" if mean < LOADING_HEALTHY else "healthy")
+        return {"mean": mean, "min": lo, "max": hi, "state": state,
+                "dead": state == "dead", "suspect": state in ("dead", "low")}
+    except Exception:
+        return None
+
+
+def format_loading(lh):
+    """One line, loud when there were no atoms."""
+    if not lh:
+        return "loading: unavailable"
+    if lh["dead"]:
+        return ("*** NO ATOMS: loading averages %.4f (range %.4f-%.4f) against a healthy 0.3-0.6. "
+                "This run did not load, so any survival number here is the FALSE-POSITIVE rate, "
+                "not physics. Do not report a fit. Classic causes: a blank/wrong SLM pattern or a "
+                "missing SLM LUT -- this is a troubleshooter question. ***"
+                % (lh["mean"], lh["min"], lh["max"]))
+    if lh["state"] == "low":
+        return ("loading: %.3f mean (%.3f-%.3f) -- LOW against a healthy 0.3-0.6; treat any fit "
+                "from this run with suspicion and check the SLM pattern/LUT"
+                % (lh["mean"], lh["min"], lh["max"]))
+    return "loading: %.3f mean (%.3f-%.3f) -> %s" % (lh["mean"], lh["min"], lh["max"], lh["state"])

@@ -28,7 +28,8 @@ import numpy as np
 from scipy.optimize import curve_fit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _detection_health import detection_health, format_health, run_provenance, format_provenance
+from _detection_health import (detection_health, format_health, run_provenance,
+                               format_provenance, loading_health, format_loading)
 
 from yb_analysis.analysis.unpack import unpack_scan_logicals
 from yb_analysis.analysis.probabilities import prob11_site_resolved
@@ -171,9 +172,12 @@ def main():
 
     # --- detection health (never fatal: the fit stands even if this cannot be read)
     health = detection_health(scan_dir, sid, scan_json=scan, n_shots=nshot)
+    lh = loading_health(loading)
 
     # --- gates: the five that decide whether the FIT itself is sound
-    gates = [("R2>=0.95", r2 >= 0.95, "R2 %.3f" % r2),
+    gates = [("atoms loaded", not (lh and lh["dead"]),
+              ("loading %.4f" % lh["mean"]) if lh else "unknown"),
+             ("R2>=0.95", r2 >= 0.95, "R2 %.3f" % r2),
              ("resolved>=2xFWHM", resolution >= 2.0, "%.1fx FWHM" % resolution),
              ("depth>=5sigma", depth_sigma >= 5.0, "%.0fsigma" % depth_sigma),
              ("not-edge-pinned", edge_margin >= 0.05 * span, "%.2f MHz margin" % edge_margin),
@@ -211,9 +215,13 @@ def main():
     else:
         print("  midpoint %.4f MHz  (pass --bare <bare-dip-MHz> for the AT symmetry check)" % mid)
     print("  " + format_health(health))
+    print("  " + format_loading(lh))
     print("  GATES: " + " | ".join("%s %s" % (lbl, "PASS" if ok else "FAIL") for lbl, ok, _ in gates)
           + " || shots/pt %.1f %s" % (shots_per_pt, "OK" if shots_ok else "LOW(advisory)"))
-    if fit_ok:
+    if lh and lh["dead"]:
+        print("  VERDICT: CHECK -- NO ATOMS LOADED (%.4f); this measures the false-positive "
+              "rate, not a doublet. Hand to yb:troubleshooting." % lh["mean"])
+    elif fit_ok:
         print("  VERDICT: TRUST -- all fit gates pass%s" % (
             "" if shots_ok else
             ". shots/pt is below the %.0f/pt guideline, but the doublet is resolved at %.1fx FWHM"
