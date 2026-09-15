@@ -82,8 +82,12 @@ def _axes(js):
     found = {}
     for k, v in ((d or {}).get("params") or {}).items():
         if isinstance(v, dict) and "scan" in v:
-            found[int(v["scan"])] = (k, len(v.get("values") or []))
-    return [found[i] for i in sorted(found)]
+            # SEVERAL params can share one dim -- a CO-VARYING axis. Keep them all: keying by dim
+            # alone drops every name but the last, which is how a co-varying scan gets
+            # mis-attributed (the stirap-optimization runbook warns about exactly this).
+            found.setdefault(int(v["scan"]), []).append((k, len(v.get("values") or [])))
+    return [(names[0][0], names[0][1], [n for n, _ in names[1:]])
+            for _, names in sorted(found.items())]
 
 
 def _cfg(js, key):
@@ -159,6 +163,30 @@ def main():
     axes = _axes(js)
     n_ax = len(axes)
 
+    # 0. nothing was swept -- there is no axis to fit against. Say so here rather than
+    #    dispatching to a fitter that will error on it.
+    if n_ax == 0:
+        print("fit_line: %s | 0 swept axes -> NOTHING TO FIT" % (name or "<unknown scan name>"))
+        print("  This run has no swept parameter (its ScanGroup vars.params is empty), so it is a "
+              "fixed-point repeat, not a scan: there is no line, no map and no optimum to extract.")
+        print("  The only number available is the single-point survival with its error, which "
+              "analyze_scan gives directly. To calibrate a knob, re-submit as a 1-D or 2-D sweep "
+              "over it and fit THAT scan id.")
+        return 2
+
+    # 0b. more than 2 swept axes: no tool here summarises a 3-D+ grid, and collapsing it
+    #     silently would be worse than saying so.
+    if n_ax > 2:
+        print("fit_line: %s | %d swept axes -> NOT SUPPORTED" % (name or "<unknown>", n_ax))
+        for i, (an, npn, co) in enumerate(axes):
+            print("    dim%d %s (%d pts)%s" % (i + 1, an, npn,
+                  ("  + co-varying: " + ", ".join(co)) if co else ""))
+        print("  fit_map.py summarises 1-D and 2-D sweeps only. A %d-D grid needs either a slice "
+              "(re-fit holding the other axes fixed) or a purpose-built analysis -- collapsing it "
+              "to a line or a plane would hide exactly the structure it was taken to find."
+              % n_ax)
+        return 2
+
     tool = flags = target = why = None
 
     # 1. dedicated tool by name
@@ -208,8 +236,10 @@ def main():
     cmd = [sys.executable, os.path.join(TOOLS, tool), positional] + flags + passthrough
     print("fit_line: %s | %d swept ax%s -> %s"
           % (name or "<unknown scan name>", n_ax, "is" if n_ax == 1 else "es", tool))
-    for i, (an, np_) in enumerate(axes):
-        print("    dim%d %s (%d pts)" % (i + 1, an, np_))
+    for i, (an, np_, co) in enumerate(axes):
+        print("    dim%d %s (%d pts)%s"
+              % (i + 1, an, np_,
+                 ("  + CO-VARYING on this axis: " + ", ".join(co)) if co else ""))
     print("  why: %s" % why)
     print("  cmd: %s" % " ".join(('"%s"' % c) if " " in c else c for c in cmd[1:]))
     print("")
