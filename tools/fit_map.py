@@ -37,7 +37,7 @@ if ROOT not in sys.path:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _detection_health import (detection_health, format_health,      # noqa: E402
-                               run_provenance, format_provenance)
+                               run_provenance, format_provenance, scan_completeness)
 
 DATA = r"D:\OneDrive - Harvard University\Documents - Yb\Data"
 
@@ -61,8 +61,13 @@ def swept_axes(scan_dir, fid):
     axes = {}
     for k, v in ((desc or {}).get("params") or {}).items():
         if isinstance(v, dict) and "scan" in v:
-            axes[int(v["scan"])] = (k, [float(x) for x in v["values"]])
-    return js, [axes[d] for d in sorted(axes)]
+            # Several params can share a dim (a CO-VARYING axis). Keep them all -- keying by dim
+            # alone silently drops every name but the last.
+            axes.setdefault(int(v["scan"]), []).append((k, [float(x) for x in v["values"]]))
+    out = []
+    for _, group in sorted(axes.items()):
+        out.append((group[0][0], group[0][1], [n for n, _ in group[1:]]))
+    return js, out
 
 
 def _scale(name, vals):
@@ -103,7 +108,7 @@ def main():
     nsh = np.asarray(s.get("survival_n_shots") or [], float)
     ld = np.asarray(s.get("loading_rate") or [], float)
 
-    shape = tuple(len(v) for _, v in axes)
+    shape = tuple(len(a[1]) for a in axes)
     if y.size != int(np.prod(shape)):
         raise SystemExit("grid mismatch: %d points but axes are %s -- the run may have been "
                          "aborted mid-pass. Try --recache, or treat it as incomplete."
@@ -113,7 +118,7 @@ def main():
     Y = y.reshape(shape, order="F")
     E = e.reshape(shape, order="F") if e.size == y.size else np.full(shape, np.nan)
     N = nsh.reshape(shape, order="F") if nsh.size == y.size else np.full(shape, np.nan)
-    disp = [_scale(n, v) for n, v in axes]
+    disp = [_scale(a[0], a[1]) for a in axes]
 
     sign = -1.0 if args.maximize else 1.0
     idx = np.unravel_index(np.nanargmin(sign * Y), shape)
@@ -147,9 +152,12 @@ def main():
           % ("2-D" if len(shape) == 2 else "1-D", fid, d.get("n_shots"), dims, y.size,
              shots_per_pt))
     print("  " + format_provenance(run_provenance(scan_dir, fid, scan_json=js)))
-    for k, (name, vals) in enumerate(axes):
+    for k, a in enumerate(axes):
         xk, labk = disp[k]
-        print("  axis dim%d %s  %.4f..%.4f (%d pts)" % (k + 1, labk, xk[0], xk[-1], len(vals)))
+        print("  axis dim%d %s  %.4f..%.4f (%d pts)" % (k + 1, labk, xk[0], xk[-1], len(a[1])))
+        if a[2]:
+            print("       ^ CO-VARYING on this axis: %s -- the optimum below is a point on that "
+                  "path, NOT an independent optimum in each parameter" % ", ".join(a[2]))
     if ld.size:
         print("  loading %.2f-%.2f | survival %.3f-%.3f"
               % (np.nanmin(ld), np.nanmax(ld), np.nanmin(Y), np.nanmax(Y)))
@@ -172,8 +180,31 @@ def main():
         print("  PLATEAU: %s %.4f..%.4f is indistinguishable from the optimum -- quote a range"
               % (disp[0][1], lo, hi))
 
+    # (1) An optimum with no error bar is not an optimum. best_err comes back nan when a point
+    #     has too few shots to estimate one, and every 2-sigma comparison below is then vacuous.
+    opt_constrained = bool(np.isfinite(best_err) and best_err > 0)
+    if not opt_constrained:
+        print("  *** OPTIMUM NOT USABLE: the best point has no finite error bar (too few shots at "
+              "that point), so it cannot be distinguished from any other. DO NOT report it as the "
+              "optimum. ***")
+    # (2) No modulation across the whole map = nothing was resolved, whatever the best pixel says.
+    span_y = float(np.nanmax(Y) - np.nanmin(Y))
+    noise = float(err_med) if np.isfinite(err_med) else float("nan")
+    modulated = bool(np.isfinite(noise) and noise > 0 and span_y > 5.0 * noise)
+    if not modulated:
+        print("  *** NO STRUCTURE: survival spans only %.3f across the whole map against a typical "
+              "point error of %.3f -- that is noise, not a feature. DO NOT report an optimum. ***"
+              % (span_y, noise))
+    comp = scan_completeness(scan_dir, fid, d.get("n_shots"), scan_json=js)
+    if comp and comp[2] < 0.5:
+        print("  NOTE: this run is %d of %d scheduled shots (%.0f%% complete) -- the gates are "
+              "reading an unfinished scan" % (comp[0], comp[1], 100 * comp[2]))
+
     resolved = n_tied <= max(3, y.size // 10)
     gates = [("interior (bracketed)", interior, "" if interior else "optimum on a window edge"),
+             ("optimum constrained", opt_constrained,
+              ("+/-%.3f" % best_err) if opt_constrained else "no error bar"),
+             ("structure present", modulated, "span %.3f vs noise %.3f" % (span_y, noise)),
              ("optimum resolved", resolved, "%d pts tied" % n_tied),
              ("detection healthy", bool(health["healthy"]) if health else True,
               ("d' %.1f" % health["dprime_median"]) if health else "unknown")]
@@ -203,6 +234,20 @@ def main():
     escalate = detection_bad
     if ok and shots_ok:
         why_esc = "verdict is TRUST"
+    elif comp and comp[2] < 0.5:
+        escalate = False
+        why_esc = ("the run is only %.0f%% complete (%d of %d scheduled shots) -- that alone "
+                   "explains the failed gate. Let it finish, then refit. Report NO optimum"
+                   % (100 * comp[2], comp[0], comp[1]))
+    elif not modulated:
+        escalate = False
+        why_esc = ("there is NO STRUCTURE in this map -- the whole surface is flat within noise. "
+                   "That is a window-placement or statistics problem, not something to "
+                   "investigate: move the window onto the feature, or add shots")
+    elif not opt_constrained:
+        escalate = False
+        why_esc = ("the best point has no error bar, so no optimum is established. Add shots "
+                   "before reading anything off this map")
     elif detection_bad:
         why_esc = ("detection is SUSPECT (d' %.1f, fill %.2f) -- that is a data-quality problem, "
                    "not a window problem; it may belong to the troubleshooter"
@@ -218,7 +263,8 @@ def main():
     out = {"scan_id": sid, "ndim": len(shape), "shape": list(shape),
            "escalate": bool(escalate), "escalate_reason": why_esc,
            "n_shots": d.get("n_shots"), "shots_per_pt": shots_per_pt,
-           "axes": [n for n, _ in axes],
+           "axes": [a[0] for a in axes],
+           "covarying": {a[0]: a[2] for a in axes if a[2]},
            "best": float(best),
            "best_err": (None if not np.isfinite(best_err) else float(best_err)),
            "best_at": [float(disp[k][0][i]) for k, i in enumerate(idx)],

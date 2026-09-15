@@ -156,3 +156,24 @@ def format_provenance(p):
         head += " on %s" % p["pattern"]
     return head + (" | " + bits if bits else "") + (
         "  [sublevel/mj is NOT encoded in the run -- take it from the caller]")
+
+
+def scan_completeness(scan_dir, sid, n_shots, scan_json=None):
+    """(actual, planned, fraction) for a run, or None.
+
+    A scan stopped at 10% of its plan fails every quality gate for one boring reason. Printing
+    the plan alongside the actual count turns "why is R^2 0.18" into "it is 10% done" without
+    anyone having to go digging -- which is exactly what cost an analyst 6 tool calls on
+    2026-09-15 (scan 20260915_124047, 26 of 255 shots).
+    """
+    try:
+        import json
+        if scan_json is None:
+            with open(os.path.join(scan_dir, "data_%s.json" % sid)) as fh:
+                scan_json = json.load(fh)
+        planned = scan_json.get("n_shots_planned") or scan_json.get("NumPerGroup")
+        if not planned or not n_shots:
+            return None
+        return int(n_shots), int(planned), float(n_shots) / float(planned)
+    except Exception:
+        return None

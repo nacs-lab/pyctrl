@@ -72,6 +72,9 @@ def main():
                     help="unit the swept axis is ALREADY in (default Hz, converted to MHz for "
                          "display). Pass 'MHz' for axes stored in MHz (e.g. QICK.freq) so the "
                          "plot/prints use the values as-is instead of dividing by 1e6")
+    ap.add_argument("--no-plot", action="store_true",
+                    help="skip saving the figure (parity with fit_at_splitting.py / fit_map.py, "
+                         "so fit_line.py can forward it to any fitter)")
     ap.add_argument("--min-r2", type=float, default=0.93,
                     help="R^2 gate for the VERDICT line (default 0.93; the daily runbook wants "
                          ">=0.95 on the narrow 556 mj=0 line and >=0.93 on the broad ones)")
@@ -91,7 +94,7 @@ def main():
     from yb_analysis.analysis.fittings.lorentzian import fit_lorentzian, fit_double_lorentzian
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _detection_health import (detection_health, format_health,
-                                   run_provenance, format_provenance)
+                                   run_provenance, format_provenance, scan_completeness)
 
     sid = _latest_scan_id() if args.scan == "latest" else args.scan
     # 'full' -> force the whole array (site_mask=False); omit -> pattern default.
@@ -172,8 +175,22 @@ def main():
     h = detection_health(scan_dir, _fid, n_shots=d.get("n_shots"))
     print("  " + format_health(h))
 
+    # depth_sigma is amp/resid_std, so a fit that interpolates its points (resid_std -> 0)
+    # reports inf and would "pass" a significance gate while meaning nothing. Degenerate = FAIL.
+    depth_meaningful = bool(np.isfinite(depth_sigma)) and resid_std > 0
+    # A centre is only usable if its error is small against the feature AND the window. On an
+    # underpowered scan curve_fit happily returns a centre with an error larger than the sweep.
+    center_constrained = bool(perr[2] < 0.5 * fwhm and perr[2] < 0.1 * span)
+    if not center_constrained:
+        print("  *** CENTRE NOT USABLE: +/-%.1f kHz is %.0f%% of the FWHM and %.0f%% of the whole "
+              "window -- the fit did not constrain it. DO NOT report this centre as the line. ***"
+              % (perr[2] / fk, 100 * perr[2] / fwhm if fwhm else float("nan"),
+                 100 * perr[2] / span))
     gates = [("R2>=%.2f" % args.min_r2, r2 >= args.min_r2, "R2 %.3f" % r2),
-             ("depth>=5sigma", depth_sigma >= 5.0, "%.0fsigma" % depth_sigma),
+             ("depth>=5sigma", depth_meaningful and depth_sigma >= 5.0,
+              ("%.0fsigma" % depth_sigma) if depth_meaningful else "degenerate (resid ~ 0)"),
+             ("centre constrained", center_constrained,
+              "+/-%.1f kHz vs FWHM %.1f kHz" % (perr[2] / fk, fwhm / fk)),
              ("not-edge-pinned", not edge, "%.3f-%.3f window" % (x.min() / xs, x.max() / xs)),
              ("detection-healthy", bool(h["healthy"]) if h else True,
               (("d' %.1f" % h["dprime_median"]) if h else "unknown (not gated)"))]
@@ -209,7 +226,13 @@ def main():
             _verdict = "TRUST-CENTER"
         else:
             print("  VERDICT: CHECK -- failed: %s" % ", ".join(failed))
-    # Self-explaining CHECK vs one that needs investigation (see fit_map.py for the rationale).
+    # Self-explaining CHECK vs one that needs investigation. Order matters: a boring cause
+    # (incomplete run, thin statistics, no feature in the window) explains a failed gate without
+    # any investigation, and only an UNEXPLAINED lineshape failure is worth escalating.
+    _comp = scan_completeness(scan_dir, _fid, d.get("n_shots"))
+    if _comp and _comp[2] < 0.5:
+        print("  NOTE: this run is %d of %d scheduled shots (%.0f%% complete) -- the gates above "
+              "are reading an unfinished scan" % (_comp[0], _comp[1], 100 * _comp[2]))
     _detection_bad = bool(h) and not h["healthy"]
     _edge_only = (not fit_ok) and all(
         ok for lbl, ok, _ in gates if lbl not in ("not-edge-pinned",))
@@ -219,6 +242,30 @@ def main():
         _esc, _why_esc = True, ("detection is SUSPECT (d' %.1f, fill %.2f) -- a data-quality "
                                 "problem, possibly for the troubleshooter"
                                 % (h["dprime_median"], h["fill_median"]))
+    elif not center_constrained and _comp and _comp[2] < 0.5:
+        _esc, _why_esc = False, ("the run is only %.0f%% complete (%d of %d scheduled shots), so "
+                                "the fit did not constrain the centre at all. Let it finish, then "
+                                "refit. Report NO centre from this run"
+                                % (100 * _comp[2], _comp[0], _comp[1]))
+    elif not center_constrained:
+        _esc, _why_esc = False, ("the fit did not constrain the centre (error exceeds the feature "
+                                "width / the window). Report NO centre from this run; fix the "
+                                "statistics or the window first")
+    elif _comp and _comp[2] < 0.5:
+        _esc, _why_esc = False, ("the run is only %.0f%% complete (%d of %d scheduled shots) -- "
+                                "that alone explains the failed gate. Let it finish, or resubmit, "
+                                "then refit. Nothing to investigate"
+                                % (100 * _comp[2], _comp[0], _comp[1]))
+    elif depth_sigma < 3.0:
+        _esc, _why_esc = False, ("there is NO RESOLVED FEATURE in this window -- the deepest "
+                                "excursion is only %.1f sigma and survival spans just %.3f across "
+                                "the whole sweep. That is a window-placement problem: move the "
+                                "window onto the line. Do not report this centre"
+                                % (depth_sigma, float(np.nanmax(y) - np.nanmin(y))))
+    elif not shots_ok:
+        _esc, _why_esc = False, ("shots/pt is %.1f against a %.0f target -- thin statistics alone "
+                                "explain the failed gate. Add reps and refit"
+                                % (shots_per_pt, args.min_shots_per_pt))
     elif _edge_only:
         _esc, _why_esc = False, ("the line is EDGE-PINNED -- a window-placement failure with an "
                                  "obvious fix (re-centre the window on the line). Report that "
@@ -277,6 +324,8 @@ def main():
                          esplit * args.optical_factor / xs))
 
     try:
+        if args.no_plot:
+            raise RuntimeError("--no-plot")
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
