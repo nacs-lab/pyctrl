@@ -138,13 +138,19 @@ def do_submit(args):
             last = cur
     st = {"round": args.round, "start": start, "target": target, "nseq": nseq,
           "reps": args.reps, "data_dir": data_dir, "id": did, "axis_desc": axis_desc,
-          "pattern": B.PATTERN, "axes": axes, "seq": seq}
+          "pattern": B.PATTERN, "axes": axes, "seq": seq,
+          # Expected shots for THIS round. The global seq_num-based `target` above is wrong
+          # whenever the round was QUEUED behind a still-running job: `start` is then sampled
+          # mid-previous-run, so target lands short and watch declares COMPLETE early (bit r976
+          # on 2026-09-15, which stopped at 45 of 108 shots). Watch prefers this count, read
+          # from the round's OWN h5, and falls back to the seq_num target only if that fails.
+          "expected_shots": int(args.reps) * int(nseq)}
     with open(_state_path(args.round), "w") as f:
         json.dump(st, f, indent=2)
     print("state ->", _state_path(args.round))
 
 
-def analyze(data_dir, st):
+def analyze(data_dir, st, drop=10):
     sys.path.insert(0, B.REPO)
     import numpy as np
     import h5py
@@ -164,6 +170,26 @@ def analyze(data_dir, st):
     n = min(len(seq_ids), I1.shape[0])
     seq_ids, I1 = seq_ids[:n], I1[:n]
 
+    # Drop the LOADING-THERMALIZATION shots at the start of every run: loading climbs from
+    # ~0.02 to its steady state over the first ~10 shots (measured r962, 2026-09-15:
+    # 0.022 0.018 0.016 0.081 0.139 0.193 0.350 0.428 0.511 0.551 0.560 0.572), so a 12-shot
+    # single point read 0.287 against a true ~0.57. Dropped in SHOT order (seq_ids), BEFORE the
+    # EM, so the warmup's dim frames do not skew the per-site thresholds either. With Scramble
+    # on the dropped shots fall on random cells, so this is unbiased across a grid.
+    ndrop = 0
+    if drop > 0:
+        if len(seq_ids) - drop >= 3:
+            order = np.argsort(seq_ids)
+            keep = np.sort(order[drop:])
+            seq_ids, I1 = seq_ids[keep], I1[keep]
+            ndrop = drop
+            n = len(seq_ids)
+        else:
+            # Never silently skip -- a too-short run is exactly how the warmup bias hides.
+            print("  *** WARNING: run has only %d shots, cannot drop %d warmup shots. The "
+                  "numbers below are WARMUP-BIASED and read LOW. Re-run with >= %d shots. ***"
+                  % (len(seq_ids), drop, drop + 10))
+
     # per-site 2-Gaussian EM over the WHOLE run (imaging fixed across cells) -> threshold + d'
     thr = np.empty(I1.shape[1]); dp = np.empty(I1.shape[1])
     for k in range(I1.shape[1]):
@@ -179,8 +205,8 @@ def analyze(data_dir, st):
         flat = np.zeros_like(flat)
 
     print("=" * 86)
-    print("LOADING round %d  scan=%s  n=%d cells=%d sites=%d pattern=%s"
-          % (st["round"], sid.replace("data_", ""), n, ncell, I1.shape[1], st.get("pattern")))
+    print("LOADING round %d  scan=%s  n=%d (warmup dropped %d) cells=%d sites=%d pattern=%s"
+          % (st["round"], sid.replace("data_", ""), n, ndrop, ncell, I1.shape[1], st.get("pattern")))
     print("  " + st.get("axis_desc", ""))
     print("  d' (whole run): median %.2f  frac>3 %.2f" % (np.median(dp), (dp > 3).mean()))
     print("  %5s %9s %8s %8s %8s %8s %7s" % ("cell", "load", "sem", "CV", "grad_x", "grad_y", "nshot"))
@@ -216,6 +242,15 @@ def analyze(data_dir, st):
 def _site_xy(cfg, nsite):
     """Site (x,y) from the scan config's detection grid, if present."""
     import numpy as np
+    # pyctrl scan configs carry the grid as flat initGridLocationsX/Y lists (len == nsite).
+    # They were never checked here, so corr(load,x/y) printed nan on EVERY loading_round run
+    # against a pyctrl config (not just r952, where it was misattributed to a "missing grid").
+    # The gradient null is a MORE sensitive MOT-centring estimator than the rate peak -- on
+    # 08-31 the rate peak and both gradient nulls coincided -- so this is worth having.
+    gx, gy = cfg.get("initGridLocationsX"), cfg.get("initGridLocationsY")
+    if (isinstance(gx, list) and isinstance(gy, list)
+            and len(gx) == nsite and len(gy) == nsite):
+        return np.column_stack([np.asarray(gx, float), np.asarray(gy, float)])
     for key in ("sites", "grid", "detection"):
         v = cfg.get(key)
         if isinstance(v, dict):
@@ -229,26 +264,47 @@ def _site_xy(cfg, nsite):
     return None
 
 
+def _h5_shots(data_dir):
+    """Shots written so far for THIS round (its own h5), or None."""
+    if not data_dir or not os.path.isdir(data_dir):
+        return None
+    sid = os.path.basename(data_dir.rstrip("/\\"))
+    try:
+        import h5py
+        with h5py.File(os.path.join(data_dir, sid + ".h5"), "r") as f:
+            return int(len(f["seq_ids"]))
+    except Exception:
+        return None
+
+
 def do_watch(args):
     with open(_state_path(args.round)) as f:
         st = json.load(f)
     target, start = st["target"], st["start"]
+    want = st.get("expected_shots")
     t0 = time.time(); last, last_change = start, time.time()
     while True:
         cur = B._zmq_int("get_seq_num"); el = int(time.time() - t0)
-        if cur is not None:
+        got = _h5_shots(st.get("data_dir")) if want else None
+        if got is not None:
+            print("  [%ds] seq_num=%s  %d/%d shots (this round)" % (el, cur, got, want))
+            if got != last:
+                last, last_change = got, time.time()
+            if got >= want:
+                print("  COMPLETE"); break
+        elif cur is not None:
             if cur != last:
                 last, last_change = cur, time.time()
             print("  [%ds] seq_num=%d  %d/%d" % (el, cur, cur - start, target - start))
             if cur >= target:
                 print("  COMPLETE"); break
-            if time.time() - last_change > 240:
-                print("  STALL 240s; partial."); break
+        if (cur is not None or got is not None) and time.time() - last_change > 240:
+            print("  STALL 240s; partial."); break
         if time.time() - t0 > args.timeout:
             print("  TIMEOUT; partial."); break
         time.sleep(10)
     time.sleep(8)
-    analyze(st["data_dir"], st)
+    analyze(st["data_dir"], st, args.drop)
 
 
 if __name__ == "__main__":
@@ -272,6 +328,9 @@ if __name__ == "__main__":
     ap.add_argument("--loading-phase", type=str, default=None)
     ap.add_argument("--desc", type=str, default=None)
     ap.add_argument("--timeout", type=int, default=1800)
+    ap.add_argument("--drop", type=int, default=10,
+                    help="warmup shots to drop before analysis (loading thermalizes over ~10 "
+                         "shots at run start); 0 disables")
     a = ap.parse_args()
     if a.phase == "submit":
         do_submit(a)
@@ -280,4 +339,4 @@ if __name__ == "__main__":
     else:
         with open(_state_path(a.round)) as f:
             st = json.load(f)
-        analyze(st["data_dir"], st)
+        analyze(st["data_dir"], st, a.drop)

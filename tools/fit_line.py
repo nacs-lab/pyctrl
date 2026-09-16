@@ -173,6 +173,32 @@ def main():
     axes = _axes(js)
     n_ax = len(axes)
 
+    # A LOADING scan (TweezerLoadingSeq, one image) has no line to fit and is legitimately 0-, 1-
+    # or 2-axis -- a single-point verify, a knob sweep, or the 3-point bias canary -- so it is
+    # routed BEFORE the axis-count rules below would call a single point "nothing to fit".
+    # loading_report.py reports rate / uniformity / stability / 2-atom fraction / d' and a verdict.
+    # ScanName carries the submit LABEL (loading_round.py labels its rounds "LoadingOpt_r<N>"); the
+    # sequence itself is the descriptor's "seq". Match on either.
+    _d = js.get("descriptor")
+    if isinstance(_d, str):
+        try:
+            _d = json.loads(_d)
+        except Exception:
+            _d = {}
+    seq_name = str((_d or {}).get("seq") or "")
+    if "tweezerloadingseq" in (name + " " + seq_name).lower() or name.lower().startswith("loadingopt"):
+        cmd = [sys.executable, os.path.join(TOOLS, "loading_report.py"), fid.replace("_", "")] + passthrough
+        print("fit_line: %s (%s) | %d swept %s -> loading_report.py"
+              % (name, seq_name or "?", n_ax, "axis" if n_ax == 1 else "axes"))
+        for i, (an, npn, co) in enumerate(axes):
+            print("    dim%d %s (%d pts)%s" % (i + 1, an, npn, ("  + co-varying: " + ", ".join(co)) if co else ""))
+        print("  why: a loading scan -- no lineshape; judged on rate, uniformity (corners, gradient), "
+              "per-shot stability, the 2-atom fraction and d'. A 3-cell 1-D is the bias canary (R, S).")
+        print("  cmd: " + " ".join(cmd))
+        if args.show:
+            return 0
+        return subprocess.call(cmd, cwd=ROOT)
+
     # 0. nothing was swept -- there is no axis to fit against. Say so here rather than
     #    dispatching to a fitter that will error on it.
     if n_ax == 0:
