@@ -24,7 +24,7 @@ couple of µs against a ~700 ms shot -- negligible.
 **Output** (best-effort; a failure here never perturbs a run):
   * one concise log line per shot (all non-zero stages, ms),
   * a CSV row per shot at ``<log_dir>/run_timing_<ts>.csv`` (one column per stage) for
-    offline aggregation (``tools/analyze_run_timing.py``),
+    offline aggregation (``tmp/analyze_run_timing.py``, retired from tools/ 2026-09-16),
   * a mean/median/max per-stage summary logged at end-of-scan (:func:`scan_summary`).
 
 Stage taxonomy (the flat top-level stages sum to ~the shot total; ``other`` is the small

@@ -1076,7 +1076,60 @@ def _consts():
             #    0.19 s (r975), so 0.200 is doing real work. LAC unchanged at 30 ms: the 2-atom
             #    fraction is flat 0.6-0.8% all the way down to 5 ms (r979), so it COULD be cut to
             #    ~15 ms for 15 ms of cycle, but not without a survival test in the 2-image sequence.
-            "BlueMOT": {"Img1PIDSet": 1.0, "Img2PIDSet": 1.0,
+            # 2026-09-15 (evening) imaging re-optimization, rounds r1000-r1023. Img1PIDSet 1.0 -> 1.4,
+            # Img2PIDSet 1.0 -> 0.4 (PARKED, see below). Order per the runbook, with the per-beam
+            # dynamic-range check FIRST this time (it was skipped and the user corrected it):
+            #  * BEAM-2 SERVO IS NOT REGULATING -- the finding of the night. Isolated by DDS Amp1 = 0
+            #    (the per-beam mechanical shutters do not work), Img2PIDSet reads DEAD FLAT across its
+            #    whole span: 0..3.3 V @0.3 (r1005, dist 2.5-2.6 ADU, d' 2.86-2.98) and again 0.1..1.5 V
+            #    @0.1 with 10 shots/pt (r1008, dist 2.7-2.8, d' 3.01-3.15), so it is not a narrow band
+            #    being stepped over. CONFIRMED OPTICALLY on scope 192.168.0.41: beam 2's photodiode
+            #    (ch2) sits at 0.38-0.40 V whether its setpoint is 0.2 or 1.4, while beam 1's ch1
+            #    tracks its own setpoint (0.81 -> 1.46 V for 1.0 -> 2.1) as a positive control. Beam 2
+            #    still delivers a FIXED ~2.5 ADU of signal (both-on dist 9.0 ~= beam-1-only 7.0 + 2.5).
+            #    CAUSE (user, 2026-09-15): BEAM 2's AMPLIFIER IS TOO WEAK, so the setpoint voltage has
+            #    little control over the actual beam power -- the loop cannot reach what the reference
+            #    scale asks for and the power sits near a fixed value at EVERY setpoint, including 0.
+            #    Hardware fix planned by the user. Everything upstream was excluded by measurement
+            #    first, which is what isolated the amplifier: the 12 swept setpoints are all present in
+            #    the compiled .seq blobs (16 bytes differing), Dev1/24 reads back +0.39983 V against a
+            #    commanded 0.4 on the card's own AO monitor, and scope ch2 swings 0 -> 0.39 V when the
+            #    beam turns on -- so scan plumbing, DAC and photodiode are all fine.
+            #    Img2PIDSet is therefore an INERT knob: r1006 (Img2 1.0) and r1021 (Img2 0.4) give the
+            #    same atom-empty distance cell-for-cell (10.1 vs 10.2, 13.9 vs 13.9). Parked at 0.4 per
+            #    the user. ** WARNING FOR WHOEVER REPAIRS THE SERVO: 0.4 is INERT ONLY WHILE THE SERVO IS
+            #    STUCK. The moment it regulates again, 0.4 V becomes a live command and beam 2's power
+            #    jumps to whatever it asks for, silently changing imaging mid-campaign. The repair MUST
+            #    be followed by the per-beam range check and a re-derivation of BOTH setpoints (and of
+            #    Imag399.FreqDetuning, which was chosen at tonight's total light). Img1PIDSet 1.4 is an
+            #    optimum CONDITIONAL on beam 2 being stuck -- it is unbiased as measured (beam 2's fixed
+            #    contribution was common-mode across all three arms of the r1022 interleave), but it is
+            #    not the post-repair optimum. ** This also means every past "Img2 is a weak lever / the Img2 axis is flat /
+            #    power is saturated" note (07-18, 07-29, 08-05, 08-10, 08-12, 08-19, 09-07, 09-14) is at
+            #    least partly this stuck servo, not saturation. ** Bench suspects: the beam-2 servo
+            #    photodiode / error signal, VImg2PIDSet (Dev1/24), TTL399IMG2PIDMode (FPGA1/TTL19).
+            #  * BEAM 1 IS HEALTHY and is the only working power knob: isolated (r1004) it is floored
+            #    below ~0.6 V (dist 3.0 ADU), rises 0.9 -> 2.1 V (5.2 -> 14.3 ADU, d' 4.4 -> 7.5) and
+            #    RAILS above ~2.1 (13.9-14.5 flat) -- the same rail the 07-18 note put at ~2.2 V.
+            #  * Img1 1.4 was decided by a 180-shot INTERLEAVED head-to-head (r1022, 60 shots/config in
+            #    ONE scrambled scan): 1.0 -> survival 0.9922 +- 0.0005 / d' 5.92; 1.4 -> 0.9932 +- 0.0004
+            #    / d' 6.71; 1.8 -> 0.9907 +- 0.0005 / d' 7.30. 1.4 beats the incumbent 1.0 on BOTH
+            #    metrics and beats 1.8 on survival by 3.8 sigma. (1.8 was the balanced pick of both 1-D
+            #    sweeps r1006/r1021; the interleave is what separated it from 1.4.)
+            #  * WHY EVERY ADOPTION TONIGHT IS AN INTERLEAVE: the 399 wavemeter PID lock is DISENGAGED
+            #    (railed 8.0 V, "diverged" alarm) and has been since at least 14:45, so the laser
+            #    free-runs +-5 MHz on ~15-min timescales. The SAME config measured 10 min apart read
+            #    survival 0.9925 vs 0.9796. Cross-run grid cells cannot decide anything at this
+            #    precision; only shot-by-shot interleaving makes the drift common-mode.
+            #  * 100-shot per-site VERIFY at the adopted W (r1023, data_20260915_214327): per-site
+            #    fidelity median 1.00000 / mean 0.99982, 99.7% of sites >= 0.995; d' median 7.79 (p5
+            #    6.54, only 0.1% of sites < 3); survival 0.9930 +- 0.0009; loading 0.591; spatially FLAT
+            #    (|gradient| <= 0.001 across the array in both x and y). BOTH runbook gates pass.
+            #    Residual low tail is the chronic shallow-trap set s624/s625/s591 (survival 0.40/0.51/
+            #    0.51 at d' 3.0/3.0/3.9) = SLM depth, not cooling.
+            #  * Imag399.Cool556 did NOT move: the X map at the new power (r1007) reproduced (0.18, 0.30)
+            #    and the h candidate (0.18, 0.24) tied the incumbent in the r1019 interleave (0.2 sigma).
+            "BlueMOT": {"Img1PIDSet": 1.4, "Img2PIDSet": 0.4,
                         "LoadingTime": 0.25,      # 2026-09-15: was 0.6 (see above); knee ~0.12 s at -47 MHz
                         "FreqDetuning": -46.0932e6},  # 2026-09-15: -47e6 -> -46.0932e6, a BOOKKEEPING
             #      change that leaves the PHYSICAL frequency identical. BlueMOTStep.py:62 sets
@@ -1448,8 +1501,20 @@ def _consts():
                 # (0.15, 0.17) 0.544 = converged (pins match returns both ways). 100-shot drift-free
                 # head-to-head old-vs-new full config (r14 20260819083234 / r15 20260819083438):
                 # 0.4912 vs 0.5400 (+0.049, ~10 SEM) at matched loading 0.54.
-                "X": {"FreqDetuning": 0.15e6, "Amp": 0.17},  # RNR re-opt 2026-08-19 (was 0.12e6/0.14 @ 07-20)
-                "h": {"FreqDetuning": 0.15e6, "Amp": 0.17},  # RNR re-opt 2026-08-19 (was 0.12e6/0.14 @ 07-20)
+                # 2026-09-15 (evening) RNR re-optimization, rounds RNR r1000-r1003, 30 us release,
+                # 7-10 passes/cell, X<->h coordinate ascent, loading flat 0.583-0.613 across every grid
+                # (so the structure is real cooling, not a loading artifact). ONLY h.Amp moved, 0.17 ->
+                # 0.13. r1000 mapped X with h at the incumbent and X did not move (peak (0.15, 0.21)
+                # 0.518 ties the incumbent (0.15, 0.17) 0.518). r1001 mapped h against it -> peak
+                # (0.12, 0.13) 0.532 +- 0.007 vs 0.518, only ~1.4 sigma, so it went to a head-to-head
+                # rather than being adopted or shrugged off. r1002's 2x2 interleave at 40 passes/cell
+                # (160 shots, data_20260915_214808) resolved it: amp 0.13 wins at BOTH detunings
+                # (0.529 / 0.530) against amp 0.17 (0.492 / 0.518), while the detuning is immaterial at
+                # amp 0.13 -- so amp 0.17 -> 0.13 (+0.012, ~2.8 sigma) and det STAYS 0.15. r1003 then
+                # re-mapped X against the moved h pin (200 shots, data_20260915_215103) and it returned
+                # (0.15, 0.17) 0.538 +- 0.006 -- pins match returns both ways, i.e. CONVERGED.
+                "X": {"FreqDetuning": 0.15e6, "Amp": 0.17},  # RNR 2026-09-15 re-confirmed at the new h pin (was 0.12e6/0.14 @ 07-20; 0.15e6/0.17 @ 08-19)
+                "h": {"FreqDetuning": 0.15e6, "Amp": 0.13},  # RNR re-opt 2026-09-15: amp 0.17 -> 0.13 (det unchanged)
             },
             # Post-rearrangement recool before STIRAPPushoutStep (RearrangeCool556hXStep). Seeded to
             # the Cool556 X/h values ABOVE, which is exactly what the 2026-08-06 A/B ran
