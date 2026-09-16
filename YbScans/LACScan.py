@@ -126,8 +126,8 @@ def LACScan(url=None, reps=None):
     # GreenMOT handover / cooldown
     #g().GreenMOT.PowerBroaden.HandoverTime = 0.015   # blue->green overlap; plateau 0.010-0.050
     #g().GreenMOT.PowerBroaden.HandoverTime.scan(1, np.linspace(0.005, 0.050, 10))
-    #g().GreenMOT.CoolDown.FreqDetuning = 0.5e6
-    #g().GreenMOT.CoolDown.Amp.scan(1, np.linspace(0, 0.5, 10))   # 0.25; dead by 0.40
+    #g().GreenMOT.CoolDown.h.FreqDetuning = 0.5e6
+    #g().GreenMOT.CoolDown.h.Amp.scan(1, np.linspace(0, 0.5, 10))   # 0.25; dead by 0.40
     #g().GreenMOT.CoolDown.HoldTime = 0.5
     #g().GreenMOT.CoolDown.RampdownTime = 0.05    # WARNING: 0.0 ERRORS (ramp(0) invalid), keep >=0.01
     #

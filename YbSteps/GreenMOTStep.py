@@ -62,16 +62,19 @@ def GreenMOTStep(s, g):
     s.wait(t_Handover)  # now 50ms is probably too long
 
     # step 4: Cool down by ramping down the power and detuning
-    t_Rampdown = g.CoolDown.RampdownTime(Consts().GreenMOT.CoolDown.RampdownTime)
-    Freq_GreenMOTDetuning_CD = g.CoolDown.FreqDetuning(Consts().GreenMOT.CoolDown.FreqDetuning)
-    Freq_GreenMOT_CD = Freq_Resonance556mj0Freq + Freq_GreenMOTDetuning_CD
-    Amp_GreenMOT_CD = g.CoolDown.Amp(Consts().GreenMOT.CoolDown.Amp)
+    t_Rampdown = g.CoolDown.RampdownTime(Consts().GreenMOT.CoolDown.RampdownTime)    
+    Freq_GreenMOTDetuning_CD_X = g.CoolDown.X.FreqDetuning(Consts().GreenMOT.CoolDown.X.FreqDetuning)
+    Freq_GreenMOT_CD_X = Freq_Resonance556mj0Freq + Freq_GreenMOTDetuning_CD_X
+    Amp_GreenMOT_CD_X = g.CoolDown.X.Amp(Consts().GreenMOT.CoolDown.X.Amp)
+    Freq_GreenMOTDetuning_CD_h = g.CoolDown.h.FreqDetuning(Consts().GreenMOT.CoolDown.h.FreqDetuning)
+    Freq_GreenMOT_CD_h = Freq_Resonance556mj0Freq + Freq_GreenMOTDetuning_CD_h
+    Amp_GreenMOT_CD_h = g.CoolDown.h.Amp(Consts().GreenMOT.CoolDown.h.Amp)
 
     (s.add_step(t_Rampdown)
-        .add('Freq556MOTX', ramp_to(Freq_GreenMOT_CD))
-        .add('Amp556MOTX', ramp_to(Amp_GreenMOT_CD))
-        .add('Freq556RydbergMOTh', ramp_to(Freq_GreenMOT_CD))
-        .add('Amp556RydbergMOTh', ramp_to(Amp_GreenMOT_CD)))
+        .add('Freq556MOTX', ramp_to(Freq_GreenMOT_CD_X))
+        .add('Amp556MOTX', ramp_to(Amp_GreenMOT_CD_X))
+        .add('Freq556RydbergMOTh', ramp_to(Freq_GreenMOT_CD_h))
+        .add('Amp556RydbergMOTh', ramp_to(Amp_GreenMOT_CD_h)))
 
 
     #s.add('AmpBlueMOT', 0.03)  # keep a tiny bit of blue MOT light on

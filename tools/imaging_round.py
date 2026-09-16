@@ -283,8 +283,14 @@ def build(args):
         p1 = [float(v) for v in _colon(*args.pid1)]
         p2 = [float(v) for v in _colon(*args.pid2)]
         det_hz = float(args.det) * 1e6
-        g().Imag399.Amp1 = 1
-        g().Imag399.Amp2 = 1
+        # DDS amps normally stay at 1 (power is the servo setpoint). The ONE exception is the
+        # per-beam DYNAMIC-RANGE check that must precede a 2-D setpoint map: to sweep one beam's
+        # setpoint you kill the OTHER beam with --dds-amp1/--dds-amp2 0, else its light floods the
+        # image and the swept axis reads flat (runbook 07-14 banner; seen 2026-08-17).
+        a1 = float(args.dds_amp1)
+        a2 = float(args.dds_amp2)
+        g().Imag399.Amp1 = a1
+        g().Imag399.Amp2 = a2
         g().BlueMOT.Img1PIDSet.scan(1, p1)
         g().BlueMOT.Img2PIDSet.scan(2, p2)
         g().Imag399.FreqDetuning = det_hz
@@ -299,17 +305,17 @@ def build(args):
         g().Imag399.Cool556.h.Amp = hca
         g().Pushout.Time = float(args.hold)                # 0 pushout = real 50 ms survival
         # pushout proxy step (irrelevant at hold~0) -- keep it at the imaging condition, PID-servoed too.
-        g().Pushout.Blue.Amp1 = 1
-        g().Pushout.Blue.Amp2 = 1
+        g().Pushout.Blue.Amp1 = a1
+        g().Pushout.Blue.Amp2 = a2
         g().Pushout.Blue.Freq = reson399 + det_hz
         g().Pushout.Green.X.Freq = reson556 + xcd
         g().Pushout.Green.X.Amp = xca
         g().Pushout.Green.h.Freq = reson556 + hcd
         g().Pushout.Green.h.Amp = hca
-        axis_desc = ("PIDset Img1=%s x Img2=%s (DDS amps=1) det=%.2fMHz hold=%.3fs "
+        axis_desc = ("PIDset Img1=%s x Img2=%s (DDS amps=%.2f/%.2f) det=%.2fMHz hold=%.3fs "
                      "cool X(%.2fMHz,%.2f) h(%.2fMHz,%.2f)" % (
-                         [round(v, 3) for v in p1], [round(v, 3) for v in p2], args.det, args.hold,
-                         xcd / 1e6, xca, hcd / 1e6, hca))
+                         [round(v, 3) for v in p1], [round(v, 3) for v in p2], a1, a2,
+                         args.det, args.hold, xcd / 1e6, xca, hcd / 1e6, hca))
     elif args.mode == "cool":
         # 0-PUSHOUT cooling scan: sweep Imag399.Cool556.{beam}.{FreqDetuning, Amp} at the REAL 50 ms
         # image (hold ~0), amps + the OTHER beam's cooling FIXED. Survival is the real readout (low
@@ -719,9 +725,9 @@ if __name__ == "__main__":
     ap.add_argument("--pattern", type=str, default=None,
                     help="override PATTERN (ByPattern overlay key, e.g. 33x33_feedback1)")
     ap.add_argument("--dds-amp1", type=float, default=1.0,
-                    help="cool mode: pin image-frame DDS Imag399.Amp1 (post-servo light-down; default 1)")
+                    help="cool/pidset mode: pin image-frame DDS Imag399.Amp1 (post-servo light-down; default 1). In pidset mode set the OTHER beam to 0 for the per-beam dynamic-range check.")
     ap.add_argument("--dds-amp2", type=float, default=1.0,
-                    help="cool mode: pin image-frame DDS Imag399.Amp2 (post-servo light-down; default 1)")
+                    help="cool/pidset mode: pin image-frame DDS Imag399.Amp2 (post-servo light-down; default 1). In pidset mode set the OTHER beam to 0 for the per-beam dynamic-range check.")
     ap.add_argument("--desc", type=str, default=None,
                     help="run description (purpose/context) stamped into the scan sidecar -- always pass for a campaign")
     ap.add_argument("--timeout", type=int, default=1800)

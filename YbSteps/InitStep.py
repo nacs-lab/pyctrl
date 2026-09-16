@@ -45,6 +45,7 @@ def InitStep(s, g):
         .add('FreqAODv', 100e6)
         .add('Amp556MOTX', 0)
         .add('Amp556RydbergMOTh', 0)
+        .add('Amp556RydbergHF', 0.9)
         .add('AmpSLM', 0.55)
         .add('Amp369', 0)
         .add('VSLMservo', VSLMservo)

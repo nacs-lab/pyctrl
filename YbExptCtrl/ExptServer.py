@@ -158,6 +158,67 @@ def _ensure_dir(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
 
+# --- crash-durable state files -------------------------------------------------
+# `os.replace` alone is atomic against a PROCESS crash but NOT against an unclean
+# OS restart (power loss / hard reset). NTFS journals the rename (metadata) without
+# necessarily having flushed the file's data blocks, so after the reset the file
+# exists at full length but reads back as NULs -- json.load then fails with
+# "Expecting value: line 1 column 1 (char 0)" and the runner queue silently starts
+# over from job id 1. That ate the queue + history on 2026-07-22, 2026-08-05 and
+# 2026-09-15. Three layers now guard it:
+#   1. _durable_write      -- flush + fsync BEFORE the rename, so the bytes are on
+#                             the platter by the time the file is visible.
+#   2. QUEUE_PATH + '.bak' -- the previous (already-durable) save, rotated aside on
+#                             every write; __load_queue falls back to it.
+#   3. QUEUE_PATH + '.idfloor' -- a few-byte monotonic id floor written on every id
+#                             mint. Even if BOTH JSON files are unreadable, job ids
+#                             resume where they left off instead of at 1.
+def _bak_path():
+    """The rotated previous save. Derived from QUEUE_PATH at CALL time so a test
+    that monkeypatches QUEUE_PATH stays inside its tmp dir."""
+    return QUEUE_PATH + '.bak'
+
+
+def _id_floor_path():
+    """The tiny monotonic job-id floor file (see the block comment above)."""
+    return QUEUE_PATH + '.idfloor'
+
+
+def _durable_write(path, text):
+    """Write `text` to `path` so it survives a power loss, not just a process crash.
+
+    tmp file -> flush -> fsync -> atomic rename. Raises on failure (callers log)."""
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _read_json_dict(path):
+    """Read a JSON object from `path`. Returns (dict, None) or (None, reason);
+    never raises. A zero-length / NUL-filled file (what a hard reset leaves behind)
+    fails here, which is what sends __load_queue on to the .bak."""
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+    except Exception as ex:  # noqa: BLE001 - any unreadable file -> try the next candidate
+        return None, str(ex)
+    if not isinstance(data, dict):
+        return None, 'not a JSON object (%s)' % type(data).__name__
+    return data, None
+
+
+def _read_id_floor(path):
+    """Last persisted `next_job_id`, or 1 when there is no usable floor file."""
+    try:
+        with open(path, 'r') as f:
+            return max(int((f.read() or '').strip()), 1)
+    except Exception:  # noqa: BLE001 - absent/empty/garbage -> no floor
+        return 1
+
+
 class ExptServer(object):
     class State(Enum):
         Init = 0
@@ -1083,12 +1144,14 @@ class ExptServer(object):
             if job_id is None:
                 jid = self.__next_job_id
                 self.__next_job_id += 1
+                self.__persist_id_floor_locked()
             else:
                 jid = int(job_id)
                 # Keep the counter strictly ahead of any reused id so a later
                 # freshly-minted job can never collide with it.
                 if jid >= self.__next_job_id:
                     self.__next_job_id = jid + 1
+                    self.__persist_id_floor_locked()
             entry = {
                 'id': jid,
                 'kind': 'job',                  # NEW: explicit discriminator
@@ -1417,6 +1480,7 @@ class ExptServer(object):
         with self.__queue_lock:
             did = self.__next_job_id
             self.__next_job_id += 1
+            self.__persist_id_floor_locked()
             # Best-effort label / seqName extraction so the queue UI shows
             # a meaningful name without forcing the caller to set `label`.
             seq_name = ''
@@ -1839,7 +1903,16 @@ class ExptServer(object):
 
     def __save_queue_locked(self):
         """Caller must hold __queue_lock. Writes queue + history (payloads
-        base64-encoded) atomically to JSON."""
+        base64-encoded) to JSON, durably (see the _durable_write block comment).
+
+        Each save first rotates the previous file to ``.bak``. That old file's data
+        blocks are long since on disk, so it is the one copy a hard reset cannot
+        zero-fill -- __load_queue falls back to it when the primary comes back
+        corrupt. The rename is metadata-only and costs nothing.
+
+        The backup is ONE GENERATION behind by construction, so recovering from it
+        loses at most the most recent state transition (a finish status, a file_id).
+        Id continuity does NOT rely on it -- that is the id floor's job."""
         import base64
         import datetime
         try:
@@ -1850,12 +1923,30 @@ class ExptServer(object):
                 'queue': [self.__entry_to_json(e) for e in self.__queue],
                 'history': [self.__entry_to_json(e, with_payload=False) for e in self.__history],
             }
-            tmp = QUEUE_PATH + '.tmp'
-            with open(tmp, 'w') as f:
-                json.dump(serializable, f)
-            os.replace(tmp, QUEUE_PATH)
+            text = json.dumps(serializable)
+            # Rotate last-good -> .bak BEFORE publishing the new file. A crash in
+            # the gap leaves no primary but a valid .bak, which __load_queue reads.
+            try:
+                if os.path.exists(QUEUE_PATH):
+                    os.replace(QUEUE_PATH, _bak_path())
+            except OSError:
+                pass  # best-effort; the durable write below is the primary guard
+            _durable_write(QUEUE_PATH, text)
         except Exception as ex:
             print(f"[ExptServer] warning: queue persist failed: {ex}")
+
+    def __persist_id_floor_locked(self):
+        """Caller must hold __queue_lock. Persist ``__next_job_id`` to its own
+        few-byte file, durably.
+
+        Deliberately SEPARATE from the queue JSON: this is the last line of defense
+        for id continuity, so it must not share a failure with the big file. Written
+        on every id mint, it costs one fsync of ~5 bytes per scan submission."""
+        try:
+            _ensure_dir(QUEUE_PATH)
+            _durable_write(_id_floor_path(), str(int(self.__next_job_id)))
+        except Exception as ex:  # noqa: BLE001 - never fail a submit over the floor file
+            print(f"[ExptServer] warning: job-id floor persist failed: {ex}")
 
     def __entry_to_json(self, e, with_payload=True):
         import base64
@@ -1876,26 +1967,47 @@ class ExptServer(object):
         window is the only thing that evicts old scans. The saved ``date`` is
         still written (diagnostics) but no longer triggers a clear: a
         same-machine restart reloads the full history whether or not it crosses
-        midnight."""
+        midnight.
+
+        Crash recovery: the state file is tried in order -- live, then the ``.bak``
+        rotated aside by the previous save, then ONCE the legacy temp-dir path -- so
+        a primary that an unclean restart zero-filled no longer wipes the queue. The
+        resulting ``next_job_id`` is the MAXIMUM of the saved counter, the persisted
+        id floor, and one past the highest id actually present, so job ids stay
+        continuous even if every JSON row is gone."""
         import base64
-        # Prefer the stable path; fall back ONCE to the legacy temp-dir location
-        # (one-time migration on upgrade — the next save rewrites to QUEUE_PATH).
-        path = QUEUE_PATH
-        if not os.path.exists(path):
-            if (QUEUE_PATH == _DEFAULT_QUEUE_PATH
-                    and os.path.exists(_LEGACY_QUEUE_PATH)):
-                path = _LEGACY_QUEUE_PATH
-                print(f"[ExptServer] migrating queue from legacy temp path {path}")
-            else:
-                return
-        try:
-            with open(path, 'r') as f:
-                data = json.load(f)
-        except Exception as ex:
-            print(f"[ExptServer] warning: could not load {path}: {ex}")
+        # Candidates, best first. The legacy temp-dir location is a one-time
+        # migration on upgrade (the next save rewrites to QUEUE_PATH) and applies
+        # only when QUEUE_PATH is un-overridden -- a test that monkeypatches it must
+        # not inherit the operator's real queue.
+        candidates = [(QUEUE_PATH, None), (_bak_path(), 'backup')]
+        if QUEUE_PATH == _DEFAULT_QUEUE_PATH:
+            candidates.append((_LEGACY_QUEUE_PATH, 'legacy temp path'))
+
+        # Read the id floor FIRST: it is the only id source that survives losing
+        # both JSON files, and it is consulted whether or not one of them loads.
+        floor = _read_id_floor(_id_floor_path())
+
+        data = None
+        for cand, label in candidates:
+            if not os.path.exists(cand):
+                continue
+            data, err = _read_json_dict(cand)
+            if data is not None:
+                if label:
+                    print(f"[ExptServer] recovered queue state from {label} {cand}")
+                break
+            print(f"[ExptServer] warning: could not load {cand}: {err}")
+
+        if data is None:
+            # Nothing readable. Keep the ids going anyway -- restarting at 1 after a
+            # crash silently reuses ids the operator has already seen in the logs.
+            if floor > self.__next_job_id:
+                self.__next_job_id = floor
+                print(f"[ExptServer] no readable queue state -- job ids resume at "
+                      f"{floor} from the id floor (queue + history start empty)")
             return
 
-        self.__next_job_id = max(int(data.get('next_job_id', 1)), 1)
         demoted = 0
         demoted_desc = 0
         skipped_unknown = 0
@@ -1939,3 +2051,21 @@ class ExptServer(object):
         if skipped_unknown:
             print(f"[ExptServer] WARNING: skipped {skipped_unknown} queue row(s) with unknown 'kind' "
                   f"(future schema? safe to ignore on downgrade)")
+
+        # next_job_id = max(saved counter, persisted floor, highest id seen + 1).
+        # Any one of the three can be stale or missing after a crash; the max is
+        # what makes the id strictly monotonic across restarts.
+        try:
+            saved_next = int(data.get('next_job_id', 1))
+        except (TypeError, ValueError):
+            saved_next = 1
+        highest = 0
+        for e in list(self.__queue) + list(self.__history):
+            try:
+                highest = max(highest, int(e.get('id', 0)))
+            except (TypeError, ValueError):
+                pass
+        self.__next_job_id = max(saved_next, floor, highest + 1, 1)
+        if self.__next_job_id > floor:
+            # Seed/advance the floor file (first run after this upgrade has none).
+            self.__persist_id_floor_locked()

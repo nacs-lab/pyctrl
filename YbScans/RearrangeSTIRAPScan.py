@@ -47,6 +47,15 @@ INIT_PATTERN = "33x33_feedback11"
 TARGET_PATTERN = "33x33_feedback11"
 
 MODEL_FILENAME = "SLMnet/checkpoints/sinc_3x3_experiment/models/direct_flat/direct_flat_best.pth"
+
+# Passes over the sweep. Single source of truth: build() uses it for NumPerGroup
+# (= REPS * n_combos) and it is the default for both the API and the CLI, so the planned shot
+# count and the submitted rep count can never disagree.
+# 2026-09-15 STAGE B (pw556 x pw308 x delay, 5 x 5 x 3 = 75 combos): 5 passes = 375 shots,
+# ~15 min. A coarse 3-D box is spent LOCATING the efficient plane, not resolving a cell -- the
+# fine co-vary along that plane is where the statistics go. (Was 20 for the 1-D delay scan,
+# where 19 points could afford 20 shots each.)
+REPS = 100
 # ------------------------------------------------------------------------------------ #
 
 
@@ -136,24 +145,109 @@ def build():
     # carrier = 119.1565 + 0.926*(EOM616 - 230.55) is a LOCAL 71 3S1 linearization -- do NOT
     # extrapolate it across the state change. Two-photon optimum still needs a fresh freq-2D.
     # was: Ch1 118.1133 / Ch2 118.5326 (71 3S1, 08-28 dimer co-vary argmins).
-    g().AWG.AWG556.Ch1.carrier_freq_MHz = 119.2863
-    g().AWG.AWG556.Ch1.pulse_width_us.scan(2, [1.0000, 1.4000, 1.8000, 2.2000, 2.6000, 3.0000, 3.4000, 3.8000, 4.2000, 4.6000, 5.0000])
-    g().AWG.AWG556.Ch1.max_amplitude_vpp = 15
+    # 2026-09-14 mj=+1 AT 60 G -- EVERY PRE-09-14 FREQUENCY LOCK IS VOID. The high-field
+    # Rydberg 556 AOM (AOM3) was moved from the -1st to the +1st order, so the intermediate
+    # state is now 3P1 mj=+1 and every 556/616 frequency shifts wholesale:
+    #   556 single-photon line  119.0363 -> 97.3253 MHz  (delta -21.711; scan 20260914_154800,
+    #                            FWHM 121.7 kHz, R^2 0.975, reproduced 97.3225 on 20260914_153831)
+    #   616 revival (308 res.)  343.839  -> 392.8326 MHz (scan 20260914205331, FWHM 4.91 MHz,
+    #                            R^2 0.991; was 392.975 at 16:46 -- a -142 kHz walk on a 4.9 MHz line)
+    # SEEDS for the mj=+1 freq-2D, by applying the measured single-photon shifts to the
+    # 09-10 every_other locks (carrier 118.9863 / EOM 344.5390):
+    #   carrier = 118.9863 - 21.711 = 97.275 MHz
+    #   EOM616  = 392.8326 + 0.700  = 393.533 MHz  (mj=-1's two-photon lock sat +0.70 ABOVE
+    #                                               its revival -- do NOT assume lock = revival)
+    # Pulse widths + delay are NOT re-derived here: they set the adiabatic pulse area, not the
+    # resonance, so the every_other locks (pw 3/3 us, delay 1.35 us) carry across the state change
+    # and are pinned so this scan measures frequency ONLY.
+    # 2026-09-15: the 09-14 SEEDS ABOVE ARE SUPERSEDED -- they were EXTRAPOLATED (09-10 lock +
+    # the measured single-photon shift); today both legs were measured directly at this exact
+    # operating point (3P1 mj=+1, 60 G, 66 3S1), AFTER the morning's three freq-2D attempts:
+    #   556 bare Rydberg line   97.3237 MHz (scan 20260915_123732, FWHM 158.2 kHz, R^2 0.979)
+    #   556 Autler-Townes       dips 96.8961 / 97.7954 -> MIDPOINT 97.3457 MHz, splitting
+    #                           0.90 +- 0.02 MHz => Omega_308/2pi = 0.90 MHz at Ryd308.Amp 0.4
+    #                           (scan 20260915_125339; wide +-3 MHz confirm 20260915_125039)
+    #   with EOM616 PARKED AT   392.948 MHz -- the AT midpoint sits only +22 kHz from the bare
+    #                           line, so that park is on two-photon resonance to ~44 kHz.
+    # The AT midpoint is a FAR tighter anchor than the 616 revival peak (a 4.9 MHz-wide feature),
+    # so this freq-2D centers on (97.3457, 392.948), NOT on the extrapolated (97.275, 393.533).
+    # Grid is self-consistent with the ridge: |slope| ~0.93 carrier-MHz per EOM-MHz means a
+    # +-0.30 EOM span sweeps the ridge +-0.28 in carrier, so carrier spans +-0.30 to contain it.
+    # NOTE the ridge SIGN is unknown at this operating point: AOM3 moved from the -1st to the
+    # +1st order on 09-14, which should FLIP the old 71-3S1 slope (+0.926) to negative. The grid
+    # is symmetric in carrier, so it catches the ridge either way -- do not assume the sign.
+    # 2026-09-15 ROUND 2 -- WIDENED to +-0.60 x +-0.60 (steps coarsened 0.05->0.10 carrier,
+    # 0.10->0.15 EOM to hold the shot count flat). Ridge containment: |slope| ~1.25 x +-0.60 EOM
+    # = +-0.75 carrier, so the two extreme EOM columns truncate -- see below.
+    #
+    # *** CORRECTION (do not repeat this mistake). Round 1 (data_20260915_133655, 689 shots =
+    # 7.57 passes over 91 combos) was called "no usable structure" at the time. THAT WAS WRONG.
+    # Round 1 contains a ~62 pp, ~36-sigma diagonal ridge. The miss is the classic Rule-2 failure
+    # the STIRAP runbook warns about: reading analyze_scan/run_analysis summary.survival_mean,
+    # which COLLAPSES AND RE-ORDERS a 2-D sweep. Re-read with the Rule-1 metric (Params-grouping
+    # + select_subset_stirap target mask) the structure is unmissable. Round 1's real defect was
+    # only its WINDOW: +-0.30 sits entirely inside the dip's flank, so it never reaches the
+    # off-resonant baseline (window max 93%, fitted asymptote 1.19 = unphysical) and its argmin
+    # rails on the carrier low edge. Widening was the right call for the wrong stated reason. ***
+    #
+    # ROUND 2 RESULT (data_20260915_140525, 339 shots = 2.90 passes; verified two ways):
+    #   argmin  28.96% +- 1.42 survival at carrier 96.9457 / EOM616 392.648
+    #   baseline 98.62% off-ridge  =>  peak excitation ~71%, argmin at 48.7 sigma
+    #   ridge    carrier = 97.392 + 1.25*(EOM616 - 392.948)   [b = +1.25 +- 0.06, R^2 0.942]
+    #   Window is CONVERGED: ridge interior, BOTH baselines reached, no further widening needed.
+    #   Only the two extreme EOM columns (392.348 / 393.548) truncate -- ignore their fits.
+    # The ridge intercept sits +0.05..+0.10 MHz ABOVE today's AT midpoint 97.3457, so the AT
+    # midpoint is on the ridge but ~0.10 MHz low in carrier (worth ~4-6 pp excitation, 5.2 sigma).
+    # NOTE the slope did NOT flip sign despite the 09-14 AOM3 -1st -> +1st order move (old
+    # 71-3S1 value was +0.926); b stayed POSITIVE and grew ~35%. Open question for yb-physics --
+    # do not assume the sign from the AOM order.
+    # 2026-09-15 STEP 2 -- FREQUENCY PAIR PARKED, and the scan axis moves to the DELAY (see the
+    # STIRAPDelay block below). Park taken from the FINE 5x5 zoom data_20260915_142454 (125 shots,
+    # carrier 96.85-97.05 x 0.05, EOM616 392.450-392.750 x 0.075), which refines the round-2
+    # coarse argmin:
+    #   PARK  carrier 97.0000 MHz / EOM616 392.675 MHz -> survival 27.00% +- 0.34 (~73% excitation)
+    #   The cell is INTERIOR on both axes (index 3 of 5) and well determined: 1678 mid events,
+    #   SEM 0.34 pp, vs a 73.9% worst cell in the same zoom.
+    # Supersedes the round-2 coarse argmin (96.9457 / 392.648, 28.96% +- 1.42), which the zoom
+    # re-reads as 29.00% +- 1.11 -- consistent, and ~2 pp worse than the refined park.
+    # CAVEAT, carried deliberately: the ridge bottom is FLAT. The zoom's next-best cells read
+    # 27.6 +- 2.1 (96.90/392.525) and 29.0 +- 1.1 (96.95/392.600), i.e. within ~1 sigma of the
+    # park. This is the best MEASURED pair, not a resolved optimum -- the runbook's plateau
+    # lesson says such an argmin can be noise-selected. Once the delay is optimized, re-read the
+    # frequency along the ridge carrier = 97.392 + 1.25*(EOM616 - 392.948) and/or top-N verify.
+    g().AWG.AWG556.Ch1.carrier_freq_MHz = 96.7036
+    # ---- STAGE C (2026-09-15): TOP-N VERIFY, >=100 shots/point ------------------------
+    # Stage B's width/delay plateau is flat: the top cells span 0.3026..0.3089 with SEMs
+    # ~0.012-0.017, i.e. all within 1 sigma at 5 shots/cell. The runbook says settle that with a
+    # TOP-N verify, not by locking a single noise-selected argmin -- so the best 3 cells (each
+    # passing a mid-event guard of >=0.7x the median 1298 events, so small-N cannot win) are
+    # re-run together at 100 shots each.
+    # CO-VARY PATH: all three params sit on scan dim 1, so point k is the triple
+    # (PW556_US[k], PW308_US[k], DELAY_US[k]) -- pairing by construction. Runbook Rule 2: the lab
+    # analysis would collapse and re-order this, so the read-out MUST group by the logged Params.
+    #   k=0  4.0 / 4.0 / 1.35   (stage-B rank 1, 0.3026 +- 0.0165)
+    #   k=1  3.5 / 3.0 / 1.00   (rank 2,        0.3072 +- 0.0168)
+    #   k=2  3.0 / 3.0 / 1.35   (rank 3 = the INCUMBENT, 0.3089 +- 0.0144)
+    PW556_US = [4.0, 3.5, 3.0]
+    PW308_US = [4.0, 3.0, 3.0]
+    DELAY_US = [1.35, 1.00, 1.35]
+    g().AWG.AWG556.Ch1.pulse_width_us.scan(1, PW556_US)  # stage C: co-vary dim 1
+    g().AWG.AWG556.Ch1.max_amplitude_vpp = 14
     g().AWG.AWG556.Ch1.amplitude_scale = 0.87  # 08-06 amp scan monotonic to ceiling (power-limited)
 
     g().AWG.AWG556.Ch2.shape = "fall_quintic"
     # dimer_40um reverse: sweep data_20260828_054718 was pure noise (~22 events/pt, no
     # peak) -- reverse params ADOPTED from the clean geometries (offset +0.09; delay
     # mid-range), NOT measured on this pattern.
-    g().AWG.AWG556.Ch2.carrier_freq_MHz = 119.0363  # was 118.5326 (71 3S1); on resonance pending freq-2D
+    g().AWG.AWG556.Ch2.carrier_freq_MHz = 119.0363
     g().AWG.AWG556.Ch2.pulse_width_us = 2.0  # widths 2.0/2.0 kept (08-19 top-N verify tied-best)
-    g().AWG.AWG556.Ch2.max_amplitude_vpp = 15
+    g().AWG.AWG556.Ch2.max_amplitude_vpp = 14
     g().AWG.AWG556.Ch2.amplitude_scale = 0.9
     g().AWG.AWG556.Ch2.pad_time_us = 0.0
 
     g().AWG.AWG308.Ch1.shape = "fall_quintic"
     g().AWG.AWG308.Ch1.carrier_freq_MHz = 200
-    g().AWG.AWG308.Ch1.pulse_width_us = 3
+    g().AWG.AWG308.Ch1.pulse_width_us.scan(1, PW308_US)  # stage C: co-vary dim 1
     g().AWG.AWG308.Ch1.max_amplitude_vpp = 8  # amp saturated by 7.5 (07-15)
     g().AWG.AWG308.Ch1.amplitude_scale = 1
     g().AWG.AWG308.Ch1.pad_time_us = 2
@@ -190,18 +284,58 @@ def build():
     # (scan 20260910213014, FWHM 6.7 MHz; the 17:54 fit gave 343.9459 at FWHM 20.1 MHz --
     # peak stable, line NARROWED as the 308 coupling fell over the evening).
     # was 228.7775e6 (71 3S1 every_other lock; that state's revival sat ~229-230 MHz).
-    g().Init.EOM616.Freq = 344.7190e6
+    # 2026-09-14 mj=+1 seed (see the carrier block above): revival 392.8326 + 0.700 offset.
+    # 2026-09-15: superseded by today's MEASURED park (see the carrier block above) -- the
+    # Autler-Townes scan 20260915_125339 was taken with EOM616 = 392.948e6 and its doublet
+    # midpoint landed +22 kHz from the bare 556 line, i.e. that park is on two-photon resonance
+    # to ~44 kHz. Centering here instead of on the extrapolated 393.533.
+    # *** UNITS: Init.EOM616.Freq is in Hz (Consts default 370e6). The pinned value that stood
+    # here read ``= 393.533`` with NO e6 -- i.e. 393.5 Hz, not 393.533 MHz. That bug was LIVE:
+    # the 1-combo fixed-point runs 20260915_111055/111759/111844/112203/120606/120639/121654/
+    # 121757 all recorded "EOM616": {"Freq": 393.533} in their descriptors, so the 616 EOM was
+    # driven to ~0 and those shots cannot have transferred. Always write the e6. ***
+    # 2026-09-15 STEP 2: PARKED partner of carrier 97.0000 (see above), from the 5x5 zoom
+    # data_20260915_142454. NOT 392.948 (today's AT park) -- that column's best cell reads
+    # ~7 pp worse. UNITS: Hz (this field is Hz; the missing e6 was a real bug earlier today).
+    g().Init.EOM616.Freq = 392.4517e6
     #g().Pushout.EOM616.Freq.Final = 229.6655e6  # UNUSED (chirp disabled in step)
 
     g().Pushout.VRydTrap = 2.0
     g().Pushout.BiasCoilCurrent.Ryd = 60
 
-    g().Pushout.STIRAPDelay.scan(1, np.array([0.4000, 0.6000, 0.8000, 1.0000, 1.2000, 1.4000, 1.6000, 1.8000, 2.0000, 2.2000, 2.4000]) * 1e-6)
-    g().Pushout.STIRAPReverseDelay = 1.7500e-6
+    # 2026-09-15 STEP 2 -- THE SWEPT AXIS. 1-D delay scan at the parked frequency pair.
+    # This is an OPTIMIZATION scan, not the runbook's step-0 existence test: 1.35 us demonstrably
+    # transfers at this operating point (round 2 reached ~71% excitation with it), so the
+    # "delay does not transfer at mj=+1" hypothesis is already REJECTED. What we do not know is
+    # whether 1.35 us -- inherited from the mj=-1 / 71-3S1 every_other lock -- is anywhere near
+    # optimal here, and the delay sets the 556<->308 overlap that carries the adiabatic transfer.
+    # Range: the quintic splines have COMPACT SUPPORT (playback total = pw = 3 us each), so the
+    # pulses stop overlapping beyond delay ~ 3 us. 0.2..3.0 us in 0.2 steps = 15 pts, spanning
+    # the current 1.35 us lock (the grid lands on 1.4 = free near-anchor) out to no-overlap.
+    #
+    # *** DELAY MUST BE STRICTLY POSITIVE -- learned the hard way, 2026-09-15. ***
+    # The first attempt at this scan (job 2073, data_20260915_144102) swept -0.6..3.0 and DIED
+    # after 2 shots with "run error: Forward_Delay must be > 0 for the forward STIRAP pulse
+    # sequence." Both STIRAPPushoutStep.py (line ~180/201) and STIRAPHighFieldPushoutStep.py
+    # (line ~182/203) implement the forward pulse as: fire the 308 gate, then s.wait(Forward_Delay),
+    # then fire the 556 gate -- so a delay <= 0 is NOT REPRESENTABLE and raises at sequence-BUILD
+    # time, per shot, which kills the whole job. The descriptor was correct; the sweep was not.
+    #
+    # DOCS-VS-CODE CONFLICT, flagged and NOT resolved here: the STIRAP runbook's knobs section
+    # says "Pushout.STIRAPDelay -- SIGNED seconds; negative = 556 fires first", and the 07-15
+    # mj=0 campaign recorded transfer ONLY at negative delay (dip ~-0.4 us). The live step cannot
+    # play a 556-first forward pulse at all. So either the sign convention changed when the pulse
+    # shapes moved to the quintic splines, or those historical negative-delay optima are not
+    # reproducible with this step as written. Do NOT add negative points back without first
+    # changing STIRAPPushoutStep to emit the 556 gate first for Forward_Delay < 0 -- that is a
+    # pyctrl code change, and a deliberate one, not a sweep edit.
+    DELAY_PTS_US = np.arange(0.2, 3.001, 0.2)  # 15 pts, all > 0
+    g().Pushout.STIRAPDelay.scan(1, np.array(DELAY_US) * 1e-6)  # stage C: co-vary dim 1
+    g().Pushout.STIRAPReverseDelay = 0.0000e-6
     g().Pushout.STIRAPPadTime = 2e-6  # 07-21 mj=0 quad ridge-3D optimum
     # lifetime: forward -> hold STIRAPGap -> reverse; RETURN vs gap = decay curve.
     GAP_PTS = np.geomspace(0.1e-6, 50e-6, 20)
-    g().Pushout.STIRAPGap = 1e-6 #.scan(1, GAP_PTS)
+    g().Pushout.STIRAPGap = 1e-6
 
     g().Pushout.IfReverse = 0
     g().Pushout.IfPump = 0
@@ -246,7 +380,7 @@ def build():
     g().rearrange_kwargs.extras.overdrive = False
     g().rearrange_kwargs.extras.dynamic = False
     g().rearrange_kwargs.extras.max_step_size = 0.75
-    g().rearrange_kwargs.extras.pattern = "quad_10x10"  # chain
+    g().rearrange_kwargs.extras.pattern = "every_other"  # chain
     g().rearrange_kwargs.extras.ifEnhanced = False
     g().rearrange_kwargs.extras.precompute = False
     g().rearrange_kwargs.extras.precompute_host = False
@@ -257,11 +391,24 @@ def build():
     g().rearrange_kwargs.extras.scienceStep = "stirap"  # "rnr" = RnR alternative
 
     # ---- run params (runp) ---------------------------------------------------------------
-    rp.NumPerGroup = 20  # chain
+    # rep passes over the sweep: NumPerGroup = REPS * n_points (15 delay points, all > 0).
+    rp.NumPerGroup = REPS * len(PW556_US)  # stage C: 3 candidates x 100 = 300
     rp.loading_defocus = -5  # ANSI z4 (rad) on the loading phase; MATCH rearrange_kwargs.extras.z4
     rp.NumImages = 3 if verify else 2
     # MUST be 0 whenever EOM616 is swept (random EOM jumps kick the 616 out of lock); 1 otherwise.
-    rp.Scramble = 1  # chain
+    # 2026-09-14: Scramble OFF for the freq-2D. This scan sweeps Init.EOM616.Freq, and a
+    # SCRAMBLED EOM sweep kicks the 616 out of lock (gotcha-scramble-unlocks-616-eom-sweep:
+    # scan dies at seq ~5-7, or the revival reads flat because 308 never shelves). Both
+    # successful 09-10 freq-2D runs (20260910224514 / 20260910230416, 484 shots each) used
+    # Scramble = 0. Turn it back ON for pulse-width / delay scans, which do not touch the EOM.
+    # 2026-09-15 STEP 2: back ON. This scan sweeps STIRAPDelay ONLY -- Init.EOM616.Freq is a
+    # pinned scalar (392.648e6), so the EOM never jumps and the lock is safe. Scrambling matters
+    # here: loading drifted monotonically 0.33 -> 0.51 across the afternoon's runs, and with
+    # Scramble = 0 that drift is correlated with point index within a pass. It was harmless for
+    # the freq-2D (the Rule-1 verify-conditioned metric moved only ~1.5 pp over a whole run), but
+    # a 1-D delay curve is exactly the shape a monotone drift can fake, so decorrelate it.
+    # *** If you ever re-enable an EOM sweep in this file, set this back to 0. ***
+    rp.Scramble = 1  # stage B: no EOM sweep, so scrambling is safe AND wanted
     rp.isGrid2 = 0
     rp.isInit = 0
     rp.isHC = 0
@@ -272,7 +419,7 @@ def build():
     return g
 
 
-def RearrangeSTIRAPScan(url=None, reps=10):
+def RearrangeSTIRAPScan(url=None, reps=REPS):
     """Build + SUBMIT the scan to the running pyctrl backend. Returns the descriptor id."""
     from yb_start_scan import ybStartScan
 
@@ -282,10 +429,22 @@ def RearrangeSTIRAPScan(url=None, reps=10):
         opts["rep"] = reps
     did = ybStartScan(RearrangeSTIRAPSeq, g, url=url, label="RearrangeSTIRAPScan",
                       description=(
-                          "GEOMETRY CAMPAIGN 08-28, dimer_40um step 7/7 (step-6 tau "
-                          "unmeasurable at this fill): RECOVERY manifold lifetime, "
-                          "IfRecoveryIonization=1, IfReverse=0, gap 0.1-500 us 30 log pts x 20 "
-                          "reps at the fwd lock. Recovery curve, SHOT-TO-SHOT errors."),
+                          "STIRAP OPTIMIZATION 09-15, STAGE C: TOP-N VERIFY at 100 shots/pt. "
+                          "Operating point 3P1 mj=+1 / 60 G / 66 3S1, every_other on "
+                          "33x33_feedback11. CO-VARY PATH on scan dim 1 -- 3 candidate triples "
+                          "(pw556, pw308, delay): (4.0,4.0,1.35) / (3.5,3.0,1.00) / "
+                          "(3.0,3.0,1.35 = incumbent), 100 reps each = 300 shots. These are the "
+                          "top 3 cells of the stage-B pulse-area grid (data_20260915_164419), "
+                          "which span 0.3026-0.3089 with SEMs ~0.012-0.017 at 5 shots/cell -- "
+                          "i.e. ALL WITHIN 1 SIGMA, a flat plateau, so a single-cell argmin "
+                          "would be noise-selected. Each candidate passed a mid-event guard "
+                          "(>=0.7x the median 1298 events) so small-N cannot win. FREQUENCY "
+                          "LOCKED: carrier 96.7036 MHz / EOM616 392.4517 MHz "
+                          "(data_20260915_162512). This run produces the campaign number and "
+                          "the target-site spatial map. NOTE the analysis MUST group by the "
+                          "logged Params (runbook Rule 2) -- run_analysis collapses and "
+                          "re-orders a co-vary path and would mis-attribute the triples. "
+                          "IfReverse=0. Scramble=1."),
                       **opts)
     print("submitted RearrangeSTIRAPScan -> descriptor id %s (url=%s, reps=%s, verify=%s, "
           "NumImages=%d)" % (did, url or "default", reps, VERIFY_IMAGE, 3 if VERIFY_IMAGE else 2))
@@ -296,7 +455,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Submit RearrangeSTIRAPScan to the pyctrl backend.")
     ap.add_argument("--url", default=None,
                     help="ExptServer URL (default: $NACS_RUNNER_URL or tcp://127.0.0.1:1408)")
-    ap.add_argument("--reps", type=int, default=10,
+    ap.add_argument("--reps", type=int, default=REPS,
                     help="passes over the sweep (0 = forever)")
     args = ap.parse_args()
     RearrangeSTIRAPScan(url=args.url, reps=args.reps)
