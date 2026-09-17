@@ -26,3 +26,26 @@ actually in use (both are kept where they differ meaningfully -- see the TTL27 p
 To bring one back, copy it to `YbSeqs/`, `YbScans/`, or `tools/` — imports are plain module-name
 imports, so no path rewriting is needed. Note that `archive/` is not on the seq search path,
 so a scan cannot import from here as-is.
+
+## STIRAPOptimizations/ -- 65 superseded forward-STIRAP sweep variants (2026-09-16)
+
+`YbScans/STIRAPOptimizations/` had accumulated **72** near-identical scan files, one per sweep,
+because every axis was hardcoded in `build()` and the only CLI flags were `--url`/`--reps`
+(exactly one file in the whole folder exposed a physics flag). 65 of them -- every forward /
+mj / rev variant, the verify variants and the `_scratch_STIRAP*` copies -- are parked here,
+together with the old top-level `YbScans/RearrangeSTIRAPScan.py` they were all copied from.
+
+They are superseded by the single parameterized
+`YbScans/STIRAPOptimizations/RearrangeSTIRAPScan.py`, which takes every axis as a flag
+(scalar = pinned, `a,b,c` = list, `a:b:n` = linspace) and reproduces each of these sweeps as a
+command line. Verified 2026-09-16: it rebuilds run `20260916190146`'s descriptor with every
+pinned parameter and the swept axis identical.
+
+Nothing is lost by parking them: each run stores its own source in the code-snapshot store
+(`log/code_snapshots/_runs/<scan_id>/`, alive and firing on every scan), so the file was never
+the record of what ran.
+
+Kept OUT of this archive because the parameterized scan does not cover them:
+`HalfPulseSTIRAPScan.py` (gaussian rise/fall half-pulse scheme, not the quintic splines),
+`RearrangeMWScan_20G_*.py` and `Revival616MWScan_20G.py` (microwave / revival),
+and `scan_bootstrap.py` (path bootstrap every scan in the folder imports).
