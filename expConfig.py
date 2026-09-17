@@ -769,7 +769,7 @@ def _consts():
             # data_20260915_214327: survival 0.9930 +- 0.0009, d' median 7.79, spatially flat).
             # Img2PIDSet is an INERT knob (beam-2 servo fault) -> yb_skills. History: git log -S.
             "BlueMOT": {"Img1PIDSet": 1.35,       # 2026-09-17 r1262
-                        "Img2PIDSet": 0.4,        # 2026-09-15 r1022
+                        "Img2PIDSet": 0.75,       # 2026-09-17 r1278; beam 2 live again, servo floor 0.5
                         "LoadingTime": 0.25,      # 2026-09-15; knee 0.11-0.12 s (r1203)
                         "Amp": 0.5,               # 2026-09-17 r1208
                         "FreqDetuning": -48.5e6},  # 2026-09-17 r1206; plateau -51..-46 MHz
@@ -783,7 +783,7 @@ def _consts():
             #   which is what keeps the corners loading. Z 0.175 = measured peak (r960), hard cliff above.
             #   CANARY TOLERANCE: +-0.7 mA in X costs ~10%, +-1.5 mA costs half. History: git log -S.
             "GreenMOT": {
-                "BiasCoilCurrent": {"X": 0.0358, "Y": 0.236, "Z": 0.170},  # 2026-09-17 r1233/r1234
+                "BiasCoilCurrent": {"X": 0.0365, "Y": 0.236, "Z": 0.170},  # X 2026-09-17 r1290; Y/Z r1233/r1234
                 "CoolDown": {"RampdownTime": 0.03},
             },
             # Verified 150 shots 2026-09-15 (r980, data_20260915_195018): loading 0.5983 +- 0.0012, true CV
@@ -796,7 +796,7 @@ def _consts():
                     # Imaging/cooling re-opt: current point set 2026-09-14 (jobs 1995-1998, R920/R922/R923/R925).
                     # History: git log -S.
                     "X": {"FreqDetuning": 0.14e6, "Amp": 0.26},  # 2026-09-17 r1258
-                    "h": {"FreqDetuning": 0.15e6, "Amp": 0.17},  # 2026-09-14 amp 0.21 -> 0.17, det unchanged (was 0.15e6/0.18 @ 08-27)
+                    "h": {"FreqDetuning": 0.15e6, "Amp": 0.20},  # 2026-09-17 r1282
                 },
                 # 399 imaging detuning: 7 large moves since 08-07; current point set 2026-09-15.
                 # History: git log -S.
