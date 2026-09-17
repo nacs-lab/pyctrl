@@ -156,8 +156,8 @@ def _consts():
     c["Orca"] = {"ROI": [1000, 100, 2100, 2100], "ExposureTime": 0.050004}
 
     # 556nm resonance (calibrate daily by spectroscopy; 3P1 mj=0 near-magic).
-    # 2026-09-16 scan 20260916103337 -- FWHM 36.9 kHz, R^2 0.922. Fit history: git log -S.
-    c["Resonance556mj0Freq"] = 108.217365e6
+    # 2026-09-17 scan 20260917091449 -- FWHM 40.0 kHz, R^2 0.940, 205 shots.
+    c["Resonance556mj0Freq"] = 108.229875e6
     # 307.6932e6 = the 2026-09-15 fit (scan 20260915195725). Both 09-16 chase writes were REVERTED.
     # *** DO NOT CHASE THIS LINE *** -- shared reference for 4 subsystems; chasing it emptied the array
     # (scans 20260916104558, 20260916130300, 20260916131739). Mechanism + rule -> yb_skills. git log -S.
@@ -768,9 +768,11 @@ def _consts():
             # Img1PIDSet 1.4 / Img2PIDSet 0.4 -- set 2026-09-15 (interleave r1022; verify r1023
             # data_20260915_214327: survival 0.9930 +- 0.0009, d' median 7.79, spatially flat).
             # Img2PIDSet is an INERT knob (beam-2 servo fault) -> yb_skills. History: git log -S.
-            "BlueMOT": {"Img1PIDSet": 1.4, "Img2PIDSet": 0.4,
-                        "LoadingTime": 0.25,      # 2026-09-15: was 0.6 (see above); knee ~0.12 s at -47 MHz
-                        "FreqDetuning": -47.0e6},  # 2026-09-16: was -46.0932e6 (see above). Prior note: 2026-09-15: -47e6 -> -46.0932e6, a BOOKKEEPING
+            "BlueMOT": {"Img1PIDSet": 1.35,       # 2026-09-17 r1262
+                        "Img2PIDSet": 0.4,        # 2026-09-15 r1022
+                        "LoadingTime": 0.25,      # 2026-09-15; knee 0.11-0.12 s (r1203)
+                        "Amp": 0.5,               # 2026-09-17 r1208
+                        "FreqDetuning": -48.5e6},  # 2026-09-17 r1206; plateau -51..-46 MHz
             # *** THIS VALUE IS A DETUNING FROM THE ATOMIC LINE, via BlueMOTStep.py:62 ***
             #   Freq_BlueMOT = Resonance399Freq + FreqDetuning. WHEN Resonance399Freq IS UPDATED, DO NOT TOUCH
             #   THIS NUMBER: the drive follows the atom and the true detuning -- what the MOT responds to -- is
@@ -781,7 +783,7 @@ def _consts():
             #   which is what keeps the corners loading. Z 0.175 = measured peak (r960), hard cliff above.
             #   CANARY TOLERANCE: +-0.7 mA in X costs ~10%, +-1.5 mA costs half. History: git log -S.
             "GreenMOT": {
-                "BiasCoilCurrent": {"X": 0.0358, "Y": 0.240, "Z": 0.175},
+                "BiasCoilCurrent": {"X": 0.0358, "Y": 0.236, "Z": 0.170},  # 2026-09-17 r1233/r1234
                 "CoolDown": {"RampdownTime": 0.03},
             },
             # Verified 150 shots 2026-09-15 (r980, data_20260915_195018): loading 0.5983 +- 0.0012, true CV
@@ -793,7 +795,7 @@ def _consts():
                     "FreqDetuning": 0.18e6, "Amp": 0.2,
                     # Imaging/cooling re-opt: current point set 2026-09-14 (jobs 1995-1998, R920/R922/R923/R925).
                     # History: git log -S.
-                    "X": {"FreqDetuning": 0.18e6, "Amp": 0.30},  # 2026-09-14 amp 0.25 -> 0.30, det unchanged (was 0.156e6/0.296 @ 08-27; 0.18e6/0.28 @ 08-19)
+                    "X": {"FreqDetuning": 0.14e6, "Amp": 0.26},  # 2026-09-17 r1258
                     "h": {"FreqDetuning": 0.15e6, "Amp": 0.17},  # 2026-09-14 amp 0.21 -> 0.17, det unchanged (was 0.15e6/0.18 @ 08-27)
                 },
                 # 399 imaging detuning: 7 large moves since 08-07; current point set 2026-09-15.
