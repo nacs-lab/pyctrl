@@ -58,6 +58,20 @@ down further):
     cam_read      frame_capture: reading NumImages frames off the camera buffer (the part
                   of post_cb that can stall on the camera/DCAM)
     cam_store     frame_capture: to_store_array + store_imgs* + seq_finish (in-process)
+    ni_data       ni_arm: pyseq.get_nidaq_data() -- the ENGINE half of the arm
+    ni_write      ni_arm: NiDAQRunner.run() -- the DAQmx half (stop/cfg/write/start)
+    cam_resync    before_start: the per-shot stale-frame probe + flush (rearrange pre_run)
+    slm_hold      before_start: SlmScanSession.ensure_held() (scan-long slm lock keepalive)
+    slm_lock      before_start: acquire_lock("compute") -- the per-shot GPU lock
+    slm_health    before_start: client.health() connection prewarm
+    slm_setup     before_start: client.setup_rearrangement(**args)
+    slm_reload    before_start: client.reload_rearrange()
+
+``ni_data``/``ni_write`` split ``ni_arm``; the ``cam_resync``/``slm_*`` six decompose the
+rearrangement ``pre_run`` that dominates ``before_start`` on a rearrangement scan. They are
+substages precisely so they never double-count into the flat sum -- but note
+:func:`end_shot` subtracts only names listed in :data:`SUBSTAGES` from ``accounted``, so a
+NEW substage name MUST be added there or it corrupts ``other``.
 
 Design inspired by the MATLAB original; no brassboard-seq code.
 """
@@ -75,7 +89,15 @@ STAGES = [
     "after_end", "reset_globals", "tail_pause", "post_cb",
 ]
 # Sub-stages refine a top-level stage; excluded from the accounted sum to avoid double counts.
-SUBSTAGES = ["cam_read", "cam_store"]
+# ⚠ Every substage name used anywhere MUST be listed here -- end_shot()'s `accounted` sum
+# excludes exactly this list, so an unlisted name is counted as a top-level stage and silently
+# drives `other` negative.
+SUBSTAGES = [
+    "cam_read", "cam_store",                                   # post_cb (frame_capture)
+    "ni_data", "ni_write",                                     # ni_arm
+    "cam_resync", "slm_hold", "slm_lock", "slm_health",        # before_start (rearrange
+    "slm_setup", "slm_reload",                                 #  pre_run)
+]
 
 # Per-shot accumulator (single-threaded run loop -> a module global is sufficient). ``d``
 # is None whenever timing is OFF, which is the fast-path sentinel :func:`stage` checks.

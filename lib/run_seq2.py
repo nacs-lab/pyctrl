@@ -73,7 +73,11 @@ def run_bseq(seq, idx, nidaq=None):
     ni_channels = getattr(seq, "ni_channels", None)
     if ni_channels:
         with run_timing.stage("ni_arm"):
-            ni_data = pyseq.get_nidaq_data("NiDAQ")
+            # Substages split the arm into its ENGINE half (get_nidaq_data) and its DAQmx half
+            # (stop/cfg/write/start): ni_arm is ~28 ms per bseq and the two are fixed by
+            # completely different means, so the aggregate alone cannot say what to do.
+            with run_timing.substage("ni_data"):
+                ni_data = pyseq.get_nidaq_data("NiDAQ")
             if ni_data is not None:                 # analog-free bseq -> skip arm AND wait
                 ni_nchns = len(ni_channels)
                 ni_ndata = len(ni_data)
@@ -84,7 +88,8 @@ def run_bseq(seq, idx, nidaq=None):
                 if nidaq is None:
                     from devices.nidaq import NiDAQRunner as nidaq  # lazy: needs hardware pkg
                 data = _reshape_sample_major(ni_data, ni_nchns)
-                nidaq.run(ni_channels, seq.config.ni_clocks, seq.config.ni_start, data)
+                with run_timing.substage("ni_write"):
+                    nidaq.run(ni_channels, seq.config.ni_clocks, seq.config.ni_start, data)
                 ni_armed = True
 
     with run_timing.stage("start"):

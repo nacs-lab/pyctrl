@@ -35,10 +35,47 @@ start. Lives in YbSeqs (NOT YbExptCtrl) so it hot-reloads per job -- edits need 
 restart. Nothing here is serialized: no byte-path impact.
 """
 
+import contextlib
 import os
 import time
 
 import rearrange_runtime
+import run_timing            # substage timing (no-op when RUN_TIMING is off)
+
+
+# =========================================================================== #
+# per-round timing -- decomposes the run loop's before_bseq stage
+# =========================================================================== #
+# before_bseq is the sum of the rounds' callbacks and is measured by the run loop as ONE
+# number, which cannot say whether a slow round is the LOCAL work (waiting on the camera
+# frame, per-site detection) or the SLM server round-trip. This splits it. Lives here rather
+# than in run_timing's SUBSTAGES because YbSeqs/ hot-reloads per job while lib/ needs a
+# backend restart -- and a restart is exactly what we must not perturb while chasing this.
+# One log line per round; arithmetic only, so it cannot fail a shot.
+_RT = {}
+
+
+@contextlib.contextmanager
+def _t(key):
+    """Accumulate elapsed ms into the current round's ``_RT`` bucket."""
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        _RT[key] = _RT.get(key, 0.0) + (time.perf_counter() - t0) * 1e3
+
+
+def _rt_log(ctx, tag, frame_idx, seq_id):
+    """Emit the round's breakdown; best-effort (diagnostics never break a run)."""
+    try:
+        if not _RT:
+            return
+        parts = " ".join("%s=%.1f" % (k, _RT[k])
+                         for k in ("grab", "detect", "note", "stage", "http") if k in _RT)
+        ctx.log("[rr_timing] %s f%d seq %d | total=%.1f %s"
+                % (tag, frame_idx, seq_id, sum(_RT.values()), parts))
+    except Exception:  # noqa: BLE001 - never raise out of instrumentation
+        pass
 
 # frame_idx -> captured frame for the CURRENT shot (the failing-shot DISPLAY re-publish; the
 # finalizing callback is a separate scope from the round callbacks that grabbed the frames).
@@ -149,39 +186,44 @@ def pre_run(s1, *, flags=("rearrange_img1_ok",), lock_desc="rearrange compute",
     # count (the previous shot(s) were misaligned). The per-shot analog of the scan-start flush.
     cam = ctx.camera
     if cam is not None:
-        try:
-            stale = int(cam.frames_available())
-        except Exception:  # noqa: BLE001 - not acquiring / older driver -> assume clean
-            stale = 0
-        if stale:
+        with run_timing.substage("cam_resync"):
             try:
-                cam.flush()
-            except Exception:  # noqa: BLE001 - best-effort drain
-                pass
-            ctx.record_error(
-                "[pre_run] seq %d: %d stale frame(s) in the camera buffer at shot start -- "
-                "flushed; %s on the prior shot(s) were likely misaligned"
-                % (_seq_id(s1), stale, frames_label), kind="frame_desync", seq_id=_seq_id(s1))
+                stale = int(cam.frames_available())
+            except Exception:  # noqa: BLE001 - not acquiring / older driver -> assume clean
+                stale = 0
+            if stale:
+                try:
+                    cam.flush()
+                except Exception:  # noqa: BLE001 - best-effort drain
+                    pass
+                ctx.record_error(
+                    "[pre_run] seq %d: %d stale frame(s) in the camera buffer at shot start -- "
+                    "flushed; %s on the prior shot(s) were likely misaligned"
+                    % (_seq_id(s1), stale, frames_label), kind="frame_desync",
+                    seq_id=_seq_id(s1))
 
     # The scan-long slm lock is mandatory: ensure_held re-acquires + rewrites the LOADING phase
     # if the lease lapsed (a shot longer than the lease). A failure raises -> the run errors.
-    ctx.session.ensure_held()
+    with run_timing.substage("slm_hold"):
+        ctx.session.ensure_held()
 
     c = ctx.client
     # Per-shot compute (GPU) lock, blocking ~1 s. On miss, scrap THIS shot and retry rather
     # than racing rearrange() against another client.
     try:
-        c.acquire_lock("compute", lock_desc, timeout_s=10, block_timeout=1)
+        with run_timing.substage("slm_lock"):
+            c.acquire_lock("compute", lock_desc, timeout_s=10, block_timeout=1)
         s1.G.rearrange_lock_ok = True
     except Exception as err:  # noqa: BLE001 - contention / timeout -> cancel + retry
         ctx.log("[pre_run] compute lock acquire failed: %s -- cancelling seq for retry" % err)
         _safe(ctx.server, "seq_cancel")
         return
 
-    try:
-        c.health()                      # prewarm the connection
-    except Exception:  # noqa: BLE001
-        pass
+    with run_timing.substage("slm_health"):
+        try:
+            c.health()                  # prewarm the connection
+        except Exception:  # noqa: BLE001
+            pass
 
     # Per-shot setup_rearrangement from rearrange_kwargs (the SCANNED params); NO reset_params
     # so everything else stays sticky from the initial (dequeue-time) setup call. The scalar
@@ -221,12 +263,14 @@ def pre_run(s1, *, flags=("rearrange_img1_ok",), lock_desc="rearrange compute",
     # itself travels to the server INSIDE these extras (nothing extra is sent).
     _note_prob_hungarian(ctx, args)
     try:
-        c.setup_rearrangement(**args)
+        with run_timing.substage("slm_setup"):
+            c.setup_rearrangement(**args)
     except Exception as err:  # noqa: BLE001
         ctx.record_error("[pre_run] setup_rearrangement failed: %s" % err,
                          kind="setup_rearrangement", seq_id=_seq_id(s1))
     try:
-        c.reload_rearrange()
+        with run_timing.substage("slm_reload"):
+            c.reload_rearrange()
     except Exception as err:  # noqa: BLE001
         ctx.record_error("[pre_run] reload_rearrange failed: %s" % err,
                          kind="reload_rearrange", seq_id=_seq_id(s1))
@@ -278,15 +322,18 @@ def rearrange_round(s1, frame_idx, *, ok_flag, tag, prior_flag=None,
         _safe(ctx.server, "cancel_shot")
         return
 
-    img, ok, n_seen = rearrange_runtime.grab_one_frame(ctx.camera, timeout=grab_timeout)
+    _RT.clear()
+    with _t("grab"):
+        img, ok, n_seen = rearrange_runtime.grab_one_frame(ctx.camera, timeout=grab_timeout)
     if not ok:
         _report_grab_fail(ctx, s1, tag, "img%d" % (frame_idx + 1), n_seen)
         _safe(ctx.server, "cancel_shot")
         return
     _STASH[frame_idx] = img
 
-    probs = (ctx.detect_probs_for(_frame_pattern(ctx, frame_idx), img)
-             if use_frame_pattern else ctx.detect_probs(img))
+    with _t("detect"):
+        probs = (ctx.detect_probs_for(_frame_pattern(ctx, frame_idx), img)
+                 if use_frame_pattern else ctx.detect_probs(img))
     if not probs:
         return                          # calibration mismatch -> don't rearrange on a stale grid
 
@@ -294,7 +341,8 @@ def rearrange_round(s1, frame_idx, *, ok_flag, tag, prior_flag=None,
     # posts -- how many sites are loaded, how many are MARGINAL, and the total -log(p) the
     # server turns into cost -- plus the surplus against the NEXT frame's pattern (the only
     # regime where the -beta*log(p) term can change the assignment). Throttled + best-effort.
-    _note_probs(ctx, tag, frame_idx, probs, use_frame_pattern)
+    with _t("note"):
+        _note_probs(ctx, tag, frame_idx, probs, use_frame_pattern)
 
     # PURE-IMAGING control arm (extras.no_transit): stage the frame and mark the round healthy
     # WITHOUT calling rearrange(), so the SLM does literally nothing between the two images.
@@ -319,6 +367,7 @@ def rearrange_round(s1, frame_idx, *, ok_flag, tag, prior_flag=None,
             return
 
     _do_rearrange_round(ctx, s1, img, probs, tag, ok_flag, record_ok=record_ok)
+    _rt_log(ctx, tag, frame_idx, _seq_id(s1))
 
 
 # =========================================================================== #
@@ -348,22 +397,28 @@ def verify_frame(s1, frame_idx, *, ok_flag, prior_flags, tag="verify_frame",
         _safe(ctx.server, "cancel_shot")
         return
 
-    img, ok, n_seen = rearrange_runtime.grab_one_frame(ctx.camera, timeout=grab_timeout)
+    _RT.clear()
+    with _t("grab"):
+        img, ok, n_seen = rearrange_runtime.grab_one_frame(ctx.camera, timeout=grab_timeout)
     if not ok:
         _report_grab_fail(ctx, s1, tag, "img%d" % (frame_idx + 1), n_seen)
         _safe(ctx.server, "cancel_shot")
         return
     _STASH[frame_idx] = img
 
-    bits = (ctx.detect_bits_for(_frame_pattern(ctx, frame_idx), img)
-            if use_frame_pattern else ctx.detect_bits(img))
+    with _t("detect"):
+        bits = (ctx.detect_bits_for(_frame_pattern(ctx, frame_idx), img)
+                if use_frame_pattern else ctx.detect_bits(img))
     if bits and ctx.client is not None:
         try:
-            ctx.client.update_rearrange(bits, **_runid_kwargs(ctx.scan_id, _seq_id(s1)))
+            with _t("http"):
+                ctx.client.update_rearrange(bits, **_runid_kwargs(ctx.scan_id, _seq_id(s1)))
         except Exception as err:  # noqa: BLE001
             ctx.log("[%s] update_rearrange failed: %s" % (tag, err))
-    _safe(ctx.server, "stage_frame", img, ctx.scan_id, _seq_id(s1))
+    with _t("stage"):
+        _safe(ctx.server, "stage_frame", img, ctx.scan_id, _seq_id(s1))
     setattr(s1.G, ok_flag, True)
+    _rt_log(ctx, tag, frame_idx, _seq_id(s1))
 
 
 # =========================================================================== #
@@ -480,7 +535,8 @@ def _do_rearrange_round(ctx, s1, img, probs, tag, ok_flag, record_ok=False):
     # overlaps rearrange()'s SLM round-trip + the next bseq's hardware instead of blocking the
     # held-atom critical path. A persist failure is handled by the worker (it cancels the
     # shot); the live signal we gate on is the rearrange() result.
-    _safe(ctx.server, "stage_frame", img, ctx.scan_id, _seq_id(s1))
+    with _t("stage"):
+        _safe(ctx.server, "stage_frame", img, ctx.scan_id, _seq_id(s1))
     try:
         # Per-site presence PROBABILITIES (floats in [0,1]) in place of the hard bitstring, one
         # per site of THIS round's init grid, in that grid's order. The server rounds them at
@@ -489,7 +545,8 @@ def _do_rearrange_round(ctx, s1, img, probs, tag, ok_flag, record_ok=False):
         # where they add ``-beta*log(p)`` to each loaded row of the assignment cost. That term is
         # a per-ROW constant, so it only changes the pairing when atoms are in SURPLUS
         # (n_loaded > n_targets); see the ctx.note_probs summary logged above.
-        r = c.rearrange(probs, **runid)
+        with _t("http"):
+            r = c.rearrange(probs, **runid)
         if isinstance(r, dict) and r.get("handoff_idle"):
             ctx.log("[%s] seq %d: server idle; cancelling shot, waiting 1 s"
                     % (tag, _seq_id(s1)))
