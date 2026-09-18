@@ -481,7 +481,12 @@ class _Detector:
         self._server_grid_knm = server_grid_knm   # server init_grid (N,2 [y,x] knm); single source
         self._loading_defocus = loading_defocus   # scan carrier z4 (rad); for the 3-D dz term
         self._log = log or (lambda _m: None)
-        self._W = None                 # scipy.sparse (M, H*W)
+        self._W = None                 # scipy.sparse (M, H*W), columns in C(row-major) order
+        # Gather fast path derived from _W (see _build_gather); None -> _apply uses the matvec.
+        self._gidx = None              # flat pixel indices, CSR column order
+        self._gwts = None              # matching mask weights
+        self._gseg = None              # per-site segment starts (CSR indptr[:-1])
+        self._gempty = None            # sites with no in-image pixels
         self._thresholds = None        # (M,)
         self._gauss_params = None      # list[M] of (6,) [mu_e,s_e,A_e,mu_a,s_a,A_a] or None/site
         self._gp_packed = None         # (M, 6) float view of _gauss_params (packed once)
@@ -490,11 +495,11 @@ class _Detector:
         self._key = None               # cache identity of the built calibration
 
     def _intensities(self, img):
-        """Per-site masked intensity vector for ``img`` (one sparse matvec), or None on a
-        calibration mismatch. Shared by :meth:`bits` (hard threshold) and :meth:`probs`
-        (posterior) so both score the SAME intensities in the SAME server site order."""
+        """Per-site masked intensity vector for ``img``, or None on a calibration mismatch.
+        Shared by :meth:`bits` (hard threshold) and :meth:`probs` (posterior) so both score the
+        SAME intensities in the SAME server site order."""
         import numpy as np
-        a = np.asarray(img, dtype=float)
+        a = np.asarray(img)
         if a.ndim != 2:
             a = a.reshape(a.shape[0], -1)
         shape = a.shape
@@ -507,7 +512,38 @@ class _Detector:
             self._log("[rearrange_runtime] image shape %s != calibrated %s; skipping"
                       % (shape, self._img_shape))
             return None
-        return self._W.dot(a.ravel(order="F"))            # MATLAB W * img(:) (column-major)
+        return self._apply(a)
+
+    def _apply(self, a):
+        """The per-shot math, split out from :meth:`_intensities` so it is unit-testable without
+        a calibration on disk. ``a`` is the 2-D frame, ANY dtype (the camera hands us uint16).
+
+        Gathers only the masked pixels instead of reducing the whole frame. ``W`` is 0.6% dense
+        (26.7k of 4.4M pixels on the 2100x2100 ROI), so the matvec itself was never the cost --
+        materialising the operand was. The old path did ``W.dot(img.astype(float).ravel("F"))``:
+        a uint16->float64 cast (8.8 -> 35 MB) plus an F-order ravel of a C-contiguous array,
+        which numpy cannot return as a view, so it copied 35 MB again with a cache-hostile
+        stride. Measured on the live ROI: cast 8.2 ms + F-ravel 21.8 ms + matvec 0.11 ms.
+        Since ``_build`` now indexes ``W``'s columns in C order, the gather below reads straight
+        off a free ``ravel()`` view and costs ~0.2 ms -- the same arithmetic on the same pixels.
+
+        Falls back to the ``W`` matvec if the gather arrays are unavailable or the build-time
+        self-check failed, so a bad precompute degrades to the old behaviour, never to wrong
+        intensities."""
+        import numpy as np
+        flat = np.ascontiguousarray(a).ravel()          # C-order; a no-op view when contiguous
+        if self._gidx is None:
+            return self._W.dot(flat.astype(float))      # fallback: exact old arithmetic
+        vals = flat[self._gidx].astype(np.float64)
+        vals *= self._gwts
+        if vals.size == 0:
+            return np.zeros(self._W.shape[0], dtype=float)
+        # reduceat needs in-range starts; empty rows (sites clipped entirely off-image) would
+        # otherwise read their neighbour's first element, so they are zeroed explicitly.
+        out = np.add.reduceat(vals, np.minimum(self._gseg, vals.size - 1))
+        if self._gempty is not None and self._gempty.any():
+            out[self._gempty] = 0.0
+        return out
 
     def bits(self, img):
         intensities = self._intensities(img)
@@ -752,6 +788,42 @@ class _Detector:
         key = ("day", folder, _mtime(grid_file), _mtime(thr_file), int(grid.shape[0]))
         return grid, thresholds, gp, key
 
+    def _build_gather(self):
+        """Derive the per-shot gather arrays from ``self._W`` and self-check them.
+
+        CSR already stores exactly what the gather needs: for site ``i`` the masked pixels are
+        ``W.indices[W.indptr[i]:W.indptr[i+1]]`` with weights the matching ``W.data``. So this
+        is a re-view of the same numbers, not a second calibration -- there is no way for the
+        two paths to disagree about WHICH pixel carries WHICH weight.
+
+        The self-check runs once per build on a deterministic pseudo-random frame and compares
+        the gather against the ``W`` matvec. On any mismatch (or any failure here) the gather is
+        disabled and :meth:`_apply` falls back to the matvec, so the worst case is the old
+        speed, never wrong intensities."""
+        import numpy as np
+        self._gidx = self._gwts = self._gseg = self._gempty = None
+        try:
+            W = self._W
+            indptr = np.asarray(W.indptr)
+            self._gidx = np.asarray(W.indices)
+            self._gwts = np.asarray(W.data, dtype=np.float64)
+            self._gseg = indptr[:-1].copy()
+            self._gempty = (indptr[1:] == indptr[:-1])
+            H, Wd = self._img_shape if self._img_shape else (0, 0)
+            if H and Wd:
+                rng = np.random.default_rng(12345)
+                probe = rng.integers(0, 4000, size=(H, Wd), dtype=np.uint16)
+                fast = self._apply(probe)
+                ref = W.dot(np.ascontiguousarray(probe).ravel().astype(float))
+                if not np.allclose(fast, ref, rtol=0, atol=1e-9):
+                    bad = int(np.count_nonzero(~np.isclose(fast, ref, rtol=0, atol=1e-9)))
+                    self._log("[rearrange_runtime] gather self-check FAILED on %d/%d site(s) "
+                              "-- falling back to the sparse matvec" % (bad, len(ref)))
+                    self._gidx = self._gwts = self._gseg = self._gempty = None
+        except Exception as e:  # noqa: BLE001 - any precompute failure -> safe fallback
+            self._log("[rearrange_runtime] gather precompute unavailable (%s); using matvec" % e)
+            self._gidx = self._gwts = self._gseg = self._gempty = None
+
     def _build(self, grid, thresholds, gauss_params, img_shape, key):
         from scipy import sparse
         m = grid.shape[0]
@@ -777,7 +849,13 @@ class _Detector:
                 yy = y_min + dy                             # 1-based pixel row
                 for dx in range(x_max - x_min + 1):
                     xx = x_min + dx                         # 1-based pixel col
-                    lin = (xx - 1) * H + (yy - 1)           # column-major linear (0-based)
+                    # ROW-major linear (0-based). Was column-major ((xx-1)*H + (yy-1)) to mirror
+                    # MATLAB's W * img(:); that forced _apply to F-order-ravel a C-contiguous
+                    # frame every shot, a full 35 MB strided copy (21.8 ms measured). Indexing
+                    # in C order here picks the SAME pixel with the SAME weight and lets the
+                    # per-shot path read a free ravel() view instead. Site ORDER (the rows) is
+                    # untouched -- only the column numbering of an internal matrix changed.
+                    lin = (yy - 1) * W + (xx - 1)
                     rows.append(i)
                     cols.append(lin)
                     vals.append(mask[my0 + dy, mx0 + dx])
@@ -795,6 +873,7 @@ class _Detector:
         self._gp_packed, self._gp_valid = _pack_gauss_params(gauss_params)
         self._img_shape = (H, W)
         self._key = key
+        self._build_gather()        # AFTER _img_shape: the self-check probes at that size
         n_fit = int(self._gp_valid.sum()) if self._gp_valid is not None else 0
         self._log("[rearrange_runtime] detector built: source=%s M=%d imgSize=[%d %d] "
                   "gaussFits=%s (%d/%d sites with a usable posterior)"
