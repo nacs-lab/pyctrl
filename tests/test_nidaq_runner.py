@@ -46,23 +46,37 @@ def test_to_channel_major_single_channel():
 # _write_and_start: single-channel squeeze (DaqError -200524 regression, PicoMotor308)
 # --------------------------------------------------------------------------- #
 class _RecordTask:
-    """Captures what task.write() received; fakes the nidaqmx Task surface _write_and_start uses."""
+    """Captures what task.write() received; fakes the nidaqmx Task surface _write_and_start uses.
+
+    Also counts the DAQmx state transitions the per-arm fast path is about: how often the
+    sample-clock timing was (re)configured and how often the task was explicitly COMMITTED.
+    """
     def __init__(self):
         self.written = None
+        self.cfg_calls = []     # the samps_per_chan of each cfg_samp_clk_timing call
+        self.commits = 0
+        self.stops = 0
+        self.starts = 0
 
         class _Timing:
+            def __init__(self, owner):
+                self._owner = owner
+
             def cfg_samp_clk_timing(self, *a, **k):
-                pass
-        self.timing = _Timing()
+                self._owner.cfg_calls.append(k.get("samps_per_chan"))
+        self.timing = _Timing(self)
+
+    def control(self, mode):
+        self.commits += 1
 
     def stop(self):
-        pass
+        self.stops += 1
 
     def write(self, data, auto_start=False):
         self.written = data
 
     def start(self):
-        pass
+        self.starts += 1
 
 
 @pytest.fixture
@@ -74,14 +88,20 @@ def fake_nidaqmx(monkeypatch):
     consts = types.ModuleType("nidaqmx.constants")
     consts.AcquisitionType = types.SimpleNamespace(FINITE=object())
     consts.Edge = types.SimpleNamespace(RISING=object())
+    consts.TaskMode = types.SimpleNamespace(TASK_COMMIT=object())
     mod.constants = consts
     monkeypatch.setitem(sys.modules, "nidaqmx", mod)
     monkeypatch.setitem(sys.modules, "nidaqmx.constants", consts)
 
 
-def _write(samples):
+def _new_task():
     task = _RecordTask()
     nidaq_runner._TASK_META[task] = (nidaq_runner._RATE, "/Dev1/PFI0", True)   # (rate, clk, preload)
+    return task
+
+
+def _write(samples):
+    task = _new_task()
     nidaq_runner._write_and_start(task, samples)
     return task.written
 
@@ -96,6 +116,63 @@ def test_write_single_channel_is_1d(fake_nidaqmx):
 def test_write_multi_channel_stays_2d(fake_nidaqmx):
     written = _write(np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))   # 2 channels
     assert np.asarray(written).shape == (2, 3)
+
+
+# --------------------------------------------------------------------------- #
+# _write_and_start: the timing-reconfig cache + explicit COMMIT (the ni_arm fast path).
+# Reconfiguring the sample clock un-commits the task, forcing start() to redo
+# verify/reserve/commit on every arm; guarding it on the sample count keeps the task
+# COMMITTED across the per-shot stop -> write -> start.
+# --------------------------------------------------------------------------- #
+def test_first_arm_configures_timing_and_commits(fake_nidaqmx):
+    task = _new_task()
+    nidaq_runner._write_and_start(task, np.zeros((2, 5)))
+    assert task.cfg_calls == [5]
+    assert task.commits == 1
+    assert (task.stops, task.starts) == (1, 1)
+
+
+def test_repeat_arm_same_nsamps_skips_reconfig_and_recommit(fake_nidaqmx):
+    task = _new_task()
+    for _ in range(3):
+        nidaq_runner._write_and_start(task, np.zeros((2, 5)))
+    assert task.cfg_calls == [5]            # configured ONCE, not three times
+    assert task.commits == 1                # and committed once -- start() stays the fast path
+    assert (task.stops, task.starts) == (3, 3)   # every arm still stops + starts
+
+
+def test_changed_nsamps_reconfigures_and_recommits(fake_nidaqmx):
+    task = _new_task()
+    nidaq_runner._write_and_start(task, np.zeros((2, 5)))
+    nidaq_runner._write_and_start(task, np.zeros((2, 7)))   # different bseq length
+    nidaq_runner._write_and_start(task, np.zeros((2, 7)))   # ... then repeats -> cached again
+    assert task.cfg_calls == [5, 7]
+    assert task.commits == 2
+
+
+def test_stop_task_forgets_armed_count(fake_nidaqmx):
+    """Every error path stops the task; DAQmx may have reset its state, so the next arm must
+    reconfigure rather than trust the cache."""
+    task = _new_task()
+    nidaq_runner._write_and_start(task, np.zeros((2, 5)))
+    nidaq_runner._stop_task(task)                            # the run()/wait() error path
+    nidaq_runner._write_and_start(task, np.zeros((2, 5)))    # same nsamps, but must reconfigure
+    assert task.cfg_calls == [5, 5]
+    assert task.commits == 2
+
+
+def test_commit_failure_is_survivable(fake_nidaqmx, monkeypatch):
+    """A card/nidaqmx that refuses TASK_COMMIT falls back to the old implicit-commit path:
+    slower, never wrong -- and the arm still completes."""
+    task = _new_task()
+
+    def boom(mode):
+        raise RuntimeError("TaskControl unsupported")
+    monkeypatch.setattr(task, "control", boom)
+    nidaq_runner._write_and_start(task, np.zeros((2, 5)))
+    assert task.cfg_calls == [5]
+    assert (task.stops, task.starts) == (1, 1)
+    assert np.asarray(task.written).shape == (2, 5)
 
 
 # --------------------------------------------------------------------------- #

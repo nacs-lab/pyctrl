@@ -55,6 +55,14 @@ _RATE = 400e3          # NI sample-clock rate (Hz) = the FPGA PFI0 clock.
 # __weakref__ is in its __slots__). Version-robust across nidaqmx 1.0.x (no slots) and 1.5+.
 _TASK_META = weakref.WeakKeyDictionary()
 
+# Per-task ARMED sample count: the `samps_per_chan` the task's sample-clock timing is currently
+# configured (and COMMITTED) for. `_write_and_start` re-runs cfg_samp_clk_timing ONLY when this
+# does not match the incoming block -- see :func:`_write_and_start` for why that matters. Same
+# WeakKeyDictionary pattern (and lifetime) as _TASK_META; a rebuilt task starts with no entry,
+# so the first arm always configures. INVALIDATED (popped) on every error path that stops the
+# task, so a task whose DAQmx state may have been reset by an error is always reconfigured.
+_TASK_ARMED = weakref.WeakKeyDictionary()
+
 # DAQmx -200018: "DAC conversion attempted before data to be converted was available".
 # Same matching logic as lib/run_seq.py _is_transient_ni -- duplicated here deliberately so a
 # devices/ module never imports lib/.
@@ -257,6 +265,7 @@ class NiDAQRunner:
         cls._last_nsamps = None
         cls._gen_base = None
         cls.underflows_swallowed = 0
+        _TASK_ARMED.clear()
 
 
 # =========================================================================== #
@@ -375,21 +384,40 @@ def _build_task(channels, clocks, triggers, rate):
 
 
 def _write_and_start(task, samples):
-    """STOP (FINITE re-arm) -> set per-shot FINITE timing -> write channel-major samples ->
-    start (no wait). NEEDS-HARDWARE.
+    """STOP (FINITE re-arm) -> set per-shot FINITE timing IF IT CHANGED -> write channel-major
+    samples -> start (no wait). NEEDS-HARDWARE.
 
     ``samps_per_chan`` is the data length, which varies per bseq -- so the FINITE sample-clock
-    timing is (re)configured each shot here, mirroring MATLAB ``queueOutputData`` inferring the
-    count from the queued data (the cached Task keeps the expensive channel/trigger setup).
+    timing is (re)configured here, mirroring MATLAB ``queueOutputData`` inferring the count from
+    the queued data (the cached Task keeps the expensive channel/trigger setup).
+
+    **Reconfigured only on a CHANGE, then COMMITTED** (2026-09-17): writing any timing property
+    knocks a DAQmx task out of the COMMITTED state, so the following ``start()`` has to redo
+    verify -> reserve -> commit (route the PFI lines, size the buffer, program the DMA/FIFO)
+    from scratch on EVERY arm. ``stop -> write -> start`` on a task that STAYS committed is the
+    documented fast re-arm path, and ``DAQmxStopTask`` returns a task to the state it held
+    before ``start()`` -- i.e. COMMITTED -- so the commit survives the per-shot stop. Guarding
+    the cfg call on ``_TASK_ARMED`` and committing once buys that path whenever a bseq's sample
+    count repeats (the common case: only FPGA/AWG axes are usually swept, not the NI block
+    length). A changed count simply pays the old cost once. Measured motivation: ni_arm was
+    ~28 ms x 3 bseqs = 83 ms/shot on job 201 (RearrangeSTIRAPScan, 2026-09-17).
+
+    The commit is best-effort: a card or nidaqmx build that refuses TASK_COMMIT falls back to
+    the previous behavior (implicit commit inside ``start()``), only slower -- never wrong.
     """
     from nidaqmx.constants import AcquisitionType, Edge
     nsamps = _nsamps_of(samples)
     task.stop()
-    meta = _TASK_META[task]
-    rate, clk_src = meta[0], meta[1]         # meta = (rate, clk_src, preload_ok)
-    task.timing.cfg_samp_clk_timing(
-        rate, source=clk_src, active_edge=Edge.RISING,
-        sample_mode=AcquisitionType.FINITE, samps_per_chan=nsamps)
+    if _TASK_ARMED.get(task) != nsamps:
+        meta = _TASK_META[task]
+        rate, clk_src = meta[0], meta[1]         # meta = (rate, clk_src, preload_ok)
+        task.timing.cfg_samp_clk_timing(
+            rate, source=clk_src, active_edge=Edge.RISING,
+            sample_mode=AcquisitionType.FINITE, samps_per_chan=nsamps)
+        # Recorded only AFTER cfg returned: if cfg raises, the entry keeps its old (different)
+        # value, so the next arm reconfigures -- which is what we want on an errored task.
+        _commit_task(task)
+        _TASK_ARMED[task] = nsamps
     # nidaqmx wants a 1-D array for a SINGLE-channel task; a (1, nsamps) 2-D array is misread
     # (DaqError -200524, "number of channels in the data does not match"). Squeeze the lone
     # channel axis -- harmless for the multi-channel path (left untouched). Seen first on the
@@ -416,7 +444,29 @@ def _generated_count(task):
         return None
 
 
+def _commit_task(task):
+    """Force the task to the COMMITTED state now (best-effort). NEEDS-HARDWARE.
+
+    ``DAQmxTaskControl(TASK_COMMIT)`` does the verify/reserve/program-hardware work up front so
+    the per-shot ``start()`` is a bare arm. Swallowed on failure -- an older nidaqmx without
+    ``TaskMode``, or a device that refuses the transition, just keeps the implicit-commit-in-
+    ``start()`` behavior: slower, never incorrect.
+    """
+    try:
+        from nidaqmx.constants import TaskMode
+        task.control(TaskMode.TASK_COMMIT)
+    except Exception:  # noqa: BLE001 - optional fast path only
+        pass
+
+
 def _stop_task(task):
+    """Best-effort stop + FORGET the armed sample count.
+
+    The forget is load-bearing: every caller of this is an error path, and a DAQmx error can
+    reset the task's timing/committed state under us. Dropping the cache entry makes the next
+    arm reconfigure + recommit unconditionally rather than trusting state we cannot verify.
+    """
+    _TASK_ARMED.pop(task, None)
     try:
         task.stop()
     except Exception:  # noqa: BLE001 - best-effort on the error path
@@ -426,7 +476,8 @@ def _stop_task(task):
 def _close_task(task):
     if task is None:
         return
-    try:
+    _TASK_ARMED.pop(task, None)      # the WeakKeyDictionary would evict on GC anyway; explicit
+    try:                             # so a still-referenced closed task can never be trusted
         task.close()
     except Exception:  # noqa: BLE001
         pass
