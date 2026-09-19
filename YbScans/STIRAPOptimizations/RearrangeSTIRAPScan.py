@@ -81,46 +81,137 @@ from RearrangeSTIRAPSeq import RearrangeSTIRAPSeq
 VERIFY_IMAGE = True          # 3 frames: img1 load / mid verify / img2 science. Not sweepable.
 INIT_PATTERN = "33x33_feedback11"
 TARGET_PATTERN = "33x33_feedback11"
+# The REARRANGEMENT target pattern (rearrange_kwargs.extras.pattern) -- which subset of the
+# loaded array the atoms are moved into. Distinct from INIT/TARGET_PATTERN above, which are the
+# SLM loading holograms. "every_other" and "double_spacing" (~284 targets) are the two in use;
+# LOCKS_66S1.md carries a separate frequency lock per pattern. Was hardcoded at the extras line
+# until 2026-09-17, when it became a flag so a campaign can switch without editing source.
+REARR_PATTERN = "every_other"
 MODEL_FILENAME = "SLMnet/checkpoints/sinc_3x3_experiment/models/direct_flat/direct_flat_best.pth"
 
-PULSE_WIDTH_CEILING_US = 7.0     # hardware ceiling, per user 2026-07-31
+PULSE_WIDTH_CEILING_US = 10.0    # per user 2026-09-18 (was 7.0, "hardware ceiling" per user
+                                 # 2026-07-31). Raised because holding the tweezer partly on
+                                 # through the pulse (Pushout.SLMAOMAmpPulse) makes survival
+                                 # robust out to ~30 us of trap-off, so a long pulse no longer
+                                 # pays the release-and-recapture penalty that previously made
+                                 # 7 us lose on floor-corrected excitation. User caps it at
+                                 # 10 us -- beyond that is "too extreme".
 
 # ------------------------------- the current operating point ------------------------------- #
 # THE DEFAULTS BLOCK IS THE LOCK. Update a value here when a scan establishes a better one, and
 # say which scan did it -- that one line is the whole provenance trail a reader needs, because
 # the run itself already carries its exact source in the code-snapshot store.
 #
-# Operating point 2026-09-16: 3P1 mj=+1 / 60 G / 66 3S1, every_other on 33x33_feedback11.
+# Operating point 2026-09-17: 3P1 mj=+1 / 50 G / 66 3S1, double_spacing on 33x33_feedback11.
+# The 09-17 campaign moved the field 60 G -> 50 G, so EVERY pre-09-17 frequency lock is void.
+# NOTE the locks below were measured on the double_spacing rearrangement target; REARR_PATTERN
+# above still defaults to every_other. The two patterns' locks have historically agreed to
+# within one grid step (LOCKS_66S1.md), but pass --rearr-pattern double_spacing to reproduce.
 DEFAULTS = {
     # two-photon resonance (degenerate diagonal LINE -- lock a PAIR, not each independently)
-    "carrier": 96.7036,   # MHz. 09-16 freq top-N verify (20260916182720) KEPT this incumbent:
-                          # best alternative only 1.8 sigma and the 4-shot/cell grid ranking
-                          # reshuffled under 9x the statistics.
-    "eom616": 392.4517,   # MHz (converted to Hz below). Partner of the carrier above.
-                          # 09-16 freq-2D ridge: carrier = 97.269 + 1.02*(eom616 - 392.948).
-    # pulse area
-    "pw556": 3.0,         # us. 09-16 stage-C top-N verify (20260916173225), 100 shots/pt.
-    "pw308": 3.0,         # us. 09-16 pw308 x delay (20260916185017): 3.0 best ON-RIDGE by
-                          # 4.1 sigma; lengthening 308 does NOT help at pw556 3.0. Matched-width
-                          # (BOTH legs long, as in the 08-01 mj=0 95% lock) is still untested.
-    "delay": 1.35,        # us, STRICTLY > 0. 1.5 read marginally better in the 09-16 grid
-                          # (0.3501 +- 0.0077) but on a 1 us grid; 1.35 is the 100-shot-verified
-                          # value, so it stays until a finer delay scan says otherwise.
+    "carrier": 109.2463,  # MHz. 09-17 along-ridge path (20260917180022) found a clean INTERIOR
+                          # V minimum, and the perpendicular check (20260917181033) reproduced
+                          # it at the same carrier: 0.1035 +- 0.0063 vs 0.0986 +- 0.0058, 0.6
+                          # sigma, with a FLAT bottom over 109.13..109.31 (insensitive to
+                          # +-0.06 MHz). Ridge from the 50 G freq-2D 20260917162806:
+                          # carrier = 109.1024 + 1.1995*(eom616 - 386.390).
+    "eom616": 386.5100,   # MHz (converted to Hz below). Partner of the carrier above.
+    # pulse area -- MATCHED widths, both legs long. This was the campaign's big win.
+    "pw556": 6.0,         # us. 09-17 stage-C top-N 100-shot verify (20260917183257).
+    "pw308": 6.0,         # us. Matched-width was the untested idea flagged in the old 09-16
+                          # note, and it paid: stage B (20260917181556) beat the incumbent
+                          # 3/3 us at delay 1.50 by 8.2 sigma. The old "longer 308 does NOT
+                          # help" result was taken at pw556 PINNED 3.0, which structurally
+                          # cannot see a matched-width gain -- lengthening ONE leg breaks the
+                          # pulse-area match. Width SATURATES by ~5 us: 5/6/7 us are within
+                          # ~1 sigma of each other, so 6.0 is chosen over the equally-good
+                          # 7/7 @ 2.45 (0.0338 +- 0.0011, only 0.1 sigma apart) because 7.0 us
+                          # sits ON the hardware ceiling with no headroom.
+    "delay": 1.20,        # us, STRICTLY > 0. delay/pw ratio 0.20. The ratio axis is FLAT:
+                          # stage B2 (20260917182435) swept it 0.15..0.35 at widths 5/6/7 and
+                          # all 15 cells fell in S 0.0321..0.0421 (best-vs-worst 1.6 sigma),
+                          # so stage B's apparent railing at 0.35 was noise-ranking on a
+                          # plateau. CAUTION: the stage-B2 12-rep argmin (pw6 @ delay 0.90)
+                          # came out WORST of the four at 100 shots (0.0396 vs 0.0336, 3.7
+                          # sigma) -- on a flat plateau a low-rep argmin is not a result, and
+                          # only the top-N verify separates them.
     # drive amplitudes
-    "amp556": 1.0,        # 09-16 1-D amp scan (20260916190146, 30 shots/pt): MONOTONIC to the
-                          # ceiling, 0.3730 +- 0.0054 at 1.0, beating 0.90 by 2.4 sigma. Raised
-                          # from the long-standing 0.87. NOTE the curve is still climbing ~5 pp
-                          # per 0.1 step at 1.0 -- 556 power is the BINDING CONSTRAINT and the
-                          # optimum is outside reach; more needs vpp556, not amplitude_scale.
+    "amp556": 0.75,       # 09-17 top-N 100-shot verify (20260917190620). LOWERED off the
+                          # ceiling: the 556 pulse is DISTORTED at amplitude_scale 1.0 (clipped
+                          # quintic = non-adiabatic envelope, user call), and 0.75 beats 1.00 by
+                          # 2.1 sigma (0.0303 +- 0.0011 vs 0.0338 +- 0.0012). The 09-16 scan that
+                          # drove this to 1.0 read MONOTONIC only because it ran at pw556 = 3.0 us
+                          # where the pulse was AREA-STARVED, so extra drive still won despite the
+                          # bad shape; at the matched 6/6 us widths duration supplies the area and
+                          # the shape term dominates. NOTE the basin is SHALLOW (0.50/0.60 are
+                          # within ~1 sigma of 1.00) and the 20-rep scan's argmin was 0.60, which
+                          # re-read 0.0345 at 100 shots -- the third time today a low-rep argmin
+                          # did not survive verification. Trust only the 100-shot numbers.
     "amp308": 1.0,        # already at ceiling; the 308 leg is power-limited.
     "vpp556": 14.0,       # max_amplitude_vpp. Raising this is a HARDWARE DRIVE CHANGE -- the
                           # AWG clamps near its bandwidth edge (vpp 17 vs 19 delivered identical
                           # light at the old 143 MHz carrier), so confirm a real survival drop
                           # before believing extra power arrived.
     "vpp308": 8.0,        # amp saturated by 7.5 (07-15).
+    # ---- REVERSE STIRAP (Ch2). Only applied when --reverse is passed; IfReverse stays 0
+    # otherwise and these are inert. Forward de-excitation runs the pulses in the MIRROR order:
+    # 556 (Ch2, fall_quintic) fires first, then 308 (Ch2, rise_quintic) after rev_delay.
+    # SIGN CONVENTION IS OPPOSITE TO THE FORWARD SCAN: reverse brings the atom BACK DOWN from
+    # Rydberg, so the atom is recovered instead of ionized and the metric is RETURN SURVIVAL,
+    # MAXIMIZED. A reverse scan that minimizes survival is being read backwards.
+    "rev_carrier": 109.2463,  # MHz, AWG556.Ch2. SEEDED FROM THE FORWARD LOCK: the two-photon
+                          # resonance is the same transition driven in reverse, and EOM616 is
+                          # shared (not per-channel), so only this 556 carrier can differ.
+                          # The old hardcoded 119.0363 was a stale 60 G / 71 3S1 value.
+    "rev_pw556": 6.0,     # us. Seeded to MIRROR the forward optimum (the old 2.0 hardcode
+    "rev_pw308": 6.0,     # us. predates the matched-width result and is almost certainly wrong).
+    "rev_delay": 1.20,    # us. SIGNED, unlike the forward delay: > 0 fires 556 then 308, <= 0
+                          # fires 308 then 556 (STIRAPPushoutStep handles both branches), so a
+                          # reverse delay scan should span BOTH signs. Seeded from the forward
+                          # optimum by mirror symmetry; this is a SEED, not a measurement.
+    "rev_amp556": 1.0,    # at the ceiling, matching the forward legs
+    "rev_amp308": 1.0,
+    "gap": 1.0,           # us, Pushout.STIRAPGap -- the forward->reverse hold in the Rydberg
+                          # state. Was hardcoded 1e-6 s; exposed so the Rydberg dwell can be
+                          # scanned (it is also the natural lifetime axis).
+    "gate_pulses": 1.0,   # Pushout.IfGatePulses. 1 = the normal science path (AWG gates fire).
+                          # 0 = NO gate pulses: one clean trap chop whose OFF WINDOW IS EXACTLY
+                          # STIRAPGap, the ReleaseRecaptureStep idiom -- so with --gap swept this is
+                          # a TRUE release-and-recapture scan, the swept time IS the trap-off time,
+                          # with no pulse-window or pad overhead and no reverse chop. Use it to
+                          # measure RNR/temperature; use 1 to measure the floor the science actually
+                          # sees (the gates themselves carry a fixed loss, per the step docstring).
+    "slm_amp": 0.0,       # Pushout.SLMAOMAmpPulse -- trap amplitude HELD DURING the STIRAP pulse.
+                          # 0 = tweezer fully off, the long-standing behaviour. Raising it shortens
+                          # the effective free-expansion time and should cut the release-and-recapture
+                          # loss that dominates the floor (~2.4 pct at the 6/6 us lock, growing
+                          # ~0.96 pct per us of trap-off window). CAUTION: the 532 light shifts the
+                          # intermediate and Rydberg levels, so a nonzero value MOVES the two-photon
+                          # resonance -- the carrier/eom616 lock must be re-found after changing it.
     "vryd": 2.0,          # Pushout.VRydTrap
-    "field": 60.0,        # Pushout.BiasCoilCurrent.Ryd, gauss
+    "field": 50.0,        # Pushout.BiasCoilCurrent.Ryd, gauss. 60 -> 50 G on 09-17; the
+                          # carrier/eom616 lock above is valid ONLY at this field.
 }
+
+# ---- 60 G lock, measured 2026-09-18 -------------------------------------------------------- #
+# Kept here rather than in DEFAULTS because 50 G MEASURED BETTER and stays the default. Pass
+#   --field 60 --carrier 96.9192 --eom616 392.3317
+# to reproduce. Verified 20260918_142222 (320 shots, 3 carriers + an interleaved amp=0 floor arm):
+#   E = 95.02% +- 0.32% against a MEASURED floor 0.9757 (2.43% trap-off+imaging loss),
+#   vs 50 G's 96.71% +- 0.12% (floor 0.9787) from 20260918_133842.
+# TWO CAVEATS before treating 50 G as settled better:
+#   1. The two numbers come from DIFFERENT runs and the 399 wavemeter PID is disengaged, so the
+#      imaging point free-runs ~2 pp/hr -- the same size as the 1.69 pp gap. A clean comparison
+#      needs both fields interleaved on one axis, which this script cannot express because
+#      --field is pinned-only by design.
+#   2. The 60 G run carried the 50 G PULSE (pw 6/6 us, delay 1.20, amp556 0.75) unchanged. Only
+#      the frequency was re-optimized at 60 G, so 60 G is not a like-for-like optimum.
+# Frequency provenance: re-acquisition grid 20260918_135943 (ridge found, best cell interior),
+# along-ridge 20260918_140739 (FLAT -- 10 of 11 cells within 2 sigma), perpendicular
+# 20260918_141502 (real 2x structure ACROSS the ridge, interior min, parabolic centre 96.9192).
+# 60 G is flat along the ridge and sharp across it -- the OPPOSITE of 50 G, where the along-ridge
+# scan is what moved the answer. So the lock came from the fine perpendicular anchor, NOT from the
+# fitted ridge slope (0.700 from four coarse unrailed rows, which demonstrably ran off-ridge).
 
 # Axis name -> (ScanGroup path, CLI-unit -> engine-unit scale)
 AXES = {
@@ -132,7 +223,22 @@ AXES = {
     "amp556":  ("AWG.AWG556.Ch1.amplitude_scale",  1.0),
     "amp308":  ("AWG.AWG308.Ch1.amplitude_scale",  1.0),
     "vryd":    ("Pushout.VRydTrap",                1.0),
+    "slm_amp":     ("Pushout.SLMAOMAmpPulse",     1.0),
+    "gate_pulses": ("Pushout.IfGatePulses",       1.0),
+    # reverse STIRAP (Ch2) -- inert unless --reverse is passed
+    "rev_carrier": ("AWG.AWG556.Ch2.carrier_freq_MHz", 1.0),
+    "rev_pw556":   ("AWG.AWG556.Ch2.pulse_width_us",   1.0),
+    "rev_pw308":   ("AWG.AWG308.Ch2.pulse_width_us",   1.0),
+    "rev_delay":   ("Pushout.STIRAPReverseDelay",      1e-6),  # us in, seconds out; SIGNED
+    "rev_amp556":  ("AWG.AWG556.Ch2.amplitude_scale",  1.0),
+    "rev_amp308":  ("AWG.AWG308.Ch2.amplitude_scale",  1.0),
+    "gap":         ("Pushout.STIRAPGap",               1e-6),  # us in, seconds out
 }
+
+# Axes that only do something when --reverse is passed. Sweeping one without it is a silent
+# no-op (IfReverse=0 means the Ch2 pulses never fire), so it is a hard error instead.
+REVERSE_AXES = ("rev_carrier", "rev_pw556", "rev_pw308", "rev_delay",
+                "rev_amp556", "rev_amp308")
 
 
 def parse_spec(name, text):
@@ -156,7 +262,7 @@ def parse_spec(name, text):
 
 def validate(values):
     """Physics/hardware limits that have each killed a real run. Hard errors, not warnings."""
-    for w in ("pw556", "pw308"):
+    for w in ("pw556", "pw308", "rev_pw556", "rev_pw308"):
         for v in values[w]:
             if v > PULSE_WIDTH_CEILING_US:
                 raise SystemExit("--%s = %.3f us exceeds the %.1f us hardware ceiling"
@@ -169,7 +275,14 @@ def validate(values):
                 "--delay = %.3f us: the delay must be STRICTLY POSITIVE. STIRAPPushoutStep fires "
                 "308, waits Forward_Delay, then fires 556, so delay <= 0 is not representable "
                 "and raises at sequence-build time, killing the job (09-15, job 2073)." % v)
-    for a in ("amp556", "amp308"):
+    for v in values["slm_amp"]:
+        if not (0.0 <= v <= 1.0):
+            raise SystemExit("--slm-amp = %.3f is outside [0, 1] (it is an AOM amplitude "
+                             "fraction of the full trap depth)" % v)
+    for v in values["gap"]:
+        if v <= 0:
+            raise SystemExit("--gap must be > 0 us, got %.3f" % v)
+    for a in ("amp556", "amp308", "rev_amp556", "rev_amp308"):
         for v in values[a]:
             if not (0.0 <= v <= 1.0):
                 raise SystemExit("--%s = %.3f is outside [0, 1]" % (a, v))
@@ -234,7 +347,7 @@ def _image_patterns_json(verify, init_cfg, target_cfg, init_name, target_name):
 
 
 def build(values, covary=False, reps=10, init_pattern=INIT_PATTERN,
-          target_pattern=TARGET_PATTERN):
+          target_pattern=TARGET_PATTERN, rearr_pattern=REARR_PATTERN, reverse=False):
     """Build (do NOT submit) the ScanGroup. Exercisable offline, no backend needed."""
     from scan_group import ScanGroup
 
@@ -271,18 +384,16 @@ def build(values, covary=False, reps=10, init_pattern=INIT_PATTERN,
     g().AWG.AWG308.Ch1.max_amplitude_vpp = float(values["vpp308"][0])
     g().AWG.AWG308.Ch1.pad_time_us = 2
 
-    # Reverse channels: forward-only scans keep IfReverse=0 and do NOT touch Ch2.
+    # Reverse channels (Ch2). carrier_freq_MHz / pulse_width_us / amplitude_scale for BOTH
+    # reverse legs, plus STIRAPReverseDelay and STIRAPGap, are OWNED BY THE AXES LOOP above --
+    # do NOT re-assign them here. They used to be hardcoded at this point, which is after the
+    # loop, so writing them here would silently overwrite whatever was swept or pinned.
     g().AWG.AWG556.Ch2.shape = "fall_quintic"
-    g().AWG.AWG556.Ch2.carrier_freq_MHz = 119.0363
-    g().AWG.AWG556.Ch2.pulse_width_us = 2.0
-    g().AWG.AWG556.Ch2.max_amplitude_vpp = 14
-    g().AWG.AWG556.Ch2.amplitude_scale = 0.9
+    g().AWG.AWG556.Ch2.max_amplitude_vpp = float(values["vpp556"][0])
     g().AWG.AWG556.Ch2.pad_time_us = 0.0
     g().AWG.AWG308.Ch2.shape = "rise_quintic"
     g().AWG.AWG308.Ch2.carrier_freq_MHz = 200
-    g().AWG.AWG308.Ch2.pulse_width_us = 2.0
-    g().AWG.AWG308.Ch2.max_amplitude_vpp = 8
-    g().AWG.AWG308.Ch2.amplitude_scale = 1
+    g().AWG.AWG308.Ch2.max_amplitude_vpp = float(values["vpp308"][0])
     g.runp().AWGs = ["AWG556", "AWG308"]
 
     # ---- QICK microwave (deferred port; unused) --------------------------------------- #
@@ -293,10 +404,8 @@ def build(values, covary=False, reps=10, init_pattern=INIT_PATTERN,
 
     # ---- STIRAP push-out ---------------------------------------------------------------- #
     g().Pushout.BiasCoilCurrent.Ryd = float(values["field"][0])
-    g().Pushout.STIRAPReverseDelay = 0.0
     g().Pushout.STIRAPPadTime = 2e-6
-    g().Pushout.STIRAPGap = 1e-6
-    g().Pushout.IfReverse = 0
+    g().Pushout.IfReverse = 1 if reverse else 0
     g().Pushout.IfPump = 0
     g().Pushout.IfRecoveryIonization = 0
     g().Pushout.PumpTime = 1e-6
@@ -304,7 +413,6 @@ def build(values, covary=False, reps=10, init_pattern=INIT_PATTERN,
     g().Pushout.Pump556Freq = 143.556e6
     g().Pushout.Pump556Amp = 0.5
     g().Pushout.SLMAOMAmpGap = 0.55
-    g().Pushout.IfGatePulses = 1
     g().Pushout.IonizationViaDAC = 0
     g().Pushout.TimeIonization = 0.1e-6
     g().Init.VIonizationSet5to8 = 4
@@ -335,7 +443,7 @@ def build(values, covary=False, reps=10, init_pattern=INIT_PATTERN,
     g().rearrange_kwargs.extras.overdrive = False
     g().rearrange_kwargs.extras.dynamic = False
     g().rearrange_kwargs.extras.max_step_size = 0.75
-    g().rearrange_kwargs.extras.pattern = "every_other"
+    g().rearrange_kwargs.extras.pattern = rearr_pattern
     g().rearrange_kwargs.extras.ifEnhanced = False
     g().rearrange_kwargs.extras.precompute = False
     g().rearrange_kwargs.extras.precompute_host = False
@@ -359,7 +467,8 @@ def build(values, covary=False, reps=10, init_pattern=INIT_PATTERN,
     return g, assign, n_combos, swept
 
 
-def describe(values, assign, n_combos, swept, reps, note):
+def describe(values, assign, n_combos, swept, reps, note, rearr_pattern=REARR_PATTERN,
+             reverse=False):
     """Compose the mandatory description= from what is ACTUALLY swept, plus the operator's note."""
     if swept:
         shape = "co-vary PATH on dim 1" if all(d == 1 for d in assign.values()) and len(swept) > 1 \
@@ -373,14 +482,28 @@ def describe(values, assign, n_combos, swept, reps, note):
                        ("carrier", "eom616", "pw556", "pw308", "delay", "amp556", "amp308")
                        if k not in swept)
     scramble = 0 if "eom616" in assign else 1
+    # The optimisation SENSE is opposite for the two directions and an analysis that gets it
+    # backwards inverts the answer, so it is stated explicitly rather than assumed.
+    if reverse:
+        stage = "STIRAP forward+REVERSE"
+        sense = ("MAXIMIZE survival -- reverse STIRAP brings the atom BACK DOWN from Rydberg, "
+                 "so a recovered atom SURVIVES and the metric is RETURN survival. This is the "
+                 "OPPOSITE sense to a forward-only scan. Reported return survival S includes "
+                 "the forward-unexcited background: S ~= (1 - Pexc) + Pexc * Preturn")
+        rev_state = "IfReverse=1 (Ch2: 556 fall_quintic then 308 rise_quintic; rev_delay SIGNED)"
+    else:
+        stage = "STIRAP forward"
+        sense = "MINIMIZE survival"
+        rev_state = "IfReverse=0"
     return (
-        "STIRAP forward, 3P1 mj=+1 / 60 G / 66 3S1, every_other on %s. %s: %s. "
+        "%s, 3P1 mj=+1 / %g G / 66 3S1, %s on %s. %s: %s. "
         "%d combos x %d passes = %d shots. PINNED: %s (eom616 in MHz here; submitted in Hz). "
-        "NOTE: %s. Analysis: MINIMIZE survival; Rule 1 target-masked verify(mid)-conditioned "
+        "NOTE: %s. Analysis: %s; Rule 1 target-masked verify(mid)-conditioned "
         "metric; Rule 2 group by the logged 1-indexed Params -- run_analysis collapses and "
-        "re-orders a co-vary path; 2-D decode COLUMN-MAJOR, dim-0 fastest. IfReverse=0. "
+        "re-orders a co-vary path; 2-D decode COLUMN-MAJOR, dim-0 fastest. %s. "
         "Scramble=%d (%s)."
-        % (TARGET_PATTERN, shape, axes, n_combos, reps, n_combos * reps, pinned, note,
+        % (stage, values["field"][0], rearr_pattern, TARGET_PATTERN, shape, axes,
+           n_combos, reps, n_combos * reps, pinned, note, sense, rev_state,
            scramble, "EOM616 swept -- MUST be 0" if scramble == 0 else "no EOM sweep")
     )
 
@@ -397,6 +520,10 @@ def main():
                     help="AWG556 max_amplitude_vpp (HARDWARE DRIVE LEVEL)")
     ap.add_argument("--vpp308", default=str(DEFAULTS["vpp308"]))
     ap.add_argument("--field", default=str(DEFAULTS["field"]), help="Ryd bias coil, gauss")
+    ap.add_argument("--reverse", action="store_true",
+                    help="enable REVERSE STIRAP (Pushout.IfReverse=1, Ch2 pulses fire after the "
+                         "forward pulse + gap). Flips the optimisation sense: MAXIMIZE return "
+                         "survival. Required before any --rev-* axis does anything.")
     ap.add_argument("--covary", action="store_true",
                     help="put ALL swept axes on dim 1 as a paired path (equal lengths)")
     ap.add_argument("--reps", type=int, default=10, help="passes over the sweep")
@@ -404,6 +531,9 @@ def main():
                     help="REQUIRED: why this run exists. Goes into the saved description.")
     ap.add_argument("--init-pattern", default=INIT_PATTERN)
     ap.add_argument("--target-pattern", default=TARGET_PATTERN)
+    ap.add_argument("--rearr-pattern", default=REARR_PATTERN,
+                    help="rearrangement target pattern (rearrange_kwargs.extras.pattern): "
+                         "every_other | double_spacing | ... (default %s)" % REARR_PATTERN)
     ap.add_argument("--url", default=None, help="ExptServer URL (default tcp://127.0.0.1:1408)")
     ap.add_argument("--dry-run", action="store_true",
                     help="build + print the plan, do NOT submit")
@@ -418,10 +548,21 @@ def main():
             raise SystemExit("--%s is not sweepable here (it is an AWG programming / field "
                              "parameter); pass a single value." % name)
 
+    if not args.reverse:
+        stray = [a for a in REVERSE_AXES if len(values[a]) > 1]
+        if stray:
+            raise SystemExit(
+                "--%s swept but --reverse was NOT passed. IfReverse=0 means the Ch2 pulses "
+                "never fire, so the sweep would be a SILENT NO-OP and every point would read "
+                "the same forward-only survival. Pass --reverse." % ", --".join(stray))
+
     g, assign, n_combos, swept = build(values, covary=args.covary, reps=args.reps,
                                        init_pattern=args.init_pattern,
-                                       target_pattern=args.target_pattern)
-    desc = describe(values, assign, n_combos, swept, args.reps, args.note)
+                                       target_pattern=args.target_pattern,
+                                       rearr_pattern=args.rearr_pattern,
+                                       reverse=args.reverse)
+    desc = describe(values, assign, n_combos, swept, args.reps, args.note,
+                    rearr_pattern=args.rearr_pattern, reverse=args.reverse)
 
     print("swept  : %s" % (", ".join("%s -> dim %d (%d pts)" % (k, assign[k], len(values[k]))
                                      for k in swept) or "none (fixed point)"))

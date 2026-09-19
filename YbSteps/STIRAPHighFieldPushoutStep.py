@@ -46,6 +46,7 @@ from devices.sigilent_awg.pulse_waveform import pulse_total_us
 def STIRAPHighFieldPushoutStep(s, g):
 
     Amp_SLM = g.SLMAOMAmp(Consts().SLM.AOM.Amp)
+    Amp_SLM_pulse = g.SLMAOMAmpPulse(0)  # for the trap-off pulse during the STIRAP pulse
     Amp_SLM_gap = g.SLMAOMAmpGap(Consts().SLM.AOM.Amp)  # for the trap-on gap during the STIRAP pulse
     Amp_Pushout369 = g.Amp369(0)
     Time_ionization = g.TimeIonization(0)   # auto-ionization 369 pulse width (was hardcoded 2us)
@@ -186,7 +187,7 @@ def STIRAPHighFieldPushoutStep(s, g):
             # counting when the 308 is fired, after PatTime, turn off the trap
             def _trap_off(bs):
                 bs.wait(Forward_PadTime - 0.5e-6) # 0.5us for the 532 AOM fall time
-                bs.add('AmpSLM', 0)
+                bs.add('AmpSLM', Amp_SLM_pulse)
             s.add_background(_trap_off)
 
             s.wait(Forward_Delay)
@@ -220,7 +221,7 @@ def STIRAPHighFieldPushoutStep(s, g):
                 it = STIRAP_Gap / 1.6e-6
                 for i in range(int(it)):
                     bs.wait(0.8e-6)
-                    bs.add('AmpSLM', 0)
+                    bs.add('AmpSLM', Amp_SLM_pulse)
                     bs.wait(0.8e-6)
                     bs.add('AmpSLM', Amp_SLM_gap)
             
@@ -245,7 +246,7 @@ def STIRAPHighFieldPushoutStep(s, g):
             
             s.wait(0.8e-6) # let the MW finish before turning the trap off
             
-            s.add('AmpSLM', 0) # Turn the tweezer off again for reverse STIRAP
+            s.add('AmpSLM', Amp_SLM_pulse) # Turn the tweezer off again for reverse STIRAP
 
             
             if Reverse_Delay > 0:
@@ -293,7 +294,7 @@ def STIRAPHighFieldPushoutStep(s, g):
         # IfGatePulses = 0: NO gate pulses. One clean chop, trap off for EXACTLY STIRAPGap -- the same
         # idiom as ReleaseRecaptureStep, so the swept time IS the trap-off time (no pulse-window or
         # pad overhead, and no reverse chop: the reverse block below is skipped too).
-        s.add('AmpSLM', 0)
+        s.add('AmpSLM', Amp_SLM_pulse)
         s.wait(STIRAP_Gap)
         s.add('AmpSLM', Amp_SLM)
     
